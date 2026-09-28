@@ -67,9 +67,23 @@ class AgentRelayTests(unittest.TestCase):
             )
 
     def test_prompt_requires_work_on_launcher_host(self):
-        prompt = _system_prompt({}, self.connection, None, "launcher")
-        self.assertIn("MUST connect back", prompt)
-        self.assertIn("chi@local-host:22", prompt)
+        spec = AgentSpec(
+            name="claude",
+            command=("claude",),
+            args=(),
+            prompt_args=(),
+            config="~/.config/claude/config.toml",
+            config_args=(),
+            env={},
+        )
+        prompt = _system_prompt({}, self.connection, "claude", spec, None, "launcher")
+        self.assertIn("REMOTE AGENT OPERATING CONTRACT", prompt)
+        self.assertIn("remote runtime host: remote-host", prompt)
+        self.assertIn("actual task workspace and execution target is the launcher host: chi@local-host:22", prompt)
+        self.assertIn("MUST", prompt)
+        self.assertIn("The selected provider is: claude", prompt)
+        self.assertIn("~/.config/claude/config.toml", prompt)
+        self.assertIn("return command template", prompt)
 
     def test_return_probe_uses_configured_remote_identity(self):
         probe = _return_path_probe(self.connection)

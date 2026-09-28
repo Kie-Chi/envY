@@ -23,7 +23,7 @@ import typer
 
 
 app = typer.Typer(
-    name="agent",
+    name="remote-agent",
     help="Launch a remote agent that must SSH back to this machine to do the work.",
     no_args_is_help=True,
 )
@@ -33,11 +33,22 @@ LEGACY_CONFIG = Path.home() / ".config" / "envy" / "agents.toml"
 DEFAULT_REMOTE_IDENTITY = "~/.ssh/id_ed25519"
 DEFAULT_AUTHORIZED_KEYS = Path.home() / ".ssh" / "authorized_keys"
 MANDATORY_SYSTEM_PROMPT = (
-    "You are a remote agent. You MUST connect back over SSH to "
-    "{user}@{host}:{port} before doing the task, and you MUST perform the "
-    "actual work on that launcher host. Do not complete the task only on "
-    "the machine where this agent process is running. The launcher reached "
-    "you through SSH target {ssh_target}."
+    "REMOTE AGENT OPERATING CONTRACT\n"
+    "==============================\n"
+    "You are running the agent process on the remote runtime host: {ssh_target}.\n"
+    "The actual task workspace and execution target is the launcher host: {user}@{host}:{port}.\n"
+    "This envY connection profile is: {connection}.\n"
+    "The selected provider is: {agent}.\n"
+    "The provider command is: {agent_command}.\n"
+    "The provider configuration is: {agent_config}.\n\n"
+    "MANDATORY PROCEDURE\n"
+    "1. You MUST first connect back to the launcher host before reading, changing, or analyzing task files.\n"
+    "2. Use this return command template, replacing {{remote_command}} with the command to execute:\n"
+    "   {return_command}\n"
+    "3. You MUST perform all actual work on {host} as {user}; do not complete the task only on {ssh_target}.\n"
+    "4. If the return connection fails, you MUST stop and report the connection failure. Do not fall back to\n"
+    "   operating on the remote runtime host.\n"
+    "The remote runtime host exists only to run this agent and provide the return connection."
 )
 REMOTE_KEY_SCRIPT = r'''set -eu
 p=$1
@@ -264,7 +275,8 @@ def _format(value: str, values: dict[str, str], field: str) -> str:
         raise AgentConfigError(
             f"{field} uses unknown placeholder {{{exc.args[0]}}}; "
             "available placeholders are {system_prompt}, {host}, {user}, {port}, "
-            "{ssh_target}, {launcher_host}, {return_command}, {config}, and {connection}"
+            "{ssh_target}, {launcher_host}, {return_command}, {agent}, {agent_command}, "
+            "{agent_config}, {config}, and {connection}"
         ) from None
 
 
@@ -423,11 +435,22 @@ def _return_command_parts(connection: Connection, remote_command: str) -> list[s
     ]
 
 
-def _return_command_display(connection: Connection) -> str:
-    return " ".join(_remote_shell_arg(value) for value in _return_command_parts(connection, "true"))
+def _return_command_display(connection: Connection, remote_command: str = "true") -> str:
+    return " ".join(_remote_shell_arg(value) for value in _return_command_parts(connection, remote_command))
 
 
-def _system_prompt(defaults: dict[str, Any], connection: Connection, override: str | None, launcher_host: str) -> str:
+def _return_command_template(connection: Connection) -> str:
+    return _return_command_display(connection, "{remote_command}")
+
+
+def _system_prompt(
+    defaults: dict[str, Any],
+    connection: Connection,
+    agent_name: str,
+    spec: AgentSpec,
+    override: str | None,
+    launcher_host: str,
+) -> str:
     values = {
         "host": connection.return_host,
         "user": connection.return_user,
@@ -435,7 +458,10 @@ def _system_prompt(defaults: dict[str, Any], connection: Connection, override: s
         "launcher_host": launcher_host,
         "connection": connection.name,
         "port": str(connection.return_port),
-        "return_command": _return_command_display(connection),
+        "return_command": _return_command_template(connection),
+        "agent": agent_name,
+        "agent_command": shlex.join(spec.command),
+        "agent_config": spec.config or "(provider default)",
         "system_prompt": "",
         "config": "",
     }
@@ -524,7 +550,10 @@ def _remote_agent_command(spec: AgentSpec, command: list[str], connection: Conne
         "launcher_host": socket.gethostname(),
         "connection": connection.name,
         "port": str(connection.return_port),
-        "return_command": _return_command_display(connection),
+        "return_command": _return_command_template(connection),
+        "agent": spec.name,
+        "agent_command": shlex.join(spec.command),
+        "agent_config": spec.config or "(provider default)",
         "system_prompt": "",
         "config": _remote_path(spec.config or ""),
     }
@@ -533,7 +562,7 @@ def _remote_agent_command(spec: AgentSpec, command: list[str], connection: Conne
         "ENVY_REMOTE_RETURN_HOST": connection.return_host,
         "ENVY_REMOTE_RETURN_USER": connection.return_user,
         "ENVY_REMOTE_RETURN_PORT": str(connection.return_port),
-        "ENVY_REMOTE_RETURN_COMMAND": _return_command_display(connection),
+        "ENVY_REMOTE_RETURN_COMMAND": _return_command_template(connection),
     }
     env.update({
         key: _format(value, substitutions, f"agents.env.{key}")
@@ -560,8 +589,9 @@ EXAMPLE_CONFIG = '''# User-owned configuration for `envy remote-agent start`.
 [defaults]
 target = "remote-agent"
 agent = "claude"
-# The tool always prepends a mandatory instruction to connect back to {host}:{port}.
-# Additional placeholders: {host}, {user}, {ssh_target}, {launcher_host}, {connection}.
+# The tool always prepends a structured return-to-launcher contract.
+# Additional placeholders: {host}, {user}, {port}, {ssh_target}, {return_command},
+# {agent}, {agent_command}, {agent_config}, {launcher_host}, and {connection}.
 system_prompt = "After connecting back, use the launcher host's local tools and filesystem for this task."
 
 [connections.remote-agent]
@@ -660,7 +690,7 @@ def start_agent(
         )
         spec = _resolve_agent(root, agent_name)
         launcher_host = socket.gethostname()
-        system_prompt = _system_prompt(defaults, connection, prompt, launcher_host)
+        system_prompt = _system_prompt(defaults, connection, agent_name, spec, prompt, launcher_host)
         extra_args = list(ctx.args)
         command = _agent_argv(spec, system_prompt, connection, launcher_host, extra_args)
         remote_command = _remote_agent_command(spec, command, connection, workdir)

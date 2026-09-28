@@ -166,6 +166,12 @@ placeholders `{host}`, `{user}`, `{port}`, and `{remote_command}`. The same
 command is used for the return-path preflight and exposed to the remote agent
 as `ENVY_REMOTE_RETURN_COMMAND`, so the agent knows how to connect back.
 
+The injected system prompt describes the topology explicitly: the remote runtime
+host where the provider process is running, the launcher host that is the real
+workspace, the envY connection profile, the selected provider and its config,
+and the exact return-command template. It instructs the provider to connect back
+before touching task files and to stop if that connection fails.
+
 For a configured command or a shell alias, use `method = "command"` with a
 complete command vector, or `method = "alias"` with the alias name. Command
 vectors may include `{remote_command}` when the remote command must be placed

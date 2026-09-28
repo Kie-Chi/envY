@@ -111,3 +111,75 @@ otherwise misdetects and appends as a duplicate key.
 Linux additionally installs Codex and RTK on both server and desktop machines,
 and Cursor only when `envy.linux.option = "desktop"`. Darwin continues to
 distribute Codex and ChatGPT through Homebrew casks.
+
+## Remote agent relay
+
+`envy agent` launches an agent on another machine and gives that agent an SSH
+path back to the machine where the command was invoked. The command reads a
+user-owned `~/.config/envy/agents.toml`; authentication files, agent history,
+and provider caches remain application-owned.
+
+Create the commented starter file with:
+
+```sh
+envy agent init
+```
+
+A connection using an SSH config `Host` entry looks like this:
+
+```toml
+[defaults]
+target = "remote-agent"
+agent = "claude"
+system_prompt = "You are operating on host {host} as user {user}. Use its local tools and filesystem."
+
+[connections.remote-agent]
+method = "ssh"
+host = "my-remote-host"       # resolved through ~/.ssh/config
+args = ["-A"]
+remote_identity = "~/.ssh/id_ed25519"
+return_host = "this-machine-reachable-name"
+return_user = "chi"
+return_port = 22
+
+[agents.claude]
+command = ["claude"]
+args = ["--dangerously-skip-permissions"]
+prompt_args = ["--system-prompt", "{system_prompt}"]
+```
+
+`envy agent start` first reads the remote public key (never the private key)
+and appends it to the configured local `authorized_keys` file. It then starts
+the configured agent through an interactive SSH session. Use
+`--no-key-sync` to skip that step, or `--dry-run` to inspect the planned
+connection and command without launching anything. The remote host must be
+able to reach `return_host:return_port`, and its SSH server must accept the
+user's `authorized_keys` file.
+
+For a configured command or a shell alias, use `method = "command"` with a
+complete command vector, or `method = "alias"` with the alias name. Command
+vectors may include `{remote_command}` when the remote command must be placed
+at a particular position. The normal SSH method is preferred when an SSH
+config entry is sufficient.
+
+Provider arguments are deliberately configurable. A Codex installation can
+use its own developer-instruction setting, for example:
+
+```toml
+[agents.codex]
+command = ["codex"]
+prompt_args = ["-c", "developer_instructions={system_prompt}"]
+```
+
+A custom provider can point at a remote configuration under `~/.config`:
+
+```toml
+[agents.my-agent]
+command = ["my-agent"]
+config = "~/.config/my-agent/config.toml"
+config_args = ["--config", "{config}"]
+prompt_args = ["--system-prompt", "{system_prompt}"]
+```
+
+Useful commands are `envy agent list`, `envy agent start <connection>`, and
+`envy agent start <connection> --agent <name> --extra-provider-arg`.

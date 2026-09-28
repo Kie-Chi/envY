@@ -32,6 +32,7 @@ class AgentRelayTests(unittest.TestCase):
             return_user="chi",
             return_port=22,
             authorized_keys=Path("/tmp/authorized_keys"),
+            return_command=("awesun", "ssh", "{user}@{host}:{port}", "--", "{remote_command}"),
         )
 
     def test_ssh_connection_uses_configured_host_and_tty(self):
@@ -72,8 +73,9 @@ class AgentRelayTests(unittest.TestCase):
 
     def test_return_probe_uses_configured_remote_identity(self):
         probe = _return_path_probe(self.connection)
-        self.assertIn('-i "$HOME/.ssh/id_ed25519"', probe)
-        self.assertIn("chi@local-host", probe)
+        self.assertIn("awesun ssh", probe)
+        self.assertIn("chi@local-host:22", probe)
+        self.assertIn("true", probe)
 
     def test_authorized_key_install_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -142,6 +142,8 @@ remote_identity = "~/.ssh/id_ed25519"
 return_host = "this-machine-reachable-name"
 return_user = "chi"
 return_port = 22
+# Optional wrapper for the remote-to-launcher connection:
+# return_command = ["awesun", "ssh", "{user}@{host}:{port}", "--", "{remote_command}"]
 
 [agents.claude]
 command = ["claude"]
@@ -157,6 +159,12 @@ interactive SSH session. `--dry-run` only inspects the planned connection and
 command; key synchronization and the return-path check are always required for
 a real launch. The local SSH server must accept the user's `authorized_keys`
 file.
+
+For a launcher machine that is reachable through an SSH wrapper such as Awesun,
+set `connections.<name>.return_command`. It is a command vector with the
+placeholders `{host}`, `{user}`, `{port}`, and `{remote_command}`. The same
+command is used for the return-path preflight and exposed to the remote agent
+as `ENVY_REMOTE_RETURN_COMMAND`, so the agent knows how to connect back.
 
 For a configured command or a shell alias, use `method = "command"` with a
 complete command vector, or `method = "alias"` with the alias name. Command

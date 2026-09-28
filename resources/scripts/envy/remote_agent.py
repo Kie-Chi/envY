@@ -76,6 +76,7 @@ class Connection:
     return_user: str
     return_port: int
     authorized_keys: Path
+    return_command: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -192,6 +193,7 @@ def _resolve_connection(
         os.path.expandvars(os.path.expanduser(str(raw.get("authorized_keys", DEFAULT_AUTHORIZED_KEYS))))
     )
     remote_identity = str(raw.get("remote_identity", DEFAULT_REMOTE_IDENTITY))
+    return_command = _list(raw.get("return_command"), f"connections.{name}.return_command")
     return Connection(
         name=name,
         method=method,
@@ -205,6 +207,7 @@ def _resolve_connection(
         return_user=return_user,
         return_port=return_port,
         authorized_keys=authorized,
+        return_command=return_command,
     )
 
 
@@ -261,7 +264,7 @@ def _format(value: str, values: dict[str, str], field: str) -> str:
         raise AgentConfigError(
             f"{field} uses unknown placeholder {{{exc.args[0]}}}; "
             "available placeholders are {system_prompt}, {host}, {user}, {port}, "
-            "{ssh_target}, {launcher_host}, {config}, and {connection}"
+            "{ssh_target}, {launcher_host}, {return_command}, {config}, and {connection}"
         ) from None
 
 
@@ -390,6 +393,40 @@ def _install_authorized_key(path: Path, public_key: str, comment: str, *, dry_ru
     return True
 
 
+def _return_command_parts(connection: Connection, remote_command: str) -> list[str]:
+    values = {
+        "host": connection.return_host,
+        "user": connection.return_user,
+        "port": str(connection.return_port),
+        "remote_command": remote_command,
+        "connection": connection.name,
+    }
+    if connection.return_command:
+        parts = _format_many(
+            connection.return_command,
+            values,
+            "connections.return_command",
+        )
+        if not any("{remote_command}" in value for value in connection.return_command):
+            parts.append(remote_command)
+        return parts
+    return [
+        "ssh",
+        "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=8",
+        "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "IdentitiesOnly=yes",
+        "-i", _remote_path(connection.remote_identity),
+        "-p", str(connection.return_port),
+        f"{connection.return_user}@{connection.return_host}",
+        remote_command,
+    ]
+
+
+def _return_command_display(connection: Connection) -> str:
+    return " ".join(_remote_shell_arg(value) for value in _return_command_parts(connection, "true"))
+
+
 def _system_prompt(defaults: dict[str, Any], connection: Connection, override: str | None, launcher_host: str) -> str:
     values = {
         "host": connection.return_host,
@@ -398,6 +435,7 @@ def _system_prompt(defaults: dict[str, Any], connection: Connection, override: s
         "launcher_host": launcher_host,
         "connection": connection.name,
         "port": str(connection.return_port),
+        "return_command": _return_command_display(connection),
         "system_prompt": "",
         "config": "",
     }
@@ -459,19 +497,7 @@ def _remote_shell_arg(value: str) -> str:
 
 
 def _return_path_probe(connection: Connection) -> str:
-    target = f"{connection.return_user}@{connection.return_host}"
-    identity = _remote_shell_arg(_remote_path(connection.remote_identity))
-    return " ".join([
-        "ssh",
-        "-o", "BatchMode=yes",
-        "-o", "ConnectTimeout=8",
-        "-o", "StrictHostKeyChecking=accept-new",
-        "-o", "IdentitiesOnly=yes",
-        "-i", identity,
-        "-p", str(connection.return_port),
-        shlex.quote(target),
-        "true",
-    ])
+    return _return_command_display(connection)
 
 
 def _verify_return_path(connection: Connection) -> None:
@@ -498,6 +524,7 @@ def _remote_agent_command(spec: AgentSpec, command: list[str], connection: Conne
         "launcher_host": socket.gethostname(),
         "connection": connection.name,
         "port": str(connection.return_port),
+        "return_command": _return_command_display(connection),
         "system_prompt": "",
         "config": _remote_path(spec.config or ""),
     }
@@ -506,6 +533,7 @@ def _remote_agent_command(spec: AgentSpec, command: list[str], connection: Conne
         "ENVY_REMOTE_RETURN_HOST": connection.return_host,
         "ENVY_REMOTE_RETURN_USER": connection.return_user,
         "ENVY_REMOTE_RETURN_PORT": str(connection.return_port),
+        "ENVY_REMOTE_RETURN_COMMAND": _return_command_display(connection),
     }
     env.update({
         key: _format(value, substitutions, f"agents.env.{key}")
@@ -546,6 +574,8 @@ remote_identity = "~/.ssh/id_ed25519"
 return_host = "this-machine-reachable-name"
 return_user = "your-user"
 return_port = 22
+# Optional wrapper for the remote-to-launcher connection. It replaces standard ssh.
+# return_command = ["awesun", "ssh", "{user}@{host}:{port}", "--", "{remote_command}"]
 # Optional; defaults to ~/.ssh/authorized_keys.
 # authorized_keys = "~/.ssh/authorized_keys"
 

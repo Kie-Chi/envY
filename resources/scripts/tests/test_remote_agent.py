@@ -3,13 +3,15 @@ import unittest
 from pathlib import Path
 import shutil
 
-from envy.agent import (
+from envy.remote_agent import (
     AgentSpec,
     Connection,
     _agent_argv,
     _install_authorized_key,
     _remote_agent_command,
     _remote_command_argv,
+    _return_path_probe,
+    _system_prompt,
 )
 
 
@@ -51,6 +53,16 @@ class AgentRelayTests(unittest.TestCase):
         self.assertIn('"$HOME/.config/my-agent/config.toml"', remote)
         self.assertIn('cd "$HOME"', remote)
         self.assertIn("work on local-host", remote)
+
+    def test_prompt_requires_work_on_launcher_host(self):
+        prompt = _system_prompt({}, self.connection, None, "launcher")
+        self.assertIn("MUST connect back", prompt)
+        self.assertIn("chi@local-host:22", prompt)
+
+    def test_return_probe_uses_configured_remote_identity(self):
+        probe = _return_path_probe(self.connection)
+        self.assertIn('-i "$HOME/.ssh/id_ed25519"', probe)
+        self.assertIn("chi@local-host", probe)
 
     def test_authorized_key_install_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:

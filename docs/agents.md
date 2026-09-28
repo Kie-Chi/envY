@@ -114,15 +114,16 @@ distribute Codex and ChatGPT through Homebrew casks.
 
 ## Remote agent relay
 
-`envy agent` launches an agent on another machine and gives that agent an SSH
-path back to the machine where the command was invoked. The command reads a
-user-owned `~/.config/envy/agents.toml`; authentication files, agent history,
+`envy remote-agent` (or its short form `envy ra`) launches an agent on another
+machine. The remote agent is required to connect back over SSH and do the actual
+work on the machine where the command was invoked. The command reads a
+user-owned `~/.config/envy/remote-agents.toml`; authentication files, agent history,
 and provider caches remain application-owned.
 
 Create the commented starter file with:
 
 ```sh
-envy agent init
+envy remote-agent init
 ```
 
 A connection using an SSH config `Host` entry looks like this:
@@ -131,7 +132,7 @@ A connection using an SSH config `Host` entry looks like this:
 [defaults]
 target = "remote-agent"
 agent = "claude"
-system_prompt = "You are operating on host {host} as user {user}. Use its local tools and filesystem."
+system_prompt = "After connecting back, use the launcher host's local tools and filesystem for this task."
 
 [connections.remote-agent]
 method = "ssh"
@@ -148,13 +149,14 @@ args = ["--dangerously-skip-permissions"]
 prompt_args = ["--system-prompt", "{system_prompt}"]
 ```
 
-`envy agent start` first reads the remote public key (never the private key)
-and appends it to the configured local `authorized_keys` file. It then starts
-the configured agent through an interactive SSH session. Use
-`--no-key-sync` to skip that step, or `--dry-run` to inspect the planned
-connection and command without launching anything. The remote host must be
-able to reach `return_host:return_port`, and its SSH server must accept the
-user's `authorized_keys` file.
+`envy remote-agent start` first reads the remote public key (never the private key)
+and appends it to the configured local `authorized_keys` file. `return_host` is
+required because the remote agent must have a concrete SSH path back. The
+command checks that path before starting the configured agent through an
+interactive SSH session. `--dry-run` only inspects the planned connection and
+command; key synchronization and the return-path check are always required for
+a real launch. The local SSH server must accept the user's `authorized_keys`
+file.
 
 For a configured command or a shell alias, use `method = "command"` with a
 complete command vector, or `method = "alias"` with the alias name. Command
@@ -181,5 +183,5 @@ config_args = ["--config", "{config}"]
 prompt_args = ["--system-prompt", "{system_prompt}"]
 ```
 
-Useful commands are `envy agent list`, `envy agent start <connection>`, and
-`envy agent start <connection> --agent <name> --extra-provider-arg`.
+Useful commands are `envy remote-agent list`, `envy remote-agent start <connection>`,
+and `envy remote-agent start <connection> --agent <name> --extra-provider-arg`.

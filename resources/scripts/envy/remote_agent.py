@@ -13,6 +13,7 @@ import shlex
 import shutil
 import socket
 import subprocess
+import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,18 +24,20 @@ import typer
 
 app = typer.Typer(
     name="agent",
-    help="Launch a configured agent on another machine with SSH access back here.",
+    help="Launch a remote agent that must SSH back to this machine to do the work.",
     no_args_is_help=True,
 )
 
-DEFAULT_CONFIG = Path.home() / ".config" / "envy" / "agents.toml"
+DEFAULT_CONFIG = Path.home() / ".config" / "envy" / "remote-agents.toml"
+LEGACY_CONFIG = Path.home() / ".config" / "envy" / "agents.toml"
 DEFAULT_REMOTE_IDENTITY = "~/.ssh/id_ed25519"
 DEFAULT_AUTHORIZED_KEYS = Path.home() / ".ssh" / "authorized_keys"
-DEFAULT_SYSTEM_PROMPT = (
-    "You are operating on host {host} as user {user}. "
-    "Use the host's local tools and filesystem for this task. "
-    "The launcher reached you through SSH target {ssh_target}; "
-    "connect back to {host}:{port} when you need to operate the launcher host."
+MANDATORY_SYSTEM_PROMPT = (
+    "You are a remote agent. You MUST connect back over SSH to "
+    "{user}@{host}:{port} before doing the task, and you MUST perform the "
+    "actual work on that launcher host. Do not complete the task only on "
+    "the machine where this agent process is running. The launcher reached "
+    "you through SSH target {ssh_target}."
 )
 REMOTE_KEY_SCRIPT = r'''set -eu
 p=$1
@@ -42,7 +45,7 @@ case "$p" in
   "~/"*) p="$HOME/${p#~/}" ;;
   "\$HOME/"*) p="$HOME/${p#\$HOME/}" ;;
 esac
-for candidate in "$p.pub" "$p" "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_ed25519" "$HOME/.ssh/id_rsa.pub" "$HOME/.ssh/id_rsa"; do
+for candidate in "$p.pub" "$p"; do
   [ -f "$candidate" ] || continue
   case "$candidate" in
     *.pub) cat "$candidate" ;;
@@ -50,7 +53,7 @@ for candidate in "$p.pub" "$p" "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_ed2551
   esac
   exit 0
 done
-printf '%s\n' 'No usable SSH public key found on the remote agent host.' >&2
+printf '%s\n' "No usable public key found for configured identity: $p" >&2
 exit 1
 '''
 
@@ -135,8 +138,14 @@ def _read_config(path: Path) -> dict[str, Any]:
 def _config_path(value: Path | None) -> Path:
     if value is not None:
         return value.expanduser()
-    configured = os.environ.get("ENVY_AGENT_CONFIG")
-    return Path(configured).expanduser() if configured else DEFAULT_CONFIG
+    configured = os.environ.get("ENVY_REMOTE_AGENT_CONFIG") or os.environ.get("ENVY_AGENT_CONFIG")
+    if configured:
+        return Path(configured).expanduser()
+    # Keep an older agents.toml usable, but new init commands are explicit about
+    # the remote-agent role and write remote-agents.toml.
+    if not DEFAULT_CONFIG.exists() and LEGACY_CONFIG.exists():
+        return LEGACY_CONFIG
+    return DEFAULT_CONFIG
 
 
 def _resolve_connection(
@@ -166,8 +175,12 @@ def _resolve_connection(
     if method == "alias" and not alias:
         raise AgentConfigError(f"connections.{name}.alias is required for method=alias")
 
-    return_host = str(raw.get("return_host", local_host))
-    return_user = str(raw.get("return_user", local_user))
+    return_host = _string(raw.get("return_host"), f"connections.{name}.return_host")
+    if not return_host:
+        raise AgentConfigError(
+            f"connections.{name}.return_host is required: the remote agent must have a reachable SSH path back"
+        )
+    return_user = _string(raw.get("return_user", local_user), f"connections.{name}.return_user") or local_user
     try:
         return_port = int(raw.get("return_port", 22))
     except (TypeError, ValueError) as exc:
@@ -378,7 +391,6 @@ def _install_authorized_key(path: Path, public_key: str, comment: str, *, dry_ru
 
 
 def _system_prompt(defaults: dict[str, Any], connection: Connection, override: str | None, launcher_host: str) -> str:
-    template = override or str(defaults.get("system_prompt", DEFAULT_SYSTEM_PROMPT))
     values = {
         "host": connection.return_host,
         "user": connection.return_user,
@@ -386,10 +398,15 @@ def _system_prompt(defaults: dict[str, Any], connection: Connection, override: s
         "launcher_host": launcher_host,
         "connection": connection.name,
         "port": str(connection.return_port),
-        "system_prompt": template,
+        "system_prompt": "",
         "config": "",
     }
-    return _format(template, values, "system_prompt")
+    mandatory = _format(MANDATORY_SYSTEM_PROMPT, values, "system_prompt")
+    configured = override or defaults.get("system_prompt")
+    if not configured:
+        return mandatory
+    additional = _format(str(configured), values, "system_prompt")
+    return mandatory + "\n\nAdditional instructions from configuration:\n" + additional
 
 
 def _agent_argv(
@@ -441,11 +458,59 @@ def _remote_shell_arg(value: str) -> str:
     return shlex.quote(value)
 
 
+def _return_path_probe(connection: Connection) -> str:
+    target = f"{connection.return_user}@{connection.return_host}"
+    identity = _remote_shell_arg(_remote_path(connection.remote_identity))
+    return " ".join([
+        "ssh",
+        "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=8",
+        "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "IdentitiesOnly=yes",
+        "-i", identity,
+        "-p", str(connection.return_port),
+        shlex.quote(target),
+        "true",
+    ])
+
+
+def _verify_return_path(connection: Connection) -> None:
+    result = _run_remote(
+        connection,
+        _return_path_probe(connection),
+        interactive=False,
+        timeout=20,
+        capture=True,
+    )
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip()
+        raise AgentConfigError(
+            f"remote agent cannot connect back to {connection.return_user}@{connection.return_host}:{connection.return_port}"
+            + (f": {detail}" if detail else "")
+        )
+
+
 def _remote_agent_command(spec: AgentSpec, command: list[str], connection: Connection, workdir: str | None) -> str:
-    env = {
-        key: _format(value, {"host": connection.return_host, "user": connection.return_user, "ssh_target": _connection_target(connection), "launcher_host": socket.gethostname(), "connection": connection.name, "port": str(connection.return_port), "system_prompt": "", "config": _remote_path(spec.config or "")}, f"agents.env.{key}")
-        for key, value in spec.env.items()
+    substitutions = {
+        "host": connection.return_host,
+        "user": connection.return_user,
+        "ssh_target": _connection_target(connection),
+        "launcher_host": socket.gethostname(),
+        "connection": connection.name,
+        "port": str(connection.return_port),
+        "system_prompt": "",
+        "config": _remote_path(spec.config or ""),
     }
+    env = {
+        "ENVY_REMOTE_AGENT": "1",
+        "ENVY_REMOTE_RETURN_HOST": connection.return_host,
+        "ENVY_REMOTE_RETURN_USER": connection.return_user,
+        "ENVY_REMOTE_RETURN_PORT": str(connection.return_port),
+    }
+    env.update({
+        key: _format(value, substitutions, f"agents.env.{key}")
+        for key, value in spec.env.items()
+    })
     prefix = ""
     if workdir:
         prefix += f"cd {_remote_shell_arg(_remote_path(workdir))} && "
@@ -454,15 +519,22 @@ def _remote_agent_command(spec: AgentSpec, command: list[str], connection: Conne
     return prefix + " ".join(_remote_shell_arg(value) for value in command)
 
 
+def _agent_names(root: dict[str, Any]) -> list[str]:
+    names = _names(root, "agents")
+    if not names:
+        raise AgentConfigError("no agents are configured")
+    return names
 
-EXAMPLE_CONFIG = '''# User-owned configuration for `envy agent start`.
+
+EXAMPLE_CONFIG = '''# User-owned configuration for `envy remote-agent start`.
 # SSH method uses ~/.ssh/config, so `host` may be an SSH Host alias.
 
 [defaults]
 target = "remote-agent"
 agent = "claude"
-# Placeholders: {host}, {user}, {ssh_target}, {launcher_host}, {connection}.
-system_prompt = "You are operating on host {host} as user {user}. Use the host's local tools and filesystem for this task."
+# The tool always prepends a mandatory instruction to connect back to {host}:{port}.
+# Additional placeholders: {host}, {user}, {ssh_target}, {launcher_host}, {connection}.
+system_prompt = "After connecting back, use the launcher host's local tools and filesystem for this task."
 
 [connections.remote-agent]
 method = "ssh"
@@ -502,7 +574,7 @@ def init_config(
     force: bool = typer.Option(False, "--force", help="Replace an existing example configuration."),
     config_file: Path | None = typer.Option(None, "--config-file", help="Configuration file to create."),
 ):
-    """Create a commented example configuration under ~/.config/envy."""
+    """Create a commented remote-agent configuration under ~/.config/envy."""
     path = _config_path(config_file)
     if path.exists() and not force:
         _fail(f"configuration already exists: {path} (use --force to replace it)", code=1)
@@ -536,11 +608,10 @@ def start_agent(
     agent: str | None = typer.Option(None, "--agent", "-a", help="Configured agent name."),
     prompt: str | None = typer.Option(None, "--prompt", help="Override the configured system prompt."),
     config_file: Path | None = typer.Option(None, "--config-file", help="Configuration file."),
-    no_key_sync: bool = typer.Option(False, "--no-key-sync", help="Do not add the remote public key to authorized_keys."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print the planned command without starting the agent."),
     workdir: str | None = typer.Option(None, "--workdir", help="Working directory on the remote agent host."),
 ):
-    """Sync the remote public key, then start the agent over an interactive SSH session."""
+    """Require an SSH return path, then start the remote agent interactively."""
     path = _config_path(config_file)
     try:
         root = _read_config(path)
@@ -564,16 +635,15 @@ def start_agent(
         command = _agent_argv(spec, system_prompt, connection, launcher_host, extra_args)
         remote_command = _remote_agent_command(spec, command, connection, workdir)
 
-        public_key = None
-        key_added = False
-        if not no_key_sync:
-            public_key = _remote_public_key(connection)
-            key_added = _install_authorized_key(
-                connection.authorized_keys,
-                public_key,
-                f"envy-agent:{connection.name}",
-                dry_run=dry_run,
-            )
+        public_key = _remote_public_key(connection)
+        key_added = _install_authorized_key(
+            connection.authorized_keys,
+            public_key,
+            f"envy-remote-agent:{connection.name}",
+            dry_run=dry_run,
+        )
+        if not dry_run:
+            _verify_return_path(connection)
         typer.echo(
             f"connection={connection.name} target={_connection_target(connection)} "
             f"agent={agent_name} return={connection.return_user}@{connection.return_host}:{connection.return_port}"

@@ -6,7 +6,7 @@ import typer
 from typing import Optional
 
 from envy import log
-from envy.agent import app as agent_app
+from envy.remote_agent import app as remote_agent_app
 from envy import _check_schema_api
 from envy.config import app as config_app
 from envy.doctor import app as doctor_app
@@ -389,8 +389,9 @@ cli.add_typer(config_app, name="c", rich_help_panel="Aliases")
 cli.add_typer(software_app, name="software")
 cli.add_typer(software_app, name="sw", rich_help_panel="Aliases")
 
-# Agent relay/launcher uses a user-owned ~/.config/envy/agents.toml.
-cli.add_typer(agent_app, name="agent")
+# Remote agent always works back on this machine over SSH.
+cli.add_typer(remote_agent_app, name="remote-agent")
+cli.add_typer(remote_agent_app, name="ra", rich_help_panel="Aliases")
 
 # Register key subgroup — "k" alias registered separately
 cli.add_typer(key_app, name="key")

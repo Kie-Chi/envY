@@ -4,12 +4,14 @@ from pathlib import Path
 import shutil
 
 from envy.remote_agent import (
+    AgentConfigError,
     AgentSpec,
     Connection,
     _agent_argv,
     _install_authorized_key,
     _remote_agent_command,
     _remote_command_argv,
+    _resolve_connection,
     _return_path_probe,
     _system_prompt,
 )
@@ -53,6 +55,15 @@ class AgentRelayTests(unittest.TestCase):
         self.assertIn('"$HOME/.config/my-agent/config.toml"', remote)
         self.assertIn('cd "$HOME"', remote)
         self.assertIn("work on local-host", remote)
+
+    def test_connection_requires_a_return_host(self):
+        with self.assertRaises(AgentConfigError):
+            _resolve_connection(
+                {"connections": {"remote": {"method": "ssh", "host": "remote-host"}}},
+                "remote",
+                local_user="chi",
+                local_host="local-host",
+            )
 
     def test_prompt_requires_work_on_launcher_host(self):
         prompt = _system_prompt({}, self.connection, None, "launcher")

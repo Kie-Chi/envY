@@ -181,6 +181,13 @@ impl WorkflowAction {
             Self::OpenSettings(_) => "open macOS Privacy & Security settings".to_string(),
         }
     }
+
+    /// Workflows that produce streamable terminal output can render inside a
+    /// TUI log popup. GUI launchers (`open …`) have no output worth streaming
+    /// and keep the existing leave-screen path.
+    pub fn is_streamable(&self) -> bool {
+        matches!(self, Self::Plan | Self::Apply | Self::Doctor)
+    }
 }
 
 impl SoftwareAction {
@@ -355,6 +362,19 @@ pub enum DetailView {
     HistoryDiff(Value),
 }
 
+/// Live output buffer for a streamed workflow (`envy plan`/`apply`/`doctor`)
+/// rendered inside a TUI popup instead of leaving the alternate screen.
+#[derive(Clone, Debug)]
+pub struct WorkflowLog {
+    pub title: String,
+    pub lines: Vec<String>,
+    pub running: bool,
+    pub success: Option<bool>,
+    pub scroll: usize,
+    /// While true the popup pins to the newest line; a manual scroll unpins it.
+    pub follow: bool,
+}
+
 #[derive(Debug)]
 pub enum Message {
     Loaded {
@@ -407,6 +427,14 @@ pub enum Message {
         source: MirrorSource,
         stage: MutationStage,
         result: Result<Value, String>,
+    },
+    WorkflowOutput {
+        request: u64,
+        line: String,
+    },
+    WorkflowFinished {
+        request: u64,
+        success: bool,
     },
 }
 

@@ -54,6 +54,9 @@ fi
 if [ "${1:-}" = "tui" ] && [ "$#" -eq 1 ] && [ -z "${_ENVY_COMPLETE:-}" ]; then
   shift
   if command -v envy-tui >/dev/null 2>&1; then
+    # Keep the TUI's JSON probes and workflows on this checkout's Python CLI
+    # instead of whichever unrelated `envy` happens to appear first on PATH.
+    export ENVY_BIN="${ENVY_BIN:-$ROOT/envy}"
     exec envy-tui "$@"
   elif command -v cargo >/dev/null 2>&1 && [ -f "$ROOT/resources/scripts/envy-tui/Cargo.toml" ]; then
     exec env ENVY_BIN="$ROOT/envy" cargo run --quiet --manifest-path "$ROOT/resources/scripts/envy-tui/Cargo.toml" -- "$@"

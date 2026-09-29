@@ -39,11 +39,21 @@
   envy.vscode.mode = "remote";
   # END ENVY MANAGED CONFIG
 
+  # BEGIN ENVY MANAGED MIRROR OVERRIDES
+  # `envy mirror` owns this block. Other machine policy stays intact.
+  envy.mirrors.overrides.npm.registry = "https://mirrors.cloud.tencent.com/npm/";
+  envy.mirrors.overrides.npm.source = "chsrc:npm/tencent";
+  # END ENVY MANAGED MIRROR OVERRIDES
+
   # BEGIN ENVY MANAGED SOFTWARE
   # `envy setup` and `envy software` own only these machine-local selections.
 
+  envy.darwin.software.homebrew.casks.include = [
+    "steam"
+    "sunlogincontrol"
+  ];
+
   envy.darwin.software.homebrew.casks.exclude = [
-    "uuremote"
     "microsoft-remote-desktop"
     "ticktick"
     "trae"
@@ -52,10 +62,13 @@
     "neteasemusic"
     "skim"
     "iina"
+    "sunlogincontrol"
   ];
 
   envy.darwin.software.homebrew.formulae.include = [
     "maven"
+    "pandoc"
+    "tectonic"
   ];
 
   envy.software.pypi.tools.include = builtins.fromJSON "[{\"id\":\"browser-use\",\"name\":\"browser-use\",\"ref\":\"pypi:browser-use\"}]";

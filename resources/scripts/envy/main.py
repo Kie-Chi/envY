@@ -220,6 +220,24 @@ def cmd_plan(
     plan_configuration(json_output=json_output)
 
 
+@cli.command(name="_apply-needs-tty", hidden=True)
+def cmd_apply_needs_tty(
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+):
+    """Report whether `envy apply` requires an interactive TTY (internal probe)."""
+    from envy.utils import _get_sudo_passwd, _sudo_ticket_available
+
+    has_noninteractive_auth = _get_sudo_passwd() is not None or _sudo_ticket_available()
+    needs_tty = PLATFORM == "darwin" and not has_noninteractive_auth
+    if json_output:
+        print(json.dumps({"needsTty": needs_tty}))
+    else:
+        log.info(
+            "apply",
+            "requires interactive TTY" if needs_tty else "can run non-interactively",
+        )
+
+
 @cli.command(name="tui")
 def cmd_tui():
     """Launch the interactive Rust/Ratatui frontend."""

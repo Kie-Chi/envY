@@ -61,6 +61,12 @@ let
         && [ -z "''${_ENVY_COMPLETE:-}" ] \
         && command -v envy-tui >/dev/null 2>&1; then
         shift
+        # Keep TUI probes and workflows on this wrapper's selected checkout
+        # rather than an unrelated `envy` earlier on PATH.
+        export ENVY_BIN="''${ENVY_BIN:-$(command -v envy || true)}"
+        if [ -z "$ENVY_BIN" ]; then
+          export ENVY_BIN="envy"
+        fi
         exec envy-tui "$@"
       fi
 

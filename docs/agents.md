@@ -111,3 +111,91 @@ otherwise misdetects and appends as a duplicate key.
 Linux additionally installs Codex and RTK on both server and desktop machines,
 and Cursor only when `envy.linux.option = "desktop"`. Darwin continues to
 distribute Codex and ChatGPT through Homebrew casks.
+
+## Remote agent relay
+
+`envy remote-agent` (or its short form `envy ra`) launches an agent on another
+machine. The remote agent is required to connect back over SSH and do the actual
+work on the machine where the command was invoked. The command reads a
+user-owned `~/.config/envy/remote-agents.toml`; authentication files, agent history,
+and provider caches remain application-owned.
+
+Create the commented starter file with:
+
+```sh
+envy remote-agent init
+```
+
+A connection using an SSH config `Host` entry looks like this:
+
+```toml
+[defaults]
+target = "remote-agent"
+agent = "claude"
+system_prompt = "After connecting back, use the launcher host's local tools and filesystem for this task."
+
+[connections.remote-agent]
+method = "ssh"
+host = "my-remote-host"       # resolved through ~/.ssh/config
+args = ["-A"]
+remote_identity = "~/.ssh/id_ed25519"
+return_host = "this-machine-reachable-name"
+return_user = "chi"
+return_port = 22
+# Optional wrapper for the remote-to-launcher connection:
+# return_command = ["awesun", "ssh", "{user}@{host}:{port}", "--", "{remote_command}"]
+
+[agents.claude]
+command = ["claude"]
+args = ["--dangerously-skip-permissions"]
+prompt_args = ["--system-prompt", "{system_prompt}"]
+```
+
+`envy remote-agent start` first reads the remote public key (never the private key)
+and appends it to the configured local `authorized_keys` file. `return_host` is
+required because the remote agent must have a concrete SSH path back. The
+command checks that path before starting the configured agent through an
+interactive SSH session. `--dry-run` only inspects the planned connection and
+command; key synchronization and the return-path check are always required for
+a real launch. The local SSH server must accept the user's `authorized_keys`
+file.
+
+For a launcher machine that is reachable through an SSH wrapper such as Awesun,
+set `connections.<name>.return_command`. It is a command vector with the
+placeholders `{host}`, `{user}`, `{port}`, and `{remote_command}`. The same
+command is used for the return-path preflight and exposed to the remote agent
+as `ENVY_REMOTE_RETURN_COMMAND`, so the agent knows how to connect back.
+
+The injected system prompt describes the topology explicitly: the remote runtime
+host where the provider process is running, the launcher host that is the real
+workspace, the envY connection profile, the selected provider and its config,
+and the exact return-command template. It instructs the provider to connect back
+before touching task files and to stop if that connection fails.
+
+For a configured command or a shell alias, use `method = "command"` with a
+complete command vector, or `method = "alias"` with the alias name. Command
+vectors may include `{remote_command}` when the remote command must be placed
+at a particular position. The normal SSH method is preferred when an SSH
+config entry is sufficient.
+
+Provider arguments are deliberately configurable. A Codex installation can
+use its own developer-instruction setting, for example:
+
+```toml
+[agents.codex]
+command = ["codex"]
+prompt_args = ["-c", "developer_instructions={system_prompt}"]
+```
+
+A custom provider can point at a remote configuration under `~/.config`:
+
+```toml
+[agents.my-agent]
+command = ["my-agent"]
+config = "~/.config/my-agent/config.toml"
+config_args = ["--config", "{config}"]
+prompt_args = ["--system-prompt", "{system_prompt}"]
+```
+
+Useful commands are `envy remote-agent list`, `envy remote-agent start <connection>`,
+and `envy remote-agent start <connection> --agent <name> --extra-provider-arg`.

@@ -26,6 +26,12 @@
             Port = 22;
             User = "xiongxk";
         };
+
+        "jyue" = {
+          HostName = "100.73.61.31";
+          Port = 22;
+          User = "jyxc-dz-0101541";
+        };
     };
   };
 

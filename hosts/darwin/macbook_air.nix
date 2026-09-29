@@ -16,7 +16,7 @@
   # --- DARWIN_SERVICES CONFIG ---
   envy.darwin.services.mihomo.mode = "none";
   envy.darwin.services.mihomo.tun = false;
-  envy.darwin.services.openssh.mode = "manual";
+  envy.darwin.services.openssh.mode = "keep";
 
   # --- ENV CONFIG ---
   envy.repository.path = "/Users/chi/.envy";
@@ -47,6 +47,10 @@
 
   envy.darwin.software.homebrew.casks.include = [
     "steam"
+  ];
+
+  envy.darwin.software.homebrew.casks.exclude = [
+    "trae"
   ];
 
   envy.software.pypi.tools.exclude = [

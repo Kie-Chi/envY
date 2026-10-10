@@ -106,8 +106,19 @@ companion command so the fork's extensions do not silently replace upstream Pi.
 Both wrappers write provider metadata to their application-owned configuration
 locations (`~/.pi/agent/models.json` and `~/.omp/agent/models.yml`) and select
 `envy-pi/gpt-6.1-sol` by default. The rendered sops template supplies the API
-key only when the wrapper starts; the model files contain the literal
-`$OPENAI_API_KEY` reference and never contain a decrypted secret.
+key only when the wrapper starts. Pi's model file contains an
+`$OPENAI_API_KEY` reference. OMP's model file uses a command-backed
+`apiKey` reference, and the wrapper also passes the resolved key through
+`--api-key`. Neither file contains a decrypted secret.
+
+The two OMP credential paths are intentional. OMP validates a custom provider's
+model metadata before applying command-line options, so the command-backed
+`apiKey` satisfies that validation while `--api-key` supplies the runtime
+credential. When no credential is configured, the wrapper does not add
+`--api-key`; endpoint and model selection still come from the normal agent
+configuration. Changes to this adapter must preserve the invariant that
+application files contain references or commands only, while the decrypted
+value exists only in the launch-time sops template environment.
 
 Pi's custom provider uses the OpenAI-compatible completions protocol at
 `https://api.xikai.site/v1`. This is compatible with the Xikai gateway, but it

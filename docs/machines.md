@@ -85,7 +85,11 @@ envy config refine
 `envy host select` and `envy host check` complete machine IDs from the current
 platform directory; `envy host init --mode` completes `import` and `copy`.
 
-`envy config refine` 可以迁移旧单行 `.device-label`、`~/.config/envy/machine`、旧 `config.nix`，以及 Darwin 的旧 `envy.darwin.proxy.*` / `envy.proxy.*`。稳态配置不再读取这些旧来源。
+`envy config refine` 可以迁移旧单行 `.device-label`、`~/.config/envy/machine`、旧 `config.nix`，以及 Darwin 的旧 `envy.darwin.proxy.*` / `envy.proxy.*`；它也会把旧的 `envy.llm.steps.*` / `envy.llm.deepseek.*` 和对应 secret 引用生成到独立的 `ENVY MANAGED AGENTS` block，然后从机器 managed block 删除旧的 LLM scalar assignments。稳态配置不再读取这些旧来源。
+
+LLM 迁移先转换、后清理：已有 agent/endpoint/credential 的显式选择优先，只补齐旧配置缺少的迁移目标；agent block 或迁移源无效时保留旧字段。managed block 外的旧 LLM scalar assignments 也会清理，其他手写 policy 保留。`config check` 只报告待迁移或待清理状态，不写文件。
+
+`envy config show`、其 JSON 输出以及 `envy status` 的 config snapshot 展示当前的 endpoints、credentials 和 agents，不再展示旧 LLM scalar fields。Credential 只展示逻辑名称、加密 YAML 路径和是否已设置，不输出密钥内容。
 
 envY 使用 `path:.#<machine-id>`，所以刚创建且尚未提交的 host 文件也可以立即 check/build/apply。
 
@@ -106,7 +110,8 @@ envY 使用 `path:.#<machine-id>`，所以刚创建且尚未提交的 host 文�
 | `envy.environment.sessionPath` | 追加到 machine session `PATH` 的目录 |
 | `envy.shell.zsh.aliases` | 与公共 alias 合并的 machine Zsh aliases |
 | `envy.shell.zsh.initContent` | 在公共配置之后追加的 machine Zsh 初始化片段 |
-| `envy.llm.*` | 非敏感 Base URL 和模型 |
+| `envy.llm.*` | 非敏感 endpoint、协议和旧版兼容模型字段 |
+| `envy.agents.*` | Agent adapter、endpoint、credential 引用和默认模型 |
 | `envy.vscode.mode` | VS Code local/remote policy |
 | `envy.software.nix.packages.include/exclude/effective` | 公共 Home Manager package 选择机制 |
 | `envy.software.npm.tools.*` | 用户级 NPM tool 选择机制 |
@@ -185,10 +190,6 @@ envy.user.home = "/Users/chi";
 envy.repository.path = "/Users/chi/.envy";
 envy.git.name = "Chi";
 envy.git.email = "chi@example.com";
-envy.llm.steps.url = "https://example.com";
-envy.llm.steps.model = "step-3.7-flash";
-envy.llm.deepseek.url = "https://api.deepseek.com";
-envy.llm.deepseek.model = "deepseek-v4-pro";
 envy.vscode.mode = "remote";
 envy.darwin.services.mihomo.mode = "none";
 envy.darwin.services.mihomo.tun = false;

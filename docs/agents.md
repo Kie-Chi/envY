@@ -7,10 +7,13 @@
 ```text
 modules/agents/
 ├── default.nix          # shared provider defaults and skill selection
+├── options.nix          # machine-owned agent instance schema
 ├── darwin.nix           # Darwin application distribution for nix-darwin
 ├── linux.nix            # Linux CLI/IDE distribution and runtime plugins
+├── codex.nix            # Codex CLI adapter and runtime environment
 ├── linux/rtk.nix        # Linux-only RTK package
 ├── claude.nix           # Claude package, wrapper defaults, and ccli alias
+├── generic.nix           # OpenAI-compatible and StepGo adapters
 ├── skills.nix           # skill catalog/selection Home Manager module
 └── skills/
     ├── catalog.nix      # skill registry and target agents
@@ -41,7 +44,7 @@ Register it in `skills/catalog.nix`:
 {
   envy-maintainer = {
     source = ./envy-maintainer;
-    targets = [ "codex" "claude" ];
+    targets = [ "codex" "claude-code" ];
   };
 }
 ```
@@ -61,15 +64,92 @@ example, Academic Research Skills exposes four coordinated Claude skills, while
 its Codex sibling exposes one `academic-research-suite` router skill. Updating an
 external skill is then an explicit `nix flake update <input-name>` operation.
 
+The repository currently ships two external presentation skills. `ppt-master`
+is linked from the `ppt-master/SKILL.md` subdirectory of
+`Categorytyy/ppt-master`; it provides the PptxGenJS-oriented presentation
+workflow and its supporting assets. `gpt-image2-ppt-skills` is linked from the
+root `SKILL.md` of `JuneYaooo/gpt-image2-ppt-skills`; it generates image-led
+presentations and can use an OpenAI-compatible image API. Both are pinned as
+`tarball+https://api.github.com/.../tarball/...` inputs because a plain HTTPS
+file input is treated as one file by Nix rather than an unpacked source tree.
+The image skill expects `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and usually
+`GPT_IMAGE_MODEL_NAME=gpt-image-2` at runtime. The Xikai endpoint is wired into
+the agent wrappers, but whether it exposes the image generation API must be
+verified by an actual image request before relying on that feature.
+
 ## Provider boundary
 
-Each provider gets its own module (`claude.nix`, later `codex.nix`, `gemini.nix`, and so on). A provider module may install packages, create a stable command wrapper, and link non-secret configuration. Shared LLM API keys and their shell template are owned by `modules/llm`; provider modules consume the activation-time environment and must never turn secrets into Nix evaluation-time strings.
+Each agent gets an adapter module (`codex.nix`, `claude.nix`, and generic adapters for compatible CLIs). The adapter owns package installation, stable command wrappers, protocol-specific environment names, and skill integration. `modules/llm` owns only non-sensitive endpoint metadata and sops credential declarations. A credential is a logical reference such as `stepfun`; its value is available only through an activation-time sops placeholder and is never a Nix evaluation-time string.
+
+Machine-owned agent selections live under `envy.agents`:
+
+```nix
+envy.agents.codex = {
+  adapter = "codex";
+  endpoint = "stepfun-openai";
+  credential = "stepfun";
+  model = "step-3.7-flash";
+};
+```
+
+Endpoints live under `envy.llm.endpoints` and contain only a URL and wire
+protocol. Agent adapters translate those fields into the exact variables and
+arguments expected by Codex, Claude Code, or a custom CLI. envY does not source
+one global API-key environment file into every shell; each managed CLI wrapper
+receives only its own rendered template.
 
 The Claude wrapper deliberately invokes nixpkgs' `claude` wrapper, not its internal `.claude-wrapped` binary. Nixpkgs uses the outer wrapper to set required runtime environment variables and `PATH`; bypassing it would make this repository responsible for duplicating upstream packaging details.
 
+Pi and Oh My Pi are separate agent commands. `pi` is the upstream
+`earendil-works/pi` CLI and `omp` is the `can1357/oh-my-pi` fork, installed as a
+companion command so the fork's extensions do not silently replace upstream Pi.
+Both wrappers write provider metadata to their application-owned configuration
+locations (`~/.pi/agent/models.json` and `~/.omp/agent/models.yml`) and select
+`envy-pi/gpt-6.1-sol` by default. The rendered sops template supplies the API
+key only when the wrapper starts; the model files contain the literal
+`$OPENAI_API_KEY` reference and never contain a decrypted secret.
+
+Pi's custom provider uses the OpenAI-compatible completions protocol at
+`https://api.xikai.site/v1`. This is compatible with the Xikai gateway, but it
+is a different integration from an OpenAI Codex subscription, OAuth session, or
+an implementation-specific `codex-backend`. Pi can use such a backend only if
+that backend exposes a protocol Pi supports (for example an OpenAI-compatible
+endpoint) or a dedicated Pi extension is added; envY does not assume that
+Codex OAuth credentials can be reused as a generic API key.
+
+Oh My Pi is a maintained Pi fork rather than a normal plugin package. Its
+additional LSP, debugger, subagent, advisor, and execution features are
+available through `omp`; application state and extensions remain under the
+user's `~/.omp` directory. The `pi-extensions` repository was reviewed as a
+candidate, but command-auditing extensions such as `toolwatch` are intentionally
+not installed declaratively until their policy is selected explicitly.
+
 ## Shared agent configuration
 
-The provider modules use Home Manager's `config.agents.*` option tree internally. Wrapper behavior, security-sensitive arguments, and skill discovery are shared repository settings configured in `modules/agents/default.nix`, not machine-specific values managed by `envy config`.
+The adapter modules use Home Manager's internal `config.agents.*` options for
+implementation details. Machine-specific endpoint, model, credential, alias,
+and argument choices belong to `config.envy.agents.*` and are editable through
+the `envy agent` JSON/CLI boundary.
+
+Useful commands include:
+
+```sh
+envy agent ls --json
+envy agent show codex --json
+envy agent add dsh --adapter openai-compatible-cli \
+  --endpoint deepseek-openai --credential deepseek --model deepseek-chat
+envy agent set envy.agents.dsh.model deepseek-reasoner --json --yes
+envy agent set envy.llm.endpoints.deepseek-openai.baseUrl https://api.deepseek.com/v1
+envy agent credential-set deepseek \
+  --secret-path llm/deepseek/apikey --stdin
+```
+
+The JSON boundary is also the integration point for the Ratatui frontend. The
+Settings view exposes evaluated endpoint and agent scalar fields; writes route
+through `envy agent set`, so the TUI does not edit Nix files or decrypted
+secrets directly. A future richer agent screen can use the same `agent add`,
+`agent set`, and `agent credential-set` operations for composition and masked
+secret input.
 
 The two files contribute to different module systems. `default.nix` is imported
 through the cross-platform `home.nix` composition root. `darwin.nix` is imported
@@ -81,11 +161,6 @@ The current shared configuration is intentionally explicit:
 
 ```nix
 agents = {
-  claude = {
-    extraArgs = [ "--dangerously-skip-permissions" ];
-    ccliAlias = true;
-  };
-
   skills = {
     active = [
       "academic-research-suite"

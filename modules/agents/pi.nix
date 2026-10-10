@@ -21,7 +21,6 @@ let
       ${providerName} = {
         baseUrl = if endpoint == null then "https://api.openai.com/v1" else endpoint.baseUrl;
         api = "openai-completions";
-        apiKey = "$OPENAI_API_KEY";
         models = [
           {
             id = model;
@@ -56,6 +55,9 @@ let
         source "${config.sops.templates.${templateName}.path}"
       fi
       cmd=(${lib.escapeShellArg (lib.getExe ohMyPiPackage)})
+      ${lib.optionalString (credentialName != null) ''
+      cmd+=(--api-key "$OPENAI_API_KEY")
+      ''}
       ${lib.optionalString (ompConfig.model != null) ''
       cmd+=(--model ${lib.escapeShellArg "${providerName}/${ompConfig.model}"})
       ''}
@@ -79,8 +81,23 @@ in
 
     # models.json is routing metadata only. It contains an environment
     # variable reference, never the decrypted API key.
-    home.file.".pi/agent/models.json".text = builtins.toJSON modelConfig;
-    home.file.".omp/agent/models.yml".text = builtins.toJSON modelConfig;
+    home.file.".pi/agent/models.json".text = builtins.toJSON (modelConfig // {
+      providers = modelConfig.providers // {
+        ${providerName} = modelConfig.providers.${providerName} // {
+          apiKey = "$OPENAI_API_KEY";
+        };
+      };
+    });
+    # OMP validates custom providers before applying CLI credentials. Its
+    # command-backed apiKey satisfies that validation without embedding the
+    # decrypted secret in the generated model file.
+    home.file.".omp/agent/models.yml".text = builtins.toJSON (modelConfig // {
+      providers = modelConfig.providers // {
+        ${providerName} = modelConfig.providers.${providerName} // {
+          apiKey = "!printf '%s' \"$OPENAI_API_KEY\"";
+        };
+      };
+    });
 
     envy.software.nix.packages.include = [ piWrapper ompWrapper ];
     envy.software.nix.packages.references = {

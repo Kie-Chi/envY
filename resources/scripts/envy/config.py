@@ -18,6 +18,7 @@ from envy.jsonio import emit, emit_error
 from envy.schemas.config import (
     FieldDef,
     LEGACY_CONFIG_PATHS,
+    LEGACY_MACHINE_KEYS,
     MACHINE_FIELDS,
     OBSOLETE_MACHINE_KEYS,
     OBSOLETE_SECRET_PATHS,
@@ -195,6 +196,15 @@ def _legacy_config_value(path: str, values: dict, legacy_values: dict) -> str:
     return ""
 
 
+def _legacy_llm_values(values: dict) -> dict:
+    """Resolve both versioned and pre-machine LLM migration sources."""
+    legacy = read_legacy_config_nix()
+    return {
+        key: values.get(key) or legacy.get(key) or _legacy_config_value(key, values, legacy)
+        for key in LEGACY_MACHINE_KEYS
+    }
+
+
 def _render_machine_block(values: dict) -> str:
     groups = sorted(set(f.group for f in MACHINE_FIELDS))
     lines = [MANAGED_START + "\n", "  # `envy config` updates only this block. Other machine policy stays intact.\n"]
@@ -221,6 +231,20 @@ def write_machine_nix(values: dict, machine_id: str | None = None) -> None:
     if not path.exists():
         raise FileNotFoundError(f"machine configuration is missing: {path}")
 
+    # A scalar edit/setup save can also rewrite an old managed block. Preserve
+    # its LLM selections in the agent block before omitting the legacy fields.
+    source_values = _read_nix_assignments(path) | {
+        key: values[key] for key in LEGACY_MACHINE_KEYS if key in values
+    }
+    if any(key in source_values for key in LEGACY_MACHINE_KEYS):
+        from envy.agent import refine_managed
+
+        migration = refine_managed(
+            machine_values=_legacy_llm_values(source_values), write=True, path=path,
+        )
+        if migration["errors"]:
+            raise ValueError("cannot remove legacy LLM fields before agent migration succeeds")
+
     text = path.read_text()
     block = _render_machine_block(values)
     managed_pattern = re.compile(
@@ -228,10 +252,24 @@ def write_machine_nix(values: dict, machine_id: str | None = None) -> None:
     )
     if managed_pattern.search(text):
         updated = managed_pattern.sub(block, text, count=1)
+        # Legacy LLM assignments may still sit outside the managed block.
+        # Remove only those exact scalar assignments; preserve other policy.
+        legacy_paths = set(LEGACY_MACHINE_KEYS)
+        assignment = re.compile(r"^\s*([A-Za-z0-9_.-]+)\s*=.*;\s*$")
+        kept_lines = []
+        for line in updated.splitlines(keepends=True):
+            match = assignment.match(line)
+            if not match or match.group(1) not in legacy_paths:
+                kept_lines.append(line)
+        updated = "".join(kept_lines)
     else:
         # Move legacy flat assignments for managed fields into the controlled
         # block while leaving imports and all other machine policy untouched.
-        managed_paths = {field.path for field in MACHINE_FIELDS} | set(OBSOLETE_MACHINE_KEYS)
+        managed_paths = (
+            {field.path for field in MACHINE_FIELDS}
+            | set(LEGACY_MACHINE_KEYS)
+            | set(OBSOLETE_MACHINE_KEYS)
+        )
         assignment = re.compile(r"^\s*([A-Za-z0-9_.-]+)\s*=.*;\s*$")
         kept_lines = []
         for line in text.splitlines(keepends=True):
@@ -562,6 +600,13 @@ def refine_config(*, write: bool = True, strict: bool = False) -> RefineReport:
         log.hint(f"Run: envy host init {current_machine_id()}")
         return report
 
+    # Complete/validate agent migration before rewriting any scalar fields.
+    # This also protects callers that invoke refine_config directly.
+    agent_report = refine_agents(write=write, strict=strict)
+    report.extend(agent_report)
+    if not agent_report.ok:
+        return report
+
     values = read_machine_nix()
     original = dict(values)
     legacy_values = read_legacy_config_nix()
@@ -571,6 +616,17 @@ def refine_config(*, write: bool = True, strict: bool = False) -> RefineReport:
             values.pop(key)
             report.removed.append(key)
             log.fix("machine", "removed obsolete managed field", field=key)
+
+    for key in LEGACY_MACHINE_KEYS:
+        if key in values:
+            values.pop(key)
+            report.removed.append(key)
+            if write:
+                log.fix("machine", "removed migrated legacy LLM field", field=key)
+            else:
+                report.errors.append(key)
+                log.error("machine", "legacy LLM field needs migration cleanup", field=key)
+                log.hint("Run: envy config refine")
 
     for f in MACHINE_FIELDS:
         if f.path not in values:
@@ -599,6 +655,36 @@ def refine_config(*, write: bool = True, strict: bool = False) -> RefineReport:
 
     if strict and report.errors:
         log.error("machine", "machine refinement blocked by invalid fields")
+    return report
+
+
+def refine_agents(*, write: bool = True, strict: bool = False) -> RefineReport:
+    """Migrate legacy scalar LLM settings into the dynamic agent block."""
+    report = RefineReport()
+    path = machine_config_file()
+    if not path.exists():
+        report.errors.append(str(path))
+        log.error("agents", "selected machine configuration is missing", path=str(path))
+        return report
+    # Keep the parser and writer in agent.py so the CLI and refine workflow
+    # cannot gradually acquire different managed-block formats.
+    from envy.agent import read_managed_values, refine_managed
+
+    values = read_machine_nix()
+    _managed, present, _errors = read_managed_values(path)
+    migration_values = (
+        _legacy_llm_values(values)
+        if not present or any(key in values for key in LEGACY_MACHINE_KEYS)
+        else {}
+    )
+    result = refine_managed(machine_values=migration_values, write=write, path=path)
+    report.added.extend(result.get("added", []))
+    report.removed.extend(result.get("removed", []))
+    report.warnings.extend(result.get("warnings", []))
+    report.errors.extend(result.get("errors", []))
+    report.changed = bool(result.get("changed", False))
+    if strict and report.errors:
+        log.error("agents", "agent refinement blocked by invalid fields")
     return report
 
 
@@ -675,6 +761,30 @@ def refine_secrets(*, write: bool = True, strict: bool = False, prune: bool = Fa
         current_value = _get_nested(data, f.yaml_path, "")
         values[f.path] = "" if current_value is _MISSING else current_value
 
+    # Credentials are dynamic: each agent adapter may introduce its own
+    # logical name and encrypted YAML path.  Validate those references here,
+    # while keeping values completely out of logs and JSON output.
+    from envy.agent import managed_credential_paths
+
+    for credential_name, secret_path in managed_credential_paths().items():
+        if not re.fullmatch(r"[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*", secret_path):
+            report.errors.append(f"credential:{credential_name}")
+            log.error("secrets", "credential secret path is invalid", credential=credential_name)
+            continue
+        current = _get_nested(data, secret_path)
+        if current is _MISSING:
+            report.added.append(secret_path)
+            if write:
+                _set_nested(data, secret_path, "")
+                log.fix("secrets", "created missing credential secret path", credential=credential_name)
+            else:
+                report.errors.append(secret_path)
+                log.error("secrets", "credential secret path is missing", credential=credential_name)
+            current = ""
+        if not str(current).strip():
+            report.warnings.append(secret_path)
+            log.warn("secrets", "credential secret is empty", credential=credential_name)
+
     if prune:
         for path in OBSOLETE_SECRET_PATHS:
             if _unset_nested(data, path):
@@ -716,6 +826,7 @@ def refine_all(*, write: bool = True, strict: bool = False, include_secrets: boo
             log.error("config", "refine failed")
         return report
     report.extend(refine_sensitive_permissions(write=write))
+    # refine_config migrates agents before deleting old LLM scalar fields.
     report.extend(refine_config(write=write, strict=strict))
     report.extend(refine_software_policy(write=write, strict=strict))
     if include_secrets:
@@ -836,7 +947,8 @@ def cmd_doctor():
 @app.command(name="set")
 def cmd_set(
     path: str = typer.Argument(
-        ..., help="Machine path, for example envy.llm.steps.url", autocompletion=complete_machine_paths,
+        ..., help="Machine path, for example envy.vscode.mode; use envy agent set for dynamic agent fields",
+        autocompletion=complete_machine_paths,
     ),
     value: str = typer.Argument(..., help="Value to write", autocompletion=complete_machine_values),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
@@ -898,6 +1010,17 @@ def cmd_show(
     config_values = evaluated_values or read_machine_nix()
     device_values = read_device_metadata()
     secret_values, _ = read_secrets_yaml()
+    secret_data, decrypt_ok = read_secrets_data()
+    from envy.agent import config_view
+
+    agent_view = config_view(manifest, secret_data=secret_data, decrypt_ok=decrypt_ok)
+    dynamic_values = agent_view["values"]
+    dynamic_fields = agent_view["fields"]
+    manifest_llm = agent_view["llm"]
+    manifest_agents = agent_view["agents"]
+    secret_values_for_fields: dict[str, str] = {}
+    for field in SECRET_FIELDS:
+        secret_values_for_fields[field.path] = str(secret_values.get(field.path, ""))
     payload = {
         "schemaVersion": 1,
         "source": "evaluated" if evaluated_values else "source-fallback",
@@ -911,7 +1034,7 @@ def cmd_show(
         "values": {
             field.path: config_values.get(field.path, "")
             for field in MACHINE_FIELDS
-        },
+        } | dynamic_values,
         "fields": [
             {
                 "path": field.path,
@@ -919,9 +1042,11 @@ def cmd_show(
                 "choices": list(field.choices),
             }
             for field in MACHINE_FIELDS
-        ],
+        ] + dynamic_fields,
+        "llm": manifest_llm,
+        "agents": manifest_agents,
         "secrets": {
-            field.yaml_path: bool(secret_values.get(field.path, ""))
+            field.yaml_path: bool(secret_values_for_fields.get(field.path, ""))
             for field in SECRET_FIELDS
         },
     }
@@ -937,6 +1062,24 @@ def cmd_show(
     table.add_row("device", "device.sops_label", device_values.get("sops_label", ""))
     for f in MACHINE_FIELDS:
         table.add_row("value", f.path, config_values.get(f.path, ""))
+    for field in dynamic_fields:
+        path = field["path"]
+        if path.startswith("envy.llm.endpoints."):
+            kind = "endpoint"
+        elif path.startswith("envy.llm.credentials."):
+            kind = "credential"
+        else:
+            kind = "agent"
+        table.add_row(kind, path, field["value"])
+    credentials = manifest_llm.get("credentials", {}) if isinstance(manifest_llm, dict) else {}
+    if isinstance(credentials, dict):
+        for name, credential in sorted(credentials.items()):
+            if isinstance(credential, dict):
+                table.add_row(
+                    "secret",
+                    f"credential/{name}",
+                    "<set>" if credential.get("credentialSet") else "<empty>",
+                )
     if not manifest:
         log.warn(
             "config",
@@ -944,7 +1087,7 @@ def cmd_show(
         )
 
     for f in SECRET_FIELDS:
-        value = secret_values.get(f.path, "")
+        value = secret_values_for_fields[f.path]
         status = "<set>" if value else "<empty>"
         table.add_row("secret", f.yaml_path, status)
 

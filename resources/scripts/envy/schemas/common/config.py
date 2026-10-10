@@ -55,6 +55,12 @@ COMMON_MACHINE_FIELDS = [
     FieldDef(group="MIRRORS", dest="machine", path="envy.mirrors.mode", prompt="Network mirror mode",
              default_fn=lambda: os.getenv("ENVY_MIRROR", "china"),
              choices=["upstream", "china"], required=True),
+]
+
+# These fields were machine-managed before endpoints and agents became
+# dynamic. They remain readable only as a migration source; they must not be
+# rendered, edited, or written back by the normal config commands.
+LEGACY_LLM_MACHINE_FIELDS = [
     FieldDef(group="LLM", dest="machine", path="envy.llm.steps.url", prompt="StepFun API base URL",
              default_fn=lambda: os.getenv("STEPFUN_BASE_URL", ""),
              validators=[non_empty, is_url], required=True),
@@ -65,6 +71,8 @@ COMMON_MACHINE_FIELDS = [
     FieldDef(group="LLM", dest="machine", path="envy.llm.deepseek.model", prompt="DeepSeek default model",
              default_fn=lambda: "deepseek-v4-pro", validators=[non_empty], required=True),
 ]
+
+LEGACY_MACHINE_KEYS = [field.path for field in LEGACY_LLM_MACHINE_FIELDS]
 
 COMMON_SECRET_FIELDS = [
     FieldDef(group="SECRET", dest="secret", yaml_path="home/passwd", path="home_passwd",

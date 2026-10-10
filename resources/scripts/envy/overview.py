@@ -38,6 +38,9 @@ def _config_snapshot(manifest: dict[str, Any] | None) -> dict[str, Any]:
     values = evaluated or read_machine_nix()
     device = read_device_metadata()
     secrets, _ = read_secrets_yaml()
+    from envy.agent import config_view
+
+    agent_view = config_view(manifest)
     return {
         "schemaVersion": 1,
         "source": "evaluated" if evaluated else "source-fallback",
@@ -46,7 +49,19 @@ def _config_snapshot(manifest: dict[str, Any] | None) -> dict[str, Any]:
             "machineId": device.get("machine_id", ""),
             "sopsLabel": device.get("sops_label", ""),
         },
-        "values": {field.path: values.get(field.path, "") for field in MACHINE_FIELDS},
+        "values": {
+            field.path: values.get(field.path, "") for field in MACHINE_FIELDS
+        } | agent_view["values"],
+        "fields": [
+            {
+                "path": field.path,
+                "value": values.get(field.path, ""),
+                "choices": list(field.choices),
+            }
+            for field in MACHINE_FIELDS
+        ] + agent_view["fields"],
+        "llm": agent_view["llm"],
+        "agents": agent_view["agents"],
         "secrets": {
             field.yaml_path: bool(secrets.get(field.path, ""))
             for field in SECRET_FIELDS

@@ -170,6 +170,17 @@ def manifest_diff(left: dict, right: dict) -> dict[str, object]:
         "right": right_settings.get(path),
     } for path in sorted(set(left_settings) | set(right_settings))
       if left_settings.get(path) != right_settings.get(path)]
+    # Agent and endpoint policy is represented as structured manifest data so
+    # arbitrary adapter names remain possible. Surface one stable diff row per
+    # structured section without flattening secret values.
+    for section in ("llm", "agents"):
+        if left.get(section) != right.get(section):
+            settings.append({
+                "path": f"envy.{section}",
+                "left": left.get(section),
+                "right": right.get(section),
+            })
+    settings.sort(key=lambda row: row["path"])
 
     def effective(manifest):
         software = manifest.get("software") if isinstance(manifest.get("software"), dict) else {}

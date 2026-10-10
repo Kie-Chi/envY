@@ -313,8 +313,17 @@ pub fn spawn_setting(tx: Sender<Message>, request: u64, key: SettingKey, value: 
             SettingKey::Host => run_json(&["host", "select", &value, "--json", "--yes"])
                 .and_then(|payload| envelope_result(payload, "host select failed")),
             SettingKey::Config(path) => {
-                run_json(&["config", "set", path, &value, "--json", "--yes"])
-                    .and_then(|payload| envelope_result(payload, "config set failed"))
+                let command = if path.starts_with("envy.agents.")
+                    || path.starts_with("envy.llm.endpoints.")
+                    || path.starts_with("envy.llm.credentials.")
+                {
+                    "agent"
+                } else {
+                    "config"
+                };
+                let args = [command, "set", path.as_str(), value.as_str(), "--json", "--yes"];
+                run_json(&args)
+                    .and_then(|payload| envelope_result(payload, "configuration update failed"))
             }
         };
         let _ = tx.send(Message::SettingApplied {

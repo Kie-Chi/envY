@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from envy import config
+from envy.agent import _read_values
 from envy.schemas.common.config import (
     COMMON_MACHINE_FIELDS,
     LEGACY_CONFIG_PATHS as COMMON_LEGACY_CONFIG_PATHS,
@@ -210,7 +211,10 @@ class DarwinMachineConfigTests(unittest.TestCase):
 
         self.assertTrue(report.ok)
         self.assertEqual(values["envy.user.name"], "chi")
-        self.assertEqual(values["envy.llm.steps.model"], "step-model")
+        self.assertNotIn("envy.llm.steps.model", values)
+        migrated = _read_values(self.machine)
+        self.assertEqual(migrated["envy.llm.endpoints.stepfun-openai.baseUrl"], "https://example.com/v1")
+        self.assertEqual(migrated["envy.agents.cc.model"], "step-model")
         self.assertIn(config.MANAGED_START, self.machine.read_text())
 
     def test_refine_migrates_versioned_proxy_paths_without_losing_values(self):

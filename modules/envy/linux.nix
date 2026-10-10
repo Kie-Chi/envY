@@ -17,7 +17,11 @@ let
     (lib.unique selection.include);
 in
 {
-  imports = [ ./linux/options.nix ];
+  imports = [
+    ./linux/options.nix
+    ../llm/options.nix
+    ../agents/options.nix
+  ];
 
   config = {
     assertions = [
@@ -44,10 +48,6 @@ in
         "envy.repository.path" = config.envy.repository.path;
         "envy.git.name" = config.envy.git.name;
         "envy.git.email" = config.envy.git.email;
-        "envy.llm.steps.url" = config.envy.llm.steps.url;
-        "envy.llm.steps.model" = config.envy.llm.steps.model;
-        "envy.llm.deepseek.url" = config.envy.llm.deepseek.url;
-        "envy.llm.deepseek.model" = config.envy.llm.deepseek.model;
         "envy.habits.terminalScratchpad.gesture" = config.envy.habits.terminalScratchpad.gesture;
         "envy.habits.globalLauncher.gesture" = config.envy.habits.globalLauncher.gesture;
         "envy.vscode.mode" = config.envy.vscode.mode;
@@ -55,6 +55,19 @@ in
         "envy.linux.option" = policy.option;
         "envy.mirrors.mode" = config.envy.mirrors.mode;
       };
+      llm = {
+        credentials = lib.mapAttrs (_: credential: {
+          kind = credential.kind;
+          secretPath = credential.secretPath;
+        }) config.envy.llm.credentials;
+        endpoints = config.envy.llm.endpoints;
+      };
+      agents = lib.mapAttrs (_: agent: agent // {
+        credentialConfigured = agent.credential != null
+          && builtins.hasAttr agent.credential config.envy.llm.credentials;
+        endpointConfigured = agent.endpoint != null
+          && builtins.hasAttr agent.endpoint config.envy.llm.endpoints;
+      }) config.envy.agents;
       environment = {
         sessionVariables = config.envy.environment.sessionVariables;
         sessionPath = config.envy.environment.sessionPath;

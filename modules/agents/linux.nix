@@ -5,13 +5,9 @@ let
   rtk = pkgs.callPackage ./linux/rtk.nix { };
 in
 {
-  envy.software.nix.packages.include = [
-    pkgs.codex
-    rtk
-  ] ++ lib.optional isDesktop pkgs.code-cursor;
+  envy.software.nix.packages.include = [ rtk ] ++ lib.optional isDesktop pkgs.code-cursor;
 
   envy.software.nix.packages.references = {
-    codex = "nix:codex";
     rtk = "local:modules/agents/linux/rtk.nix";
   } // lib.optionalAttrs isDesktop {
     cursor = "nix:code-cursor";

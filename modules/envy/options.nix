@@ -225,11 +225,14 @@ in
       steps = {
         url = mkOption {
           type = types.nonEmptyStr;
+          default = "https://stepfun.com";
+          internal = true;
           description = "Non-sensitive StepFun-compatible API base URL.";
         };
         model = mkOption {
           type = types.nonEmptyStr;
           default = "step-3.7-flash";
+          internal = true;
           description = "Default StepFun-compatible model.";
         };
       };
@@ -237,11 +240,13 @@ in
         url = mkOption {
           type = types.nonEmptyStr;
           default = "https://api.deepseek.com";
+          internal = true;
           description = "Non-sensitive DeepSeek API base URL.";
         };
         model = mkOption {
           type = types.nonEmptyStr;
           default = "deepseek-v4-pro";
+          internal = true;
           description = "Default DeepSeek model.";
         };
       };

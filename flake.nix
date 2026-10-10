@@ -19,6 +19,28 @@
       url = "github:Imbad0202/academic-research-skills-codex";
       flake = false;
     };
+    ppt-master = {
+      url = "tarball+https://api.github.com/repos/Categorytyy/ppt-master/tarball/master";
+      flake = false;
+    };
+    gpt-image2-ppt-skills = {
+      url = "tarball+https://api.github.com/repos/JuneYaooo/gpt-image2-ppt-skills/tarball/main";
+      flake = false;
+    };
+    pi = {
+      url = "https://api.github.com/repos/earendil-works/pi/tarball/main";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    oh-my-pi = {
+      url = "https://api.github.com/repos/can1357/oh-my-pi/tarball/main";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.nix-bun.url = "https://api.github.com/repos/ryoppippi/nix-bun/tarball/48e887d7955c1c05b8d4627ed39bafe4bf2455a7";
+      inputs.nix-bun.inputs.nixpkgs.follows = "nixpkgs";
+      inputs.bun2nix.url = "https://api.github.com/repos/nix-community/bun2nix/tarball/0f2a1f0";
+      inputs.bun2nix.inputs.nixpkgs.follows = "nixpkgs";
+      inputs.rust-overlay.url = "https://api.github.com/repos/oxalica/rust-overlay/tarball/b962e5d";
+      inputs.rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = { self, nixpkgs, home-manager, darwin, nixgl, sops-nix, ... }@inputs:
@@ -48,6 +70,10 @@
         machineSystem = system;
         academicResearchSkills = inputs.academic-research-skills;
         academicResearchSkillsCodex = inputs.academic-research-skills-codex;
+        pptMaster = inputs.ppt-master;
+        gptImage2PptSkills = inputs.gpt-image2-ppt-skills;
+        piPackage = inputs.pi.packages.${system}.default;
+        ohMyPiPackage = inputs.oh-my-pi.packages.${system}.default;
       };
 
       mkDarwinConfiguration = fileName: _:

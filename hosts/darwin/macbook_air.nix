@@ -29,12 +29,6 @@
   envy.habits.terminalScratchpad.gesture = "F12";
   envy.habits.globalLauncher.gesture = "Option+Space";
 
-  # --- LLM CONFIG ---
-  envy.llm.steps.url = "https://stepfun.com";
-  envy.llm.steps.model = "step-3.7-flash";
-  envy.llm.deepseek.url = "https://api.deepseek.com";
-  envy.llm.deepseek.model = "deepseek-v4-pro";
-
   # --- MIRRORS CONFIG ---
   envy.mirrors.mode = "china";
 
@@ -57,5 +51,50 @@
     "headroom"
   ];
   # END ENVY MANAGED SOFTWARE
+
+  # BEGIN ENVY MANAGED AGENTS
+  # envY owns agent selections, endpoint metadata, and credential references here.
+
+  # --- LLM CREDENTIALS ---
+  envy.llm.credentials.deepseek.kind = "api-key";
+  envy.llm.credentials.deepseek.secretPath = "llm/deepseek/apikey";
+  envy.llm.credentials.hbapi.kind = "api-key";
+  envy.llm.credentials.hbapi.secretPath = "llm/hbapi/apikey";
+  envy.llm.credentials.stepfun.kind = "api-key";
+  envy.llm.credentials.stepfun.secretPath = "llm/steps/apikey";
+  envy.llm.credentials.xikai.kind = "api-key";
+  envy.llm.credentials.xikai.secretPath = "llm/xikai/apikey";
+
+  # --- LLM ENDPOINTS ---
+  envy.llm.endpoints.deepseek-openai.baseUrl = "https://api.deepseek.com";
+  envy.llm.endpoints.deepseek-openai.protocol = "openai-compatible";
+  envy.llm.endpoints.stepfun-anthropic.baseUrl = "https://stepfun.com";
+  envy.llm.endpoints.stepfun-anthropic.protocol = "anthropic-compatible";
+  envy.llm.endpoints.stepfun-openai.baseUrl = "https://stepfun.com/v1";
+  envy.llm.endpoints.stepfun-openai.protocol = "openai-compatible";
+  envy.llm.endpoints.sub2api-anthropic.baseUrl = "https://49.233.149.230:3389";
+  envy.llm.endpoints.sub2api-anthropic.protocol = "anthropic-compatible";
+  envy.llm.endpoints.xikai-openai.baseUrl = "https://api.xikai.site/v1";
+  envy.llm.endpoints.xikai-openai.protocol = "openai-compatible";
+
+  # --- AGENTS ---
+  envy.agents.cc.adapter = "claude-code";
+  envy.agents.cc.aliases = [ "ccli" ];
+  envy.agents.cc.credential = "hbapi";
+  envy.agents.cc.endpoint = "sub2api-anthropic";
+  envy.agents.cc.model = "opus-5";
+  envy.agents.codex.adapter = "codex";
+  envy.agents.codex.credential = "xikai";
+  envy.agents.codex.endpoint = "xikai-openai";
+  envy.agents.codex.model = "gpt-6.1-sol";
+  envy.agents.omp.adapter = "oh-my-pi";
+  envy.agents.omp.credential = "xikai";
+  envy.agents.omp.endpoint = "xikai-openai";
+  envy.agents.omp.model = "gpt-6.1-sol";
+  envy.agents.pi.adapter = "pi";
+  envy.agents.pi.credential = "xikai";
+  envy.agents.pi.endpoint = "xikai-openai";
+  envy.agents.pi.model = "gpt-6.1-sol";
+  # END ENVY MANAGED AGENTS
 
 }

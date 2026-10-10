@@ -32,9 +32,9 @@ in
           };
 
           targets = lib.mkOption {
-            type = with lib.types; listOf (enum [ "codex" "claude" ]);
-            default = [ "codex" "claude" ];
-            description = "Agents that should discover this skill when it is active.";
+            type = with lib.types; listOf str;
+            default = [ "codex" "claude-code" ];
+            description = "Agent adapter IDs that should discover this skill when it is active.";
           };
         };
       });
@@ -64,6 +64,10 @@ in
     home.file = lib.mkMerge [
       (filesFor "codex" ".codex/skills")
       (filesFor "claude" ".claude/skills")
+      (filesFor "claude-code" ".claude/skills")
+      (filesFor "stepgo" ".stepgo/skills")
+      (filesFor "pi" ".pi/agent/skills")
+      (filesFor "omp" ".omp/agent/skills")
     ];
   };
 }

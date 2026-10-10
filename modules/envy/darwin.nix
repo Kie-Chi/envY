@@ -33,6 +33,8 @@ let
   casks = selectStrings softwarePolicy.homebrew.casks;
   taps = selectStrings softwarePolicy.homebrew.repositories;
   homePolicy = config.home-manager.users.${config.envy.user.name}.envy.software;
+  homeLlm = config.home-manager.users.${config.envy.user.name}.envy.llm;
+  homeAgents = config.home-manager.users.${config.envy.user.name}.envy.agents;
   systemHabits = config.envy.machine.habits;
   homeHabits = config.home-manager.users.${config.envy.user.name}.envy.machine.habits;
 in
@@ -40,6 +42,8 @@ in
   imports = [
     ./options.nix
     ./darwin/options.nix
+    ../llm/options.nix
+    ../agents/options.nix
   ];
 
   config = {
@@ -78,10 +82,6 @@ in
         "envy.repository.path" = config.envy.repository.path;
         "envy.git.name" = config.envy.git.name;
         "envy.git.email" = config.envy.git.email;
-        "envy.llm.steps.url" = config.envy.llm.steps.url;
-        "envy.llm.steps.model" = config.envy.llm.steps.model;
-        "envy.llm.deepseek.url" = config.envy.llm.deepseek.url;
-        "envy.llm.deepseek.model" = config.envy.llm.deepseek.model;
         "envy.habits.terminalScratchpad.gesture" = config.envy.habits.terminalScratchpad.gesture;
         "envy.habits.globalLauncher.gesture" = config.envy.habits.globalLauncher.gesture;
         "envy.darwin.services.mihomo.mode" = policy.services.mihomo.mode;
@@ -90,6 +90,19 @@ in
         "envy.vscode.mode" = config.envy.vscode.mode;
         "envy.mirrors.mode" = config.envy.mirrors.mode;
       };
+      llm = {
+        credentials = lib.mapAttrs (_: credential: {
+          kind = credential.kind;
+          secretPath = credential.secretPath;
+        }) homeLlm.credentials;
+        endpoints = homeLlm.endpoints;
+      };
+      agents = lib.mapAttrs (_: agent: agent // {
+        credentialConfigured = agent.credential != null
+          && builtins.hasAttr agent.credential homeLlm.credentials;
+        endpointConfigured = agent.endpoint != null
+          && builtins.hasAttr agent.endpoint homeLlm.endpoints;
+      }) homeAgents;
       environment = {
         sessionVariables = config.envy.environment.sessionVariables;
         sessionPath = config.envy.environment.sessionPath;

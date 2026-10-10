@@ -1,8 +1,12 @@
-{ academicResearchSkills, academicResearchSkillsCodex, lib, machinePlatform, ... }:
+{ academicResearchSkills, academicResearchSkillsCodex, config, gptImage2PptSkills, lib, machinePlatform, ohMyPiPackage, piPackage, pptMaster, ... }:
 
 {
   imports = [
+    ./options.nix
     ./claude.nix
+    ./codex.nix
+    ./generic.nix
+    ./pi.nix
     ./skills.nix
     ./tools.nix
   ] ++ lib.optionals (machinePlatform == "linux") [ ./linux.nix ];
@@ -19,7 +23,7 @@
 
     skills = {
       catalog = import ./skills/catalog.nix {
-        inherit academicResearchSkills academicResearchSkillsCodex;
+        inherit academicResearchSkills academicResearchSkillsCodex gptImage2PptSkills pptMaster;
       };
       active = [
         "academic-research-suite"
@@ -27,7 +31,73 @@
         "academic-paper-reviewer"
         "academic-pipeline"
         "deep-research"
+        "ppt-master"
+        "gpt-image2-ppt-skills"
       ];
     };
+  };
+
+  # The defaults preserve the existing Codex/Claude setup while making the
+  # machine-facing endpoint and credential relationship explicit. Additional
+  # agents such as dsh and stepgo are ordinary attrs under envy.agents.
+  envy.llm.credentials = {
+    stepfun = {
+      kind = lib.mkDefault "api-key";
+      secretPath = lib.mkDefault "llm/steps/apikey";
+    };
+    deepseek = {
+      kind = lib.mkDefault "api-key";
+      secretPath = lib.mkDefault "llm/deepseek/apikey";
+    };
+  };
+
+  envy.llm.endpoints = {
+    stepfun-openai = {
+      baseUrl = lib.mkDefault "${lib.removeSuffix "/" config.envy.llm.steps.url}/v1";
+      protocol = lib.mkDefault "openai-compatible";
+    };
+    stepfun-anthropic = {
+      baseUrl = lib.mkDefault config.envy.llm.steps.url;
+      protocol = lib.mkDefault "anthropic-compatible";
+    };
+    deepseek-openai = {
+      baseUrl = lib.mkDefault config.envy.llm.deepseek.url;
+      protocol = lib.mkDefault "openai-compatible";
+    };
+  };
+
+  envy.agents.codex = {
+    adapter = lib.mkDefault "codex";
+    endpoint = lib.mkDefault "stepfun-openai";
+    credential = lib.mkDefault "stepfun";
+    model = lib.mkDefault config.envy.llm.steps.model;
+  };
+
+  envy.agents.cc = {
+    adapter = lib.mkDefault "claude-code";
+    endpoint = lib.mkDefault "stepfun-anthropic";
+    credential = lib.mkDefault "stepfun";
+    model = lib.mkDefault config.envy.llm.steps.model;
+    # Keep the compatibility alias when no machine block exists. A normal
+    # machine-owned value replaces this mkDefault during migration, avoiding
+    # list concatenation when the block also declares ccli.
+    aliases = lib.mkDefault [ "ccli" ];
+  };
+
+  # Pi is the upstream extensible harness. OMP is its enhanced fork and is
+  # installed alongside it as a separate command so either runtime can be
+  # selected without replacing Pi's own application state.
+  envy.agents.pi = {
+    adapter = lib.mkDefault "pi";
+    endpoint = lib.mkDefault "xikai-openai";
+    credential = lib.mkDefault "stepfun";
+    model = lib.mkDefault "gpt-6.1-sol";
+  };
+
+  envy.agents.omp = {
+    adapter = lib.mkDefault "oh-my-pi";
+    endpoint = lib.mkDefault "xikai-openai";
+    credential = lib.mkDefault "stepfun";
+    model = lib.mkDefault "gpt-6.1-sol";
   };
 }

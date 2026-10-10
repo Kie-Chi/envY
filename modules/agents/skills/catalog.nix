@@ -1,4 +1,4 @@
-{ academicResearchSkills, academicResearchSkillsCodex }:
+{ academicResearchSkills, academicResearchSkillsCodex, gptImage2PptSkills, pptMaster }:
 
 {
   # Codex uses the upstream native adapter as one router skill. The internal
@@ -27,5 +27,15 @@
   deep-research = {
     source = academicResearchSkills + "/deep-research";
     targets = [ "claude" ];
+  };
+
+  ppt-master = {
+    source = pptMaster + "/ppt-master";
+    targets = [ "codex" "claude" "claude-code" "pi" "omp" ];
+  };
+
+  gpt-image2-ppt-skills = {
+    source = gptImage2PptSkills;
+    targets = [ "codex" "claude" "claude-code" "pi" "omp" ];
   };
 }

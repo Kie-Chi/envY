@@ -68,6 +68,10 @@ in
           {
             Name = "Dracula";
             Guid = "D2AC4B52-E7A4-4A4D-B9B2-9654271A9144";
+            # Use the same dark profile for ordinary iTerm2 launches as for
+            # the F12 Quake window. Without this flag iTerm2 keeps its
+            # built-in light "Default" bookmark for regular windows.
+            "Default Bookmark" = true;
             "Custom Command" = "No";
 
             "Normal Font" = "MapleMono-NF-CN-Regular 13";

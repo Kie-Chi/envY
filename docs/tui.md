@@ -116,9 +116,11 @@ and applies it only after a second `Enter`/`y` confirmation through
 invalidate Home, Software, Health, and search caches before reloading the
 Software page; policy blocks are displayed without discarding the cached view.
 After a successful policy write, a follow-up overlay offers Preview, Apply,
-Doctor, or keep-pending actions. Long workflows temporarily suspend the alternate
-screen, inherit the real terminal for sudo and complete command output, then
-return to the TUI and refresh affected views.
+Doctor, or keep-pending actions. Preview and workflows that can authenticate
+without a prompt stream into an in-TUI log popup and return to the normal view
+after completion. If `envy apply` genuinely needs an interactive sudo prompt,
+the TUI temporarily suspends the alternate screen so the real terminal can
+handle that prompt, then returns and refreshes affected views.
 
 The Mirror page is a two-level chooser. Its first table is grouped by ecosystem
 target (`npm`, `rust`, `python`, `go`) and shows the configured `china` or

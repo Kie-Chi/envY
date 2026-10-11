@@ -289,6 +289,28 @@ def _get_sudo_passwd() -> str | None:
     return None
 
 
+def _sudo_ticket_available() -> bool:
+    """Return whether sudo can authenticate without prompting right now.
+
+    The TUI runs streamed workflows with stdin closed.  A cached sudo
+    timestamp is therefore just as useful as the password stored in sops, but
+    checking only the latter would unnecessarily send otherwise non-interactive
+    applies back to the outer terminal.
+    """
+    try:
+        result = subprocess.run(
+            ["sudo", "-n", "-v"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
 def is_sops_encrypted(path: Path) -> bool:
     """Check sops metadata and ensure no non-empty plaintext data leaves exist."""
     if not path.exists():
@@ -336,6 +358,23 @@ def esudo(
                 print(result.stdout)
             return result
         # Fall through to interactive sudo
+    # A cached sudo ticket can authenticate without a prompt even when the TUI
+    # has closed stdin for a streamed workflow. Reuse it explicitly before
+    # deciding that this apply needs the outer interactive terminal.
+    if not sys.stdin.isatty():
+        if _sudo_ticket_available():
+            return run_process(
+                ["sudo", "-n", *args], cwd=effective_cwd, capture=capture,
+                check=True, activity=activity,
+            )
+        # Interactive sudo needs a TTY to prompt for the password. When stdin
+        # is not a terminal, refuse instead of hanging on an invisible prompt.
+        log.error(
+            "sudo",
+            "interactive sudo required but no TTY is available",
+            hint="run this in a terminal, or provision the sops sudo password",
+        )
+        raise SystemExit(1)
     return run_process(
         ["sudo", *args], cwd=effective_cwd, capture=capture, check=True,
         activity=activity,

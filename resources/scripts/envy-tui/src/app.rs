@@ -8,8 +8,9 @@ use serde_json::Value;
 
 use crate::{
     backend::{
-        spawn_history_diff, spawn_mirror_measure, spawn_mirror_mutation, spawn_mirror_sources,
-        spawn_mutation, spawn_request, spawn_search_groups, spawn_setting, spawn_software_why,
+        apply_needs_tty, spawn_history_diff, spawn_mirror_measure, spawn_mirror_mutation,
+        spawn_mirror_sources, spawn_mutation, spawn_request, spawn_search_groups, spawn_setting,
+        spawn_software_why, spawn_workflow,
     },
     model::{
         compatible_groups, count_rows, filtered_software_entries, generation_number,
@@ -18,11 +19,15 @@ use crate::{
         LoadTarget, Message, MirrorChooser, MirrorPreview, MirrorSource, MutationIntent,
         MutationPreview, MutationStage, NavigationSection, PageState, Pages, PendingSetting,
         Screen, SettingChooser, SettingEdit, SettingRow, SoftwareAction, WorkflowAction,
+        WorkflowLog,
     },
 };
 
 const SEARCH_CACHE_LIMIT: usize = 12;
 const CHOOSER_PAGE_STEP: isize = 8;
+/// Upper bound on streamed workflow log lines kept in memory; large Nix builds
+/// can emit tens of thousands of lines, so we retain only the newest ones.
+const WORKFLOW_LOG_LIMIT: usize = 5000;
 
 /// Move within a non-empty selection list, wrapping at either boundary.
 /// Detail text deliberately does not use this helper: scrolling prose should
@@ -85,6 +90,8 @@ pub struct App {
     pub post_mutation: Option<String>,
     pub workflow_confirmation: Option<WorkflowAction>,
     workflow_action: Option<WorkflowAction>,
+    pub workflow_log: Option<WorkflowLog>,
+    workflow_stream_request: Option<u64>,
     setting_request: Option<u64>,
     pub setting_loading: bool,
     pub setting_chooser: Option<SettingChooser>,
@@ -142,6 +149,8 @@ impl App {
             post_mutation: None,
             workflow_confirmation: None,
             workflow_action: None,
+            workflow_log: None,
+            workflow_stream_request: None,
             setting_request: None,
             setting_loading: false,
             setting_chooser: None,
@@ -915,6 +924,49 @@ impl App {
         self.workflow_action.take()
     }
 
+    /// Route a workflow to either the in-TUI streamed log popup or the
+    /// leave-screen path. GUI launchers and `apply` runs that need an
+    /// interactive sudo prompt fall back to leaving the alternate screen.
+    fn start_workflow(&mut self, action: WorkflowAction) {
+        if !action.is_streamable() || (action == WorkflowAction::Apply && apply_needs_tty()) {
+            self.workflow_action = Some(action);
+            return;
+        }
+        self.request_id += 1;
+        let request = self.request_id;
+        self.workflow_stream_request = Some(request);
+        self.workflow_log = Some(WorkflowLog {
+            title: action.title(),
+            lines: Vec::new(),
+            running: true,
+            success: None,
+            scroll: 0,
+            follow: true,
+        });
+        self.status = format!("Running {}", action.display_command());
+        spawn_workflow(self.tx.clone(), request, action);
+    }
+
+    /// Scroll the workflow log popup; any manual move unpins auto-follow so the
+    /// user can read earlier output while the command keeps streaming.
+    fn scroll_workflow_log(&mut self, delta: isize) {
+        if let Some(log) = self.workflow_log.as_mut() {
+            log.follow = false;
+            let max = log.lines.len().saturating_sub(1);
+            log.scroll = if delta.is_negative() {
+                log.scroll.saturating_sub(delta.unsigned_abs())
+            } else {
+                log.scroll.saturating_add(delta as usize).min(max)
+            };
+        }
+    }
+
+    fn close_workflow_log(&mut self) {
+        self.workflow_log = None;
+        self.workflow_stream_request = None;
+        self.sync_status();
+    }
+
     pub fn workflow_finished(&mut self, action: &WorkflowAction, success: bool) {
         self.invalidate_after_mutation();
         self.load_current(true);
@@ -1214,6 +1266,38 @@ impl App {
                     }
                 }
                 Message::MirrorMutationFinished { .. } => {}
+                Message::WorkflowOutput { request, line }
+                    if self.workflow_stream_request == Some(request) =>
+                {
+                    if let Some(log) = self.workflow_log.as_mut() {
+                        log.lines.push(line);
+                        if log.lines.len() > WORKFLOW_LOG_LIMIT {
+                            let overflow = log.lines.len() - WORKFLOW_LOG_LIMIT;
+                            log.lines.drain(0..overflow);
+                        }
+                        if log.follow {
+                            log.scroll = log.lines.len().saturating_sub(1);
+                        }
+                    }
+                }
+                Message::WorkflowOutput { .. } => {}
+                Message::WorkflowFinished { request, success }
+                    if self.workflow_stream_request == Some(request) =>
+                {
+                    self.workflow_stream_request = None;
+                    if let Some(log) = self.workflow_log.as_mut() {
+                        log.running = false;
+                        log.success = Some(success);
+                        if log.follow {
+                            log.scroll = log.lines.len().saturating_sub(1);
+                        }
+                    }
+                    // Refresh cached views to reflect the applied configuration;
+                    // the popup stays open so the user can read the full log.
+                    self.invalidate_after_mutation();
+                    self.load_current(true);
+                }
+                Message::WorkflowFinished { .. } => {}
                 _ => {}
             }
         }
@@ -1344,6 +1428,10 @@ impl App {
             MouseEventKind::ScrollUp => -1,
             _ => return,
         };
+        if self.workflow_log.is_some() {
+            self.scroll_workflow_log(direction * 3);
+            return;
+        }
         if self.pending_mutation.is_some()
             || self.mutation_loading
             || self.overlay_error.is_some()
@@ -1384,6 +1472,27 @@ impl App {
         if key.kind != KeyEventKind::Press {
             return;
         }
+        if let Some(log) = self.workflow_log.as_ref() {
+            let running = log.running;
+            match key.code {
+                KeyCode::Down | KeyCode::Char('j') => self.scroll_workflow_log(1),
+                KeyCode::Up | KeyCode::Char('k') => self.scroll_workflow_log(-1),
+                KeyCode::PageDown => self.scroll_workflow_log(CHOOSER_PAGE_STEP),
+                KeyCode::PageUp => self.scroll_workflow_log(-CHOOSER_PAGE_STEP),
+                KeyCode::End => {
+                    if let Some(log) = self.workflow_log.as_mut() {
+                        log.follow = true;
+                        log.scroll = log.lines.len().saturating_sub(1);
+                    }
+                }
+                KeyCode::Home => self.scroll_workflow_log(isize::MIN + 1),
+                // The popup can only be dismissed once the command has finished;
+                // there is no cancel, so a running workflow keeps the log open.
+                KeyCode::Esc | KeyCode::Enter if !running => self.close_workflow_log(),
+                _ => {}
+            }
+            return;
+        }
         if self.overlay_error.is_some() {
             if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
                 self.overlay_error = None;
@@ -1395,15 +1504,15 @@ impl App {
             match key.code {
                 KeyCode::Char('p') => {
                     self.post_mutation = None;
-                    self.workflow_action = Some(WorkflowAction::Plan);
+                    self.start_workflow(WorkflowAction::Plan);
                 }
                 KeyCode::Char('a') => {
                     self.post_mutation = None;
-                    self.workflow_action = Some(WorkflowAction::Apply);
+                    self.start_workflow(WorkflowAction::Apply);
                 }
                 KeyCode::Char('d') => {
                     self.post_mutation = None;
-                    self.workflow_action = Some(WorkflowAction::Doctor);
+                    self.start_workflow(WorkflowAction::Doctor);
                 }
                 KeyCode::Esc | KeyCode::Enter => {
                     self.post_mutation = None;
@@ -1416,7 +1525,9 @@ impl App {
         if self.workflow_confirmation.is_some() {
             match key.code {
                 KeyCode::Enter | KeyCode::Char('y') => {
-                    self.workflow_action = self.workflow_confirmation.take();
+                    if let Some(action) = self.workflow_confirmation.take() {
+                        self.start_workflow(action);
+                    }
                 }
                 KeyCode::Esc | KeyCode::Char('n') => {
                     self.workflow_confirmation = None;
@@ -1871,7 +1982,14 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
 
         assert!(app.post_mutation.is_none());
-        assert_eq!(app.take_workflow_action(), Some(WorkflowAction::Plan));
+        // `plan` streams into the in-TUI log popup rather than leaving the
+        // alternate screen, so no leave-screen workflow action is queued.
+        assert!(app.take_workflow_action().is_none());
+        let log = app
+            .workflow_log
+            .expect("plan should open a streamed log popup");
+        assert!(log.running);
+        assert_eq!(log.title, WorkflowAction::Plan.title());
     }
 
     #[test]

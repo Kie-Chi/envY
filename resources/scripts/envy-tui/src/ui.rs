@@ -10,7 +10,7 @@ use crate::{
     app::{App, InputMode},
     model::{
         journal_entries, mirror_mode, mirror_target_rows, search_entries, text, DetailView,
-        HistoryView, NavigationSection, Screen, SoftwareAction,
+        HistoryView, NavigationSection, Screen, SoftwareAction, WorkflowLog,
     },
 };
 
@@ -1907,8 +1907,51 @@ fn render_help(frame: &mut Frame, area: Rect) {
     );
 }
 
+fn render_workflow_log(frame: &mut Frame, area: Rect, log: &WorkflowLog) {
+    let region = centered_size(area.width, area.height, area);
+    // Mirror popup()'s inset (1-cell border + 1-row vertical inset per side) so
+    // the follow offset keeps the newest line pinned to the bottom.
+    let viewport = region.height.saturating_sub(4).max(1) as usize;
+
+    let status = match (log.running, log.success) {
+        (true, _) => format!("{} running", spinner()),
+        (false, Some(true)) => "done ✓".to_string(),
+        (false, Some(false)) => "failed ✗".to_string(),
+        (false, None) => "finished".to_string(),
+    };
+    let hint = if log.running {
+        "↑↓ scroll · End follow"
+    } else {
+        "↑↓ scroll · Enter/Esc close"
+    };
+    let title = format!("{} · {} · {}", log.title.to_uppercase(), status, hint);
+
+    let mut lines: Vec<Line<'static>> = log
+        .lines
+        .iter()
+        .map(|line| Line::from(Span::styled(line.clone(), Style::default().fg(Color::Gray))))
+        .collect();
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "Waiting for output…",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    let scroll = if log.follow {
+        lines.len().saturating_sub(viewport)
+    } else {
+        log.scroll.min(lines.len().saturating_sub(1))
+    };
+    popup(frame, region, &title, lines, scroll);
+}
+
 fn render_overlays(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
+    if let Some(log) = &app.workflow_log {
+        render_workflow_log(frame, area, log);
+        return;
+    }
     if let Some(error) = &app.overlay_error {
         popup(
             frame,

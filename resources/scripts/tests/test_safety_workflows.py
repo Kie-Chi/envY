@@ -173,10 +173,41 @@ sops:
         failed = CommandError(subprocess.CompletedProcess(["sudo"], 7, "", "denied"))
         with patch.object(utils, "_get_sudo_passwd", return_value="secret"), patch.object(
             utils, "run_process", side_effect=[first, failed]
-        ):
+        ), patch.object(utils.sys.stdin, "isatty", return_value=True):
             with self.assertRaises(CommandError) as raised:
                 utils.esudo("true", capture=True)
         self.assertEqual(raised.exception.returncode, 7)
+
+    def test_cached_sudo_ticket_is_detected_without_a_prompt(self):
+        available = subprocess.CompletedProcess(
+            ["sudo", "-n", "-v"], 0, "", ""
+        )
+        with patch.object(utils.subprocess, "run", return_value=available) as run:
+            self.assertTrue(utils._sudo_ticket_available())
+        run.assert_called_once_with(
+            ["sudo", "-n", "-v"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=2,
+        )
+
+    def test_esudo_uses_cached_ticket_when_stdin_is_not_a_tty(self):
+        completed = subprocess.CompletedProcess(["sudo", "-n", "true"], 0, "", "")
+        with patch.object(utils, "_get_sudo_passwd", return_value=None), patch.object(
+            utils, "_sudo_ticket_available", return_value=True
+        ), patch.object(utils.sys.stdin, "isatty", return_value=False), patch.object(
+            utils, "run_process", return_value=completed
+        ) as run:
+            self.assertIs(utils.esudo("true", capture=True), completed)
+        run.assert_called_once_with(
+            ["sudo", "-n", "true"],
+            cwd=str(utils.ENVY_ROOT),
+            capture=True,
+            check=True,
+            activity=None,
+        )
 
     def test_darwin_apply_does_not_report_success_after_failure(self):
         failed = CommandError(subprocess.CompletedProcess(["sudo"], 1, "", "failed"))

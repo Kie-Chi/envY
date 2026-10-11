@@ -1,10 +1,17 @@
-use std::{env, path::Path, process::Command, sync::mpsc::Sender, thread};
+use std::{
+    env,
+    io::{BufRead, BufReader},
+    path::Path,
+    process::{Command, Stdio},
+    sync::mpsc::Sender,
+    thread,
+};
 
 use serde_json::{json, Value};
 
 use crate::model::{
     LoadTarget, Message, MirrorSource, MutationIntent, MutationStage, Screen, SearchEntry,
-    SettingKey, SoftwareAction,
+    SettingKey, SoftwareAction, WorkflowAction,
 };
 
 pub fn envy_binary() -> String {
@@ -334,6 +341,136 @@ pub fn spawn_setting(tx: Sender<Message>, request: u64, key: SettingKey, value: 
     });
 }
 
+/// Remove ANSI escape sequences and collapse carriage-return overwrites so the
+/// text is safe to render as a plain line inside the TUI log popup.
+pub fn strip_ansi(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek() {
+            // CSI sequence: ESC [ … final-byte (0x40..=0x7E).
+            Some('[') => {
+                chars.next();
+                while let Some(&next) = chars.peek() {
+                    chars.next();
+                    if ('\u{40}'..='\u{7e}').contains(&next) {
+                        break;
+                    }
+                }
+            }
+            // OSC sequence: ESC ] … terminated by BEL or ST (ESC \).
+            Some(']') => {
+                chars.next();
+                while let Some(&next) = chars.peek() {
+                    if next == '\u{7}' {
+                        chars.next();
+                        break;
+                    }
+                    if next == '\u{1b}' {
+                        chars.next();
+                        if chars.peek() == Some(&'\\') {
+                            chars.next();
+                        }
+                        break;
+                    }
+                    chars.next();
+                }
+            }
+            // Lone ESC or other two-byte escape: drop the following byte.
+            _ => {
+                chars.next();
+            }
+        }
+    }
+    // Progress output overwrites a line with a carriage return; keep only the
+    // final segment so the popup shows the latest state rather than fragments.
+    if let Some(idx) = out.rfind('\r') {
+        out.split_off(idx + 1)
+    } else {
+        out
+    }
+}
+
+/// Stream a full-configuration workflow (`envy plan`/`apply`/`doctor`) into the
+/// TUI. Output is piped (not inherited) so the alternate screen stays intact;
+/// stdin is closed so the child never blocks on an interactive prompt.
+pub fn spawn_workflow(tx: Sender<Message>, request: u64, action: WorkflowAction) {
+    thread::spawn(move || {
+        let (program, args) = action.command(envy_binary());
+        let mut child = match Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .env("NO_COLOR", "1")
+            .env("TERM", "dumb")
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(error) => {
+                let _ = tx.send(Message::WorkflowOutput {
+                    request,
+                    line: format!("could not start workflow: {error}"),
+                });
+                let _ = tx.send(Message::WorkflowFinished {
+                    request,
+                    success: false,
+                });
+                return;
+            }
+        };
+
+        // Read stderr on a helper thread so it interleaves with stdout instead
+        // of buffering until the child exits.
+        let stderr_handle = child.stderr.take().map(|stderr| {
+            let tx = tx.clone();
+            thread::spawn(move || {
+                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                    let _ = tx.send(Message::WorkflowOutput {
+                        request,
+                        line: strip_ansi(&line),
+                    });
+                }
+            })
+        });
+
+        if let Some(stdout) = child.stdout.take() {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                let _ = tx.send(Message::WorkflowOutput {
+                    request,
+                    line: strip_ansi(&line),
+                });
+            }
+        }
+
+        if let Some(handle) = stderr_handle {
+            let _ = handle.join();
+        }
+
+        let success = child.wait().map(|status| status.success()).unwrap_or(false);
+        let _ = tx.send(Message::WorkflowFinished { request, success });
+    });
+}
+
+/// Ask the CLI whether `envy apply` would require an interactive TTY (Darwin
+/// with no cached sudo password). On any failure we assume it does, so callers
+/// fall back to the proven leave-screen path rather than risk a hung apply.
+pub fn apply_needs_tty() -> bool {
+    match run_json(&["_apply-needs-tty", "--json"]) {
+        Ok(payload) => payload
+            .get("data")
+            .and_then(|data| data.get("needsTty"))
+            .or_else(|| payload.get("needsTty"))
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+        Err(_) => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -381,5 +518,26 @@ mod tests {
             payload
         )
         .is_ok());
+    }
+
+    #[test]
+    fn strip_ansi_removes_color_codes_and_keeps_text() {
+        assert_eq!(strip_ansi("\u{1b}[32mok\u{1b}[0m done"), "ok done");
+    }
+
+    #[test]
+    fn strip_ansi_collapses_carriage_return_overwrites() {
+        assert_eq!(
+            strip_ansi("building... 40%\rbuilding... 90%"),
+            "building... 90%"
+        );
+    }
+
+    #[test]
+    fn strip_ansi_drops_osc_hyperlink_sequences() {
+        assert_eq!(
+            strip_ansi("\u{1b}]8;;https://example.com\u{7}link\u{1b}]8;;\u{7}"),
+            "link"
+        );
     }
 }

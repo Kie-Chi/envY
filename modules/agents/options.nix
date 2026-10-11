@@ -21,6 +21,11 @@ in
           default = null;
           description = "Logical encrypted credential reference used by this agent.";
         };
+        api = mkOption {
+          type = types.enum [ "openai-completions" "openai-responses" ];
+          default = "openai-completions";
+          description = "OpenAI wire API used by compatible agent adapters.";
+        };
         model = mkOption {
           type = types.nullOr types.str;
           default = null;

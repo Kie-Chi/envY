@@ -172,6 +172,8 @@ class ConfigShowTests(unittest.TestCase):
             "envy.agents.codex.endpoint": "local",
             "envy.agents.codex.credential": "local",
             "envy.agents.codex.model": "custom-model",
+            "envy.agents.omp.adapter": "oh-my-pi",
+            "envy.agents.omp.api": "openai-responses",
         }
         output = io.StringIO()
         console = Console(file=output, force_terminal=False, width=220)
@@ -186,6 +188,9 @@ class ConfigShowTests(unittest.TestCase):
         payload = json.loads(output.getvalue())
         self.assertEqual(payload["source"], "source-fallback")
         self.assertEqual(payload["values"]["envy.agents.codex.model"], "custom-model")
+        self.assertEqual(payload["values"]["envy.agents.omp.api"], "openai-responses")
+        fields = {entry["path"]: entry for entry in payload["fields"]}
+        self.assertEqual(fields["envy.agents.omp.api"]["choices"], ["openai-completions", "openai-responses"])
         self.assertTrue(payload["llm"]["credentials"]["local"]["credentialSet"])
         self.assertNotIn("hidden-key", output.getvalue())
 

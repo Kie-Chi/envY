@@ -35,7 +35,9 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     oh-my-pi = {
-      url = "https://api.github.com/repos/can1357/oh-my-pi/tarball/main";
+      # Keep the agent input tied to the commit recorded in flake.lock.
+      # Branch tarballs can be re-packed and fail Nix's narHash check.
+      url = "github:can1357/oh-my-pi";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.nix-bun.url = "https://api.github.com/repos/ryoppippi/nix-bun/tarball/48e887d7955c1c05b8d4627ed39bafe4bf2455a7";
       inputs.nix-bun.inputs.nixpkgs.follows = "nixpkgs";

@@ -318,14 +318,17 @@
         "rust-overlay": "rust-overlay"
       },
       "locked": {
-        "lastModified": 1791532102,
-        "narHash": "sha256-K+IL61WEwpmpD/kN64BuMrM2YhdaMW/myl5qCs6OH7w=",
-        "type": "tarball",
-        "url": "https://api.github.com/repos/can1357/oh-my-pi/tarball/main"
+        "lastModified": 1791691349,
+        "narHash": "sha256-GeYwaXpUPMa6zMbOpBKX8gZoti+Ny13mtM0lJDsb+MM=",
+        "owner": "can1357",
+        "repo": "oh-my-pi",
+        "rev": "592e894eb29ed3db2ee2dae71ec7d72ac13c64c8",
+        "type": "github"
       },
       "original": {
-        "type": "tarball",
-        "url": "https://api.github.com/repos/can1357/oh-my-pi/tarball/main"
+        "owner": "can1357",
+        "repo": "oh-my-pi",
+        "type": "github"
       }
     },
     "pi": {

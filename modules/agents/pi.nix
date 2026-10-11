@@ -4,44 +4,57 @@ let
   piConfig = config.envy.agents.pi;
   ompConfig = config.envy.agents.omp;
   providerName = "envy-pi";
-  endpoint = if piConfig.endpoint == null
-    || !(builtins.hasAttr piConfig.endpoint config.envy.llm.endpoints) then null
-    else config.envy.llm.endpoints.${piConfig.endpoint};
-  credentialName = if piConfig.credential == null
+  endpointFor = agent: if agent.endpoint == null
+    || !(builtins.hasAttr agent.endpoint config.envy.llm.endpoints) then null
+    else config.envy.llm.endpoints.${agent.endpoint};
+  credentialNameFor = agent: if agent.credential == null
     then null
-    else "llm-credential-${piConfig.credential}";
-  credential = if credentialName == null
-    || !(builtins.hasAttr credentialName config.sops.placeholder)
-    then ""
-    else builtins.getAttr credentialName config.sops.placeholder;
-  templateName = "envy-agent-pi";
-  model = piConfig.model;
-  modelConfig = {
-    providers = {
-      ${providerName} = {
-        baseUrl = if endpoint == null then "https://api.openai.com/v1" else endpoint.baseUrl;
-        api = "openai-completions";
-        models = [
-          {
-            id = model;
-            name = model;
-            reasoning = true;
-            input = [ "text" "image" ];
-          }
-        ];
-      };
+    else "llm-credential-${agent.credential}";
+  templateNameFor = name: "envy-agent-${name}";
+  templateFor = agent: let
+    endpoint = endpointFor agent;
+    credentialName = credentialNameFor agent;
+    credential = if credentialName == null
+      || !(builtins.hasAttr credentialName config.sops.placeholder)
+      then ""
+      else builtins.getAttr credentialName config.sops.placeholder;
+  in ''
+    ${lib.optionalString (endpoint != null) ''
+    export OPENAI_BASE_URL=${lib.escapeShellArg endpoint.baseUrl}
+    ''}
+    ${lib.optionalString (credentialName != null) ''
+    export OPENAI_API_KEY=${lib.escapeShellArg credential}
+    ''}
+    # The image-PPT skill reads this selector from the caller environment.
+    export GPT_IMAGE_MODEL_NAME=gpt-image-2
+  '';
+  modelConfigFor = agent: apiKey: let
+    endpoint = endpointFor agent;
+  in {
+    providers.${providerName} = {
+      baseUrl = if endpoint == null then "https://api.openai.com/v1" else endpoint.baseUrl;
+      api = agent.api;
+      inherit apiKey;
+      models = [
+        {
+          id = agent.model;
+          name = agent.model;
+          reasoning = true;
+          input = [ "text" "image" ];
+        }
+      ];
     };
   };
   piWrapper = pkgs.writeShellApplication {
     name = "pi";
     text = ''
-      if [ -f "${config.sops.templates.${templateName}.path}" ]; then
+      if [ -f "${config.sops.templates.${templateNameFor "pi"}.path}" ]; then
         # shellcheck source=/dev/null
-        source "${config.sops.templates.${templateName}.path}"
+        source "${config.sops.templates.${templateNameFor "pi"}.path}"
       fi
       cmd=(${lib.escapeShellArg (lib.getExe piPackage)})
-      ${lib.optionalString (model != null) ''
-      cmd+=(--model ${lib.escapeShellArg "${providerName}/${model}"})
+      ${lib.optionalString (piConfig.model != null) ''
+      cmd+=(--model ${lib.escapeShellArg "${providerName}/${piConfig.model}"})
       ''}
       ${lib.concatMapStringsSep "\n" (arg: "cmd+=(${lib.escapeShellArg arg})") piConfig.args}
       exec "''${cmd[@]}" "$@"
@@ -50,12 +63,12 @@ let
   ompWrapper = pkgs.writeShellApplication {
     name = "omp";
     text = ''
-      if [ -f "${config.sops.templates.${templateName}.path}" ]; then
+      if [ -f "${config.sops.templates.${templateNameFor "omp"}.path}" ]; then
         # shellcheck source=/dev/null
-        source "${config.sops.templates.${templateName}.path}"
+        source "${config.sops.templates.${templateNameFor "omp"}.path}"
       fi
       cmd=(${lib.escapeShellArg (lib.getExe ohMyPiPackage)})
-      ${lib.optionalString (credentialName != null) ''
+      ${lib.optionalString (credentialNameFor ompConfig != null) ''
       cmd+=(--api-key "$OPENAI_API_KEY")
       ''}
       ${lib.optionalString (ompConfig.model != null) ''
@@ -68,36 +81,17 @@ let
 in
 {
   config = {
-    sops.templates.${templateName}.content = ''
-      ${lib.optionalString (endpoint != null) ''
-      export OPENAI_BASE_URL=${lib.escapeShellArg endpoint.baseUrl}
-      ''}
-      ${lib.optionalString (credentialName != null) ''
-      export OPENAI_API_KEY=${lib.escapeShellArg credential}
-      ''}
-      # The image-PPT skill reads this selector from the caller environment.
-      export GPT_IMAGE_MODEL_NAME=gpt-image-2
-    '';
+    sops.templates.${templateNameFor "pi"}.content = templateFor piConfig;
+    sops.templates.${templateNameFor "omp"}.content = templateFor ompConfig;
 
-    # models.json is routing metadata only. It contains an environment
-    # variable reference, never the decrypted API key.
-    home.file.".pi/agent/models.json".text = builtins.toJSON (modelConfig // {
-      providers = modelConfig.providers // {
-        ${providerName} = modelConfig.providers.${providerName} // {
-          apiKey = "$OPENAI_API_KEY";
-        };
-      };
-    });
+    # Model files contain credential references, never decrypted API keys.
+    home.file.".pi/agent/models.json".text = builtins.toJSON
+      (modelConfigFor piConfig "$OPENAI_API_KEY");
     # OMP validates custom providers before applying CLI credentials. Its
     # command-backed apiKey satisfies that validation without embedding the
     # decrypted secret in the generated model file.
-    home.file.".omp/agent/models.yml".text = builtins.toJSON (modelConfig // {
-      providers = modelConfig.providers // {
-        ${providerName} = modelConfig.providers.${providerName} // {
-          apiKey = "!printf '%s' \"$OPENAI_API_KEY\"";
-        };
-      };
-    });
+    home.file.".omp/agent/models.yml".text = builtins.toJSON
+      (modelConfigFor ompConfig "!printf '%s' \"$OPENAI_API_KEY\"");
 
     envy.software.nix.packages.include = [ piWrapper ompWrapper ];
     envy.software.nix.packages.references = {

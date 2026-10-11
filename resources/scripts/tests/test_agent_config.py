@@ -4,11 +4,29 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
+import typer
+
 from envy import config
 from envy.agent import _read_values, _render, _write_values, refine_managed
 
 
 class AgentConfigTests(unittest.TestCase):
+    def test_config_api_edit_is_validated_and_survives_refine(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "machine.nix"
+            path.write_text("{ ... }: {\n}\n")
+            with patch("envy.agent.machine_config_file", return_value=path):
+                _write_values({"envy.agents.omp.adapter": "oh-my-pi"})
+                config.set_config_value("envy.agents.omp.api", "openai-responses", quiet=True)
+                result = refine_managed(machine_values={}, write=False)
+                self.assertEqual(result["errors"], [])
+                self.assertEqual(_read_values(path)["envy.agents.omp.api"], "openai-responses")
+                before = path.read_text()
+                for invalid in ("responses", "", "openai-codex-responses"):
+                    with self.subTest(api=invalid), self.assertRaises(typer.BadParameter):
+                        config.set_config_value("envy.agents.omp.api", invalid, quiet=True)
+                    self.assertEqual(path.read_text(), before)
+
     def test_render_round_trips_scalars_and_lists(self):
         values = {
             "envy.llm.endpoints.stepfun-openai.baseUrl": "https://example.test/v1",

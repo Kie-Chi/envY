@@ -105,8 +105,9 @@ Pi and Oh My Pi are separate agent commands. `pi` is the upstream
 companion command so the fork's extensions do not silently replace upstream Pi.
 Both wrappers write provider metadata to their application-owned configuration
 locations (`~/.pi/agent/models.json` and `~/.omp/agent/models.yml`) and select
-`envy-pi/gpt-6.1-sol` by default. The rendered sops template supplies the API
-key only when the wrapper starts. Pi's model file contains an
+`envy-pi/gpt-6.1-sol` by default. Each wrapper reads its own agent's endpoint,
+model, API, and credential selections, with separate `envy-agent-pi` and
+`envy-agent-omp` sops templates supplying the API key only at launch. Pi's model file contains an
 `$OPENAI_API_KEY` reference. OMP's model file uses a command-backed
 `apiKey` reference, and the wrapper also passes the resolved key through
 `--api-key`. Neither file contains a decrypted secret.
@@ -120,12 +121,29 @@ configuration. Changes to this adapter must preserve the invariant that
 application files contain references or commands only, while the decrypted
 value exists only in the launch-time sops template environment.
 
-Pi's custom provider uses the OpenAI-compatible completions protocol at
-`https://api.xikai.site/v1`. This is compatible with the Xikai gateway, but it
-is a different integration from an OpenAI Codex subscription, OAuth session, or
-an implementation-specific `codex-backend`. Pi can use such a backend only if
-that backend exposes a protocol Pi supports (for example an OpenAI-compatible
-endpoint) or a dedicated Pi extension is added; envY does not assume that
+Pi and OMP select their wire API with `envy.agents.<name>.api`. The option
+defaults to `openai-completions` (`/v1/chat/completions`); set
+`openai-responses` to use `/v1/responses`. The base URL stays at the API root
+(for example `https://models-proxy.stepfun-inc.com/v1`), not the full request
+path. The gateway must support the selected API. For gateways that reject
+GPT reasoning together with function tools on Chat Completions, choose
+Responses rather than disabling reasoning. Pi and OMP can select different
+APIs even when they share an endpoint.
+
+```sh
+envy config set envy.agents.omp.api openai-responses --json --yes
+envy config set envy.agents.pi.api openai-responses --json --yes
+envy apply
+```
+
+`envy config show --json` exposes these API fields and their choices for the
+Settings frontend. `envy agent set` edits the same managed block, and
+`envy agent add ... --api openai-responses` sets the API at creation. Invalid
+API selections are rejected before writing. Reapply and restart the agent to
+regenerate its model file; manually editing a generated file is not persistent.
+
+This API-key integration is distinct from an OpenAI Codex subscription, OAuth
+session, or implementation-specific `codex-backend`. envY does not assume
 Codex OAuth credentials can be reused as a generic API key.
 
 Oh My Pi is a maintained Pi fork rather than a normal plugin package. Its

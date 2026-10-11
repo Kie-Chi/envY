@@ -36,6 +36,7 @@ _ASSIGNMENT_RE = re.compile(
 _SAFE_SECRET_PATH = re.compile(r"^[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*$")
 _KNOWN_ENDPOINTS = {"stepfun-openai", "stepfun-anthropic", "deepseek-openai"}
 _KNOWN_CREDENTIALS = {"stepfun", "deepseek"}
+API_CHOICES = ("openai-completions", "openai-responses")
 
 
 def _block_pattern() -> re.Pattern[str]:
@@ -141,9 +142,11 @@ def _validate_values(values: dict[str, Any]) -> list[str]:
         namespace, name, field = match.groups()
         if namespace == "agents":
             agent_names.add(name)
-            if field not in {"adapter", "endpoint", "credential", "model", "command", "args", "aliases", "skills"}:
+            if field not in {"adapter", "api", "endpoint", "credential", "model", "command", "args", "aliases", "skills"}:
                 errors.append(path)
             elif field in {"args", "aliases", "skills"} and not isinstance(value, list):
+                errors.append(path)
+            elif field == "api" and value not in API_CHOICES:
                 errors.append(path)
             elif field in {"adapter", "endpoint", "credential", "model", "command"} and value is not None and not isinstance(value, str):
                 errors.append(path)
@@ -361,6 +364,12 @@ def config_view(
     for name, agent in sorted(normalized_agents.items()):
         for field in ("adapter", "endpoint", "credential", "model", "command"):
             add_field(f"envy.agents.{name}.{field}", agent.get(field))
+        if agent.get("adapter") in {"pi", "oh-my-pi"}:
+            add_field(
+                f"envy.agents.{name}.api",
+                agent.get("api", "openai-completions"),
+                list(API_CHOICES),
+            )
 
     return {
         "evaluated": evaluated,
@@ -424,6 +433,8 @@ def _validate_path(path: str) -> None:
 
 def _set(path: str, value: Any) -> Path:
     _validate_path(path)
+    if path.startswith("envy.agents.") and path.endswith(".api") and value not in API_CHOICES:
+        raise typer.BadParameter(f"api must be one of: {', '.join(API_CHOICES)}")
     values, _present, errors = read_managed_values()
     if errors:
         raise ValueError("cannot edit malformed agent managed block")
@@ -521,6 +532,7 @@ def cmd_set(
 def cmd_add(
     name: str = typer.Argument(...),
     adapter: str = typer.Option(..., "--adapter"),
+    api: Optional[str] = typer.Option(None, "--api", help="Pi/OMP wire API: openai-completions or openai-responses"),
     endpoint: Optional[str] = typer.Option(None, "--endpoint"),
     credential: Optional[str] = typer.Option(None, "--credential"),
     model: Optional[str] = typer.Option(None, "--model"),
@@ -535,8 +547,10 @@ def cmd_add(
     prefix = f"envy.agents.{name}."
     if any(key.startswith(prefix) for key in values):
         raise typer.BadParameter(f"agent already exists: {name}")
+    if api is not None and api not in API_CHOICES:
+        raise typer.BadParameter(f"api must be one of: {', '.join(API_CHOICES)}")
     values[prefix + "adapter"] = adapter
-    for field, value in (("endpoint", endpoint), ("credential", credential), ("model", model), ("command", command)):
+    for field, value in (("api", api), ("endpoint", endpoint), ("credential", credential), ("model", model), ("command", command)):
         if value is not None:
             values[prefix + field] = value
     target = _write_values(values)

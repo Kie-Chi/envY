@@ -839,6 +839,15 @@ def refine_all(*, write: bool = True, strict: bool = False, include_secrets: boo
 
 
 def set_config_value(path: str, value: str, *, quiet: bool = False) -> None:
+    if path.startswith(("envy.agents.", "envy.llm.endpoints.", "envy.llm.credentials.")):
+        from envy.agent import _set
+        try:
+            _set(path, value)
+        except (OSError, ValueError) as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        if not quiet:
+            log.ok("machine", "agent value updated", field=path, machine=current_machine_id())
+        return
     values = read_machine_nix()
     valid_paths = {f.path for f in MACHINE_FIELDS}
     if path not in valid_paths:
@@ -947,7 +956,7 @@ def cmd_doctor():
 @app.command(name="set")
 def cmd_set(
     path: str = typer.Argument(
-        ..., help="Machine path, for example envy.vscode.mode; use envy agent set for dynamic agent fields",
+        ..., help="Machine or agent path, for example envy.vscode.mode or envy.agents.omp.api",
         autocompletion=complete_machine_paths,
     ),
     value: str = typer.Argument(..., help="Value to write", autocompletion=complete_machine_values),

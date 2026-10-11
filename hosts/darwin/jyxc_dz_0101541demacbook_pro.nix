@@ -107,10 +107,12 @@
   envy.agents.codex.endpoint = "xikai-openai";
   envy.agents.codex.model = "gpt-6.1-sol";
   envy.agents.omp.adapter = "oh-my-pi";
+  envy.agents.omp.api = "openai-responses";
   envy.agents.omp.credential = "mp";
   envy.agents.omp.endpoint = "stepfun-openai";
   envy.agents.omp.model = "gpt-6-sol";
   envy.agents.pi.adapter = "pi";
+  envy.agents.pi.api = "openai-responses";
   envy.agents.pi.credential = "mp";
   envy.agents.pi.endpoint = "stepfun-openai";
   envy.agents.pi.model = "gpt-6.1-sol-coding";

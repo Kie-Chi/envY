@@ -78,6 +78,7 @@
   envy.llm.credentials.deepseek.secretPath = "llm/deepseek/apikey";
   envy.llm.credentials.hbapi.kind = "api-key";
   envy.llm.credentials.hbapi.secretPath = "llm/hbapi/apikey";
+  envy.llm.credentials.mp.secretPath = "llm/mp/apikey";
   envy.llm.credentials.stepfun.kind = "api-key";
   envy.llm.credentials.stepfun.secretPath = "llm/steps/apikey";
   envy.llm.credentials.xikai.kind = "api-key";
@@ -86,9 +87,9 @@
   # --- LLM ENDPOINTS ---
   envy.llm.endpoints.deepseek-openai.baseUrl = "https://api.deepseek.com";
   envy.llm.endpoints.deepseek-openai.protocol = "openai-compatible";
-  envy.llm.endpoints.stepfun-anthropic.baseUrl = "https://stepfun.com";
+  envy.llm.endpoints.stepfun-anthropic.baseUrl = "https://models-proxy.stepfun-inc.com";
   envy.llm.endpoints.stepfun-anthropic.protocol = "anthropic-compatible";
-  envy.llm.endpoints.stepfun-openai.baseUrl = "https://stepfun.com/v1";
+  envy.llm.endpoints.stepfun-openai.baseUrl = "https://models-proxy.stepfun-inc.com/v1";
   envy.llm.endpoints.stepfun-openai.protocol = "openai-compatible";
   envy.llm.endpoints.sub2api-anthropic.baseUrl = "https://49.233.149.230:3389";
   envy.llm.endpoints.sub2api-anthropic.protocol = "anthropic-compatible";
@@ -107,9 +108,9 @@
   envy.agents.codex.model = "gpt-6.1-sol";
   envy.agents.omp.adapter = "oh-my-pi";
   envy.agents.omp.api = "openai-responses";
-  envy.agents.omp.credential = "xikai";
+  envy.agents.omp.credential = "mp";
   envy.agents.omp.endpoint = "xikai-openai";
-  envy.agents.omp.model = "gpt-6.1-sol";
+  envy.agents.omp.model = "gpt-6-sol";
   envy.agents.pi.adapter = "pi";
   envy.agents.pi.api = "openai-responses";
   envy.agents.pi.credential = "xikai";

@@ -110,7 +110,7 @@
   envy.agents.omp.api = "openai-responses";
   envy.agents.omp.credential = "mp";
   envy.agents.omp.endpoint = "stepfun-openai";
-  envy.agents.omp.model = "gpt-6-sol";
+  envy.agents.omp.model = "gpt-6.1-sol-coding";
   envy.agents.pi.adapter = "pi";
   envy.agents.pi.api = "openai-responses";
   envy.agents.pi.credential = "mp";

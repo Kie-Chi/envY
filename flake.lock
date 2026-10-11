@@ -336,14 +336,17 @@
         "nixpkgs-darwin-x64": "nixpkgs-darwin-x64_2"
       },
       "locked": {
-        "lastModified": 1791531608,
-        "narHash": "sha256-D37ic+vmdwufO2t7d7kCNPrFCzTZnOWhjh2oaLw5gTI=",
-        "type": "tarball",
-        "url": "https://api.github.com/repos/earendil-works/pi/tarball/main"
+        "lastModified": 1791660575,
+        "narHash": "sha256-nwoemBHbr9Cmcop43kVoOXHkavSh+xYkVrfY36G4fpQ=",
+        "owner": "earendil-works",
+        "repo": "pi",
+        "rev": "ea448f454af474f3e2fe9733b331e17b0662f5d6",
+        "type": "github"
       },
       "original": {
-        "type": "tarball",
-        "url": "https://api.github.com/repos/earendil-works/pi/tarball/main"
+        "owner": "earendil-works",
+        "repo": "pi",
+        "type": "github"
       }
     },
     "ppt-master": {

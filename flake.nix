@@ -28,7 +28,10 @@
       flake = false;
     };
     pi = {
-      url = "https://api.github.com/repos/earendil-works/pi/tarball/main";
+      # Use the GitHub fetcher so flake.lock records an immutable commit rev.
+      # The API tarball endpoint for a branch can be re-packed in place and
+      # then fail Nix's locked narHash check on every machine.
+      url = "github:earendil-works/pi";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     oh-my-pi = {

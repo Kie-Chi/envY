@@ -309,8 +309,10 @@
       # The historical Linux CLI invoked .#default after pulling. Expose that
       # target only when its ignored legacy config exists, and derive identity
       # from that file instead of guessing one of the versioned hosts.
+      # Test only the path here: importing legacy config to decide the output
+      # names would also break named targets when an old config link is stale.
       homeConfigurations = namedHomeConfigurations // lib.optionalAttrs
-        (legacyLinuxConfiguration != null)
+        (legacyConfigPath != null)
         { default = legacyLinuxConfiguration; };
 
       platformOptionBoundaries =
@@ -385,6 +387,7 @@
             && !(configuration.config.envy.machine.manifest.software.groups ? "homebrew.system.cask"))
           (builtins.attrValues homeConfigurations);
       mkPlatformOptionCheck = system:
+        assert import ./checks/legacy-linux-compatibility.nix { inherit inputs; };
         assert platformOptionBoundaries;
         nixpkgs.legacyPackages.${system}.runCommand "envy-platform-option-boundaries" { } ''
           touch $out

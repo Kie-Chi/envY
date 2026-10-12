@@ -87,6 +87,13 @@ shell 环境和文档统一使用 `ENVY_ROOT`。已有 `~/.dotfiles` checkout �
 `~/.envy`，并把 remote 更新为 `git@github.com:Kie-Chi/envY.git`。bootstrap
 不会自动移动已有目录，也不会覆盖其中的未提交改动。
 
+旧机器迁移后，`~/.config/dotfiles/config.nix` 或 `/etc/dotfiles/config.nix`
+可能仍引用旧目录。命名的 Linux 机器目标（例如 `linux_desktop`）的 Nix 求值不导入
+这些旧配置；只有选择兼容目标 `default` 时才会导入它们。如果 apply 在
+`homeConfigurations` 的 `optionalAttrs` 条件处报旧 `~/.dotfiles/config.nix`
+不存在，这是旧版 flake 提前导入兼容配置的问题，需要更新 checkout 中的 `flake.nix`。
+命名目标不需要为此重新创建旧 `config.nix`。
+
 `setup.sh` 也支持 `--mirror china|upstream`。Linux 的 Nix daemon 模式会拒绝普通用户
 通过 `NIX_CONFIG` 临时添加未信任的 substituter；setup 会在第一次 Nix build 前调用
 `resources/scripts/nix-trust.sh`，原子维护被 `/etc/nix/nix.conf` include 的

@@ -29,6 +29,7 @@ if isDarwin then {
   id = "/usr/bin/id";
   whoami = "/usr/bin/whoami";
   sw_vers = "/usr/bin/sw_vers";
+  osascript = "/usr/bin/osascript";
   networksetup = "/usr/sbin/networksetup";
   route = "/sbin/route";
   awk = "/usr/bin/awk";

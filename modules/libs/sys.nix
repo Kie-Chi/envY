@@ -274,13 +274,18 @@ let
         owner ? "root",
         group ? "root",
         mode ? "0644",
+        useSudo ? true,
         postDeploy ? ""
-      }: ''
+      }:
+      let
+        mkdir = if useSudo then "esudo ${cmds.mkdir}" else cmds.mkdir;
+        install = if useSudo then "esudo ${cmds.install}" else cmds.install;
+      in ''
         TMP_FILE="$(${cmds.mktemp})"
         cp "${source}" "$TMP_FILE"
         if [ ! -f "${target}" ] || ! ${cmds.cmp} -s "$TMP_FILE" "${target}"; then
-          esudo ${cmds.mkdir} -p "$(dirname "${target}")"
-          esudo ${cmds.install} -m ${mode} -o ${owner} -g ${group} "$TMP_FILE" "${target}"
+          ${mkdir} -p "$(dirname "${target}")"
+          ${install} -m ${mode} -o ${owner} -g ${group} "$TMP_FILE" "${target}"
           ${postDeploy}
         fi
         ${cmds.rm} -f "$TMP_FILE"

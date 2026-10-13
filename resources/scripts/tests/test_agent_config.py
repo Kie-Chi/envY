@@ -22,6 +22,8 @@ class AgentConfigTests(unittest.TestCase):
             path.write_text("{ ... }: {\n" + outside + "}\n")
             with patch.object(agent, "machine_config_file", return_value=path), patch.object(
                 agent, "offer_mutation_commit"
+            ), patch.object(config, "machine_config_file", return_value=path), patch.object(
+                config, "offer_mutation_commit"
             ):
                 _write_values({"envy.agents.pi.adapter": "pi"})
                 for command in ("agent", "config"):
@@ -333,6 +335,10 @@ class AgentConfigTests(unittest.TestCase):
             path = Path(directory) / "machine.nix"
             values = {field.path: field.default_fn() for field in config.MACHINE_FIELDS}
             values["envy.git.email"] = "test@example.com"
+            # Refining an unmarked fixture also fills defaults. Do not depend
+            # on the sandbox's hostname command producing a valid email.
+            email_field = next(field for field in config.MACHINE_FIELDS if field.path == "envy.git.email")
+            patches.enter_context(patch.object(email_field, "default_fn", return_value="test@example.com"))
             body = config._render_machine_block(values) if managed_config else ""
             legacy = (
                 '  envy.llm.steps.url = "https://legacy.example";\n'

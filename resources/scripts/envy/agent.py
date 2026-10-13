@@ -63,10 +63,21 @@ def _block_pattern() -> re.Pattern[str]:
 
 
 def _parse_value(raw: str) -> Any:
+    if raw.startswith("builtins.fromJSON "):
+        encoded = raw[len("builtins.fromJSON "):].replace(r"\${", "${")
+        try:
+            return json.loads(json.loads(encoded))
+        except json.JSONDecodeError:
+            return raw
     if raw in {"true", "false"}:
         return raw == "true"
     if raw == "null":
         return None
+    if re.fullmatch(r"-?\d+", raw):
+        try:
+            return int(raw)
+        except ValueError:
+            pass
     if raw.startswith('"') and raw.endswith('"'):
         try:
             return json.loads(raw)
@@ -161,11 +172,17 @@ def _validate_values(values: dict[str, Any]) -> list[str]:
         namespace, name, field = match.groups()
         if namespace == "agents":
             agent_names.add(name)
-            if field not in {"adapter", "api", "endpoint", "credential", "model", "command", "args", "aliases", "skills", "moreThinking", *AGENT_FIELD_ALIASES}:
+            if field not in {"adapter", "api", "endpoint", "credential", "model", "contextWindow", "maxTokens", "command", "args", "aliases", "skills", "additionalSettings", "moreThinking", *AGENT_FIELD_ALIASES}:
+                errors.append(path)
+            elif field in {"contextWindow", "maxTokens"} and value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value <= 0
+            ):
                 errors.append(path)
             elif field in {"args", "aliases", "skills"} and (
                 not isinstance(value, list) or not all(isinstance(item, str) for item in value)
             ):
+                errors.append(path)
+            elif field == "additionalSettings" and not isinstance(value, dict):
                 errors.append(path)
             elif field in {"moreThinking", *AGENT_FIELD_ALIASES} and not isinstance(value, bool):
                 errors.append(path)
@@ -407,7 +424,7 @@ def config_view(
         add_field(f"envy.llm.credentials.{name}.secretPath", credential.get("secretPath"))
 
     for name, agent in sorted(normalized_agents.items()):
-        for field in ("adapter", "endpoint", "credential", "model", "command"):
+        for field in ("adapter", "endpoint", "credential", "model", "contextWindow", "maxTokens", "command"):
             add_field(f"envy.agents.{name}.{field}", agent.get(field))
         if agent.get("adapter") == "pi":
             add_field(
@@ -429,10 +446,15 @@ def config_view(
 
 
 def _render_value(value: Any) -> str:
+    if isinstance(value, dict):
+        encoded = json.dumps(json.dumps(value, ensure_ascii=False, allow_nan=False), ensure_ascii=False)
+        return "builtins.fromJSON " + encoded.replace("${", r"\${")
     if value is None:
         return "null"
     if isinstance(value, bool):
         return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
     if isinstance(value, list):
         return "[ " + " ".join(_render_value(item) for item in value) + " ]"
     return f'"{_escape_nix_string(str(value))}"'
@@ -496,10 +518,26 @@ def _set(path: str, value: Any) -> Path:
                     raise typer.BadParameter(f"{path} requires a JSON array of strings") from exc
             if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
                 raise typer.BadParameter(f"{path} requires a JSON array of strings")
-        elif field in {"endpoint", "credential", "model", "command"} and value == "null":
-            value = None
+        elif field in {"endpoint", "credential", "model", "contextWindow", "maxTokens"}:
+            if value == "null":
+                value = None
+            elif field in {"contextWindow", "maxTokens"}:
+                try:
+                    value = int(value)
+                except (TypeError, ValueError):
+                    raise typer.BadParameter(f"{path} must be a positive integer or null") from None
+                if value <= 0:
+                    raise typer.BadParameter(f"{path} must be a positive integer or null")
     if path.startswith("envy.agents.") and path.endswith(".api") and value not in API_CHOICES:
         raise typer.BadParameter(f"api must be one of: {', '.join(API_CHOICES)}")
+    if path.startswith("envy.agents.") and path.endswith(".additionalSettings"):
+        try:
+            value = json.loads(value) if isinstance(value, str) else value
+            if not isinstance(value, dict):
+                raise ValueError
+            json.dumps(value, allow_nan=False)
+        except (ValueError, TypeError):
+            raise typer.BadParameter("additionalSettings must be a JSON object") from None
     if path.startswith("envy.agents.") and path.endswith(".moreThinking"):
         if isinstance(value, str) and value in {"true", "false"}:
             value = value == "true"

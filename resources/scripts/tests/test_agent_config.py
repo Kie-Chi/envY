@@ -237,6 +237,32 @@ class AgentConfigTests(unittest.TestCase):
                 self.assertEqual(result["errors"], ["envy.agents.pi.moreThinking"])
                 self.assertEqual(path.read_text(), before)
 
+    def test_pi_model_window_fields_round_trip_and_validate(self):
+        values = {
+            "envy.agents.pi.adapter": "pi",
+            "envy.agents.pi.contextWindow": 272000,
+            "envy.agents.pi.maxTokens": 128000,
+        }
+        rendered = _render(values)
+        self.assertIn("contextWindow = 272000;", rendered)
+        self.assertIn("maxTokens = 128000;", rendered)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "machine.nix"
+            path.write_text("{ ... }: {\n}\n")
+            with patch("envy.agent.machine_config_file", return_value=path):
+                _write_values(values)
+                self.assertEqual(_read_values(path), values)
+                for field in ("contextWindow", "maxTokens"):
+                    key = f"envy.agents.pi.{field}"
+                    for invalid in ("0", "-1", "not-a-number"):
+                        with self.subTest(field=field, value=invalid), self.assertRaises(typer.BadParameter):
+                            _set(key, invalid)
+                        self.assertEqual(_read_values(path), values)
+                    _set(key, "null")
+                    values = dict(values)
+                    values[key] = None
+                    self.assertEqual(_read_values(path), values)
+
     def test_config_api_edit_is_validated_and_survives_refine(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "machine.nix"
@@ -252,6 +278,23 @@ class AgentConfigTests(unittest.TestCase):
                     with self.subTest(api=invalid), self.assertRaises(typer.BadParameter):
                         config.set_config_value("envy.agents.pi.api", invalid, quiet=True)
                     self.assertEqual(path.read_text(), before)
+
+    def test_render_round_trips_additional_settings(self):
+        values = {
+            "envy.agents.pi.adapter": "pi",
+            "envy.agents.pi.additionalSettings": {
+                "defaultTools": ["+codemode"],
+                "nested": {"enabled": True},
+            },
+        }
+        rendered = _render(values)
+        self.assertIn("builtins.fromJSON", rendered)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "machine.nix"
+            path.write_text("{ ... }: {\n}\n")
+            with patch("envy.agent.machine_config_file", return_value=path):
+                _write_values(values)
+                self.assertEqual(_read_values(path), values)
 
     def test_render_round_trips_scalars_and_lists(self):
         values = {
@@ -342,6 +385,7 @@ class AgentConfigTests(unittest.TestCase):
             )
             path.write_text(
                 '{ ... }: {\n' + body + '\n' + legacy
+                + '  envy.git.email = "test@example.com";\n'
                 + '  envy.software.nix.packages.exclude = [ "keep-me" ];\n}\n'
             )
             for target in ("envy.config.machine_config_file", "envy.agent.machine_config_file"):

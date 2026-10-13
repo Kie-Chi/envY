@@ -6,6 +6,7 @@
     ./claude.nix
     ./codex.nix
     ./generic.nix
+    ./config.nix
     ./pi.nix
     ./pi-extensions.nix
     ./skills.nix

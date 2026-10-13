@@ -65,7 +65,12 @@ in
     };
   };
 
-  config = lib.mkIf packageEnabled {
+  config = lib.mkMerge [
+    { agents.settingsFiles.claude-code = {
+      target = ".claude/settings.json";
+      format = "json";
+    }; }
+    (lib.mkIf packageEnabled {
     sops.templates.${templateName}.content = ''
       ${lib.optionalString (endpoint != null) ''
       export ANTHROPIC_BASE_URL=${lib.escapeShellArg endpoint.baseUrl}
@@ -87,5 +92,6 @@ in
     } // lib.listToAttrs (map (alias: lib.nameValuePair alias "local:modules/agents/claude.nix#${alias}") aliases);
 
     home.file.${promptFile}.source = ../../files/ccli/prompt;
-  };
+    })
+  ];
 }

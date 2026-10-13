@@ -109,7 +109,7 @@ selected capabilities, commands, and update procedure.
 
 Each agent gets an adapter module (`codex.nix`, `claude.nix`, and generic adapters for compatible CLIs). The adapter owns package installation, stable command wrappers, protocol-specific environment names, and skill integration. `modules/llm` owns only non-sensitive endpoint metadata and sops credential declarations. A credential is a logical reference such as `stepfun`; its value is available only through an activation-time sops placeholder and is never a Nix evaluation-time string.
 
-Machine-owned agent selections live under `envy.agents`:
+Machine-owned agent selections live under `envy.agents`. Provider-specific settings that are outside the fixed schema belong in `additionalSettings`:
 
 ```nix
 envy.agents.codex = {
@@ -118,7 +118,21 @@ envy.agents.codex = {
   credential = "stepfun";
   model = "step-3.7-flash";
 };
+
+envy.agents.pi.additionalSettings = {
+  defaultTools = [ "+codemode" ];
+};
 ```
+
+`additionalSettings` is recursively merged during activation into the writable
+user configuration file. Existing application fields are retained, nested
+attribute sets merge by key, declared values win on conflicts, and lists are
+replaced as a whole while preserving their declared order. For example, the
+Pi setting above enables Codemode while retaining Pi's other default tools.
+The same option is available to every adapter that declares a settings file. Adapter modules provide the file format and path; an agent may override that metadata with `additionalSettingsFile`. The provider model files are merged with the same rules, so runtime-added
+providers survive a reapply. Object containment helpers used by module checks
+compare nested attribute sets by key/value and ignore key order; lists remain
+ordered.
 
 Endpoints live under `envy.llm.endpoints` and contain only a URL and wire
 protocol. Agent adapters translate those fields into the exact variables and

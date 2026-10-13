@@ -25,7 +25,12 @@ let
 in
 
 {
-  config = lib.mkIf (machinePlatform == "linux") {
+  config = lib.mkMerge [
+    { agents.settingsFiles.codex = {
+      target = ".codex/config.toml";
+      format = "toml";
+    }; }
+    (lib.mkIf (machinePlatform == "linux") {
     sops.templates.${templateName}.content = ''
       ${lib.optionalString (endpoint != null) ''
       export OPENAI_BASE_URL=${lib.escapeShellArg endpoint.baseUrl}
@@ -40,5 +45,6 @@ in
     '';
     envy.software.nix.packages.include = [ codex ];
     envy.software.nix.packages.references.codex = "local:modules/agents/codex.nix#codex";
-  };
+    })
+  ];
 }

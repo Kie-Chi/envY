@@ -3,6 +3,9 @@
 let
   piConfig = config.envy.agents.pi;
   ompConfig = config.envy.agents.omp;
+  selectedPiPackage = if piConfig.more_thinking then
+    import ./pi-package.nix { inherit piPackage pkgs; }
+    else piPackage;
   providerName = "envy-pi";
   endpointFor = agent: if agent.endpoint == null
     || !(builtins.hasAttr agent.endpoint config.envy.llm.endpoints) then null
@@ -36,12 +39,18 @@ let
       api = agent.api;
       inherit apiKey;
       models = [
-        {
+        ({
           id = agent.model;
           name = agent.model;
           reasoning = true;
           input = [ "text" "image" ];
-        }
+        } // lib.optionalAttrs (agent.adapter == "pi" && agent.more_thinking) {
+          thinkingLevelMap = {
+            xhigh = "xhigh";
+            max = "max";
+            ultra = "ultra";
+          };
+        })
       ];
     };
   };
@@ -52,7 +61,7 @@ let
         # shellcheck source=/dev/null
         source "${config.sops.templates.${templateNameFor "pi"}.path}"
       fi
-      cmd=(${lib.escapeShellArg (lib.getExe piPackage)})
+      cmd=(${lib.escapeShellArg (lib.getExe selectedPiPackage)})
       ${lib.optionalString (piConfig.model != null) ''
       cmd+=(--model ${lib.escapeShellArg "${providerName}/${piConfig.model}"})
       ''}

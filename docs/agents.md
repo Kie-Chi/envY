@@ -142,6 +142,34 @@ Settings frontend. `envy agent set` edits the same managed block, and
 API selections are rejected before writing. Reapply and restart the agent to
 regenerate its model file; manually editing a generated file is not persistent.
 
+Pi can opt in to additional thinking levels for endpoints that support them:
+
+```nix
+envy.agents.pi.more_thinking = true;
+```
+
+This machine option defaults to `false`. When enabled, envY builds the locked
+Pi source with `modules/agents/patches/pi-ultra-thinking.patch` and declares
+`xhigh`, `max`, and `ultra` in the custom model's `thinkingLevelMap`. Pi exposes
+all three as independent choices in `/thinking` and accepts
+`pi --thinking ultra`; the requested effort is sent unchanged to the endpoint.
+The option makes these levels available without changing the startup level.
+It does not add these capabilities to a model or gateway that lacks them.
+OMP keeps its own upstream package and model metadata.
+
+`envy config show --json` exposes the boolean for Pi, including its default.
+Use `envy config set envy.agents.pi.more_thinking true --json --yes` (or
+`envy agent set envy.agents.pi.more_thinking true --json --yes`), then
+`envy apply` and restart Pi. Disabling it restores the upstream Pi package
+and omits the extra model mappings. Keep any saved startup thinking level
+within the upstream version's supported levels when disabling the patch.
+
+The patch changes both the runtime libraries and bundled CLI. Its install
+check covers CLI parsing, model metadata, settings, the thinking selector,
+capability clamping, and Chat Completions/Responses request payloads without
+sending a request. Rebuild it when updating the Pi input so upstream schema
+or bundle changes cannot silently remove `ultra` support.
+
 This API-key integration is distinct from an OpenAI Codex subscription, OAuth
 session, or implementation-specific `codex-backend`. envY does not assume
 Codex OAuth credentials can be reused as a generic API key.

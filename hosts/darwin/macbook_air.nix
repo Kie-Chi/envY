@@ -95,6 +95,7 @@
   envy.agents.pi.credential = "xikai";
   envy.agents.pi.endpoint = "xikai-openai";
   envy.agents.pi.model = "gpt-6.1-sol";
+  envy.agents.pi.more_thinking = true;
   # END ENVY MANAGED AGENTS
 
 }

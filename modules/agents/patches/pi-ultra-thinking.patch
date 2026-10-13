@@ -1,0 +1,414 @@
+--- a/packages/agent/src/types.ts
++++ b/packages/agent/src/types.ts
+@@ -343,10 +343,10 @@
+ 
+ /**
+  * Thinking/reasoning level for models that support it.
+- * Note: "xhigh" and "max" are only supported by selected model families. Use model
++ * Note: "xhigh", "max", and "ultra" require explicit model support. Use model
+  * thinking-level metadata from @earendil-works/pi-ai to detect support for a concrete model.
+  */
+-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
++export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+ 
+ /**
+  * Extensible interface for custom app messages.
+--- a/packages/ai/src/api/azure-openai-responses.ts
++++ b/packages/ai/src/api/azure-openai-responses.ts
+@@ -24,7 +24,7 @@
+ 
+ // Azure OpenAI Responses-specific options
+ export interface AzureOpenAIResponsesOptions extends AzureEndpointOptions {
+-	reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
++	reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+ 	toolChoice?: ResponseCreateParamsStreaming["tool_choice"];
+ 	reasoningSummary?: "auto" | "detailed" | "concise" | null;
+ }
+--- a/packages/ai/src/api/bedrock-converse-stream.ts
++++ b/packages/ai/src/api/bedrock-converse-stream.ts
+@@ -1294,10 +1294,11 @@
+ 						high: 16384,
+ 						xhigh: 16384, // Budget-based Claude clamps extended levels to high
+ 						max: 16384,
++						ultra: 16384,
+ 					};
+ 
+ 					// Custom budgets only cover token-based levels through high.
+-					const level = options.reasoning === "xhigh" || options.reasoning === "max" ? "high" : options.reasoning;
++					const level = clampReasoning(options.reasoning)!;
+ 					const budget = options.thinkingBudgets?.[level] ?? defaultBudgets[options.reasoning];
+ 
+ 					return {
+@@ -1343,6 +1344,7 @@
+ 	high: "high",
+ 	xhigh: "xhigh",
+ 	max: "max",
++	ultra: "max",
+ };
+ 
+ /** gpt-oss takes a flat `reasoning_effort` and only accepts low, medium and high. */
+@@ -1353,6 +1355,7 @@
+ 	high: "high",
+ 	xhigh: "high",
+ 	max: "high",
++	ultra: "high",
+ };
+ 
+ function createImageBlock(mimeType: string, data: string) {
+--- a/packages/ai/src/api/google-shared.ts
++++ b/packages/ai/src/api/google-shared.ts
+@@ -34,7 +34,7 @@
+  * Mirrors Google's ThinkingLevel enum values.
+  */
+ export type GoogleApiThinkingLevel = "THINKING_LEVEL_UNSPECIFIED" | "MINIMAL" | "LOW" | "MEDIUM" | "HIGH";
+-export type ResolvedGoogleThinkingLevel = Exclude<ThinkingLevel, "xhigh" | "max">;
++export type ResolvedGoogleThinkingLevel = Exclude<ThinkingLevel, "xhigh" | "max" | "ultra">;
+ 
+ const GOOGLE_SDK_THINKING_LEVEL_MAP: Record<GoogleApiThinkingLevel, GoogleSdkThinkingLevel> = {
+ 	THINKING_LEVEL_UNSPECIFIED: GoogleSdkThinkingLevel.THINKING_LEVEL_UNSPECIFIED,
+--- a/packages/ai/src/api/openai-codex-responses.ts
++++ b/packages/ai/src/api/openai-codex-responses.ts
+@@ -77,7 +77,7 @@
+ // ============================================================================
+ 
+ export interface OpenAICodexResponsesOptions extends StreamOptions {
+-	reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
++	reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+ 	reasoningSummary?: "auto" | "concise" | "detailed" | "off" | "on" | null;
+ 	serviceTier?: ResponseCreateParamsStreaming["service_tier"];
+ 	textVerbosity?: "low" | "medium" | "high";
+--- a/packages/ai/src/api/openai-completions.ts
++++ b/packages/ai/src/api/openai-completions.ts
+@@ -153,7 +153,7 @@
+ 
+ export interface OpenAICompletionsOptions extends StreamOptions {
+ 	toolChoice?: OpenAI.Chat.Completions.ChatCompletionToolChoiceOption;
+-	reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
++	reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+ 	/** Token budgets per thinking level. Used when `compat.thinkingTokenBudgetField` or `compat.supportsThinkingTokenBudget` is set, or by `{ "$var": "thinking.budget" }`. */
+ 	thinkingBudgets?: ThinkingBudgets;
+ }
+--- a/packages/ai/src/api/openai-responses.ts
++++ b/packages/ai/src/api/openai-responses.ts
+@@ -115,7 +115,7 @@
+ 
+ // OpenAI Responses-specific options
+ export interface OpenAIResponsesOptions extends StreamOptions {
+-	reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
++	reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+ 	reasoningSummary?: "auto" | "detailed" | "concise" | null;
+ 	serviceTier?: ResponseCreateParamsStreaming["service_tier"];
+ 	toolChoice?: ResponseCreateParamsStreaming["tool_choice"];
+--- a/packages/ai/src/api/simple-options.ts
++++ b/packages/ai/src/api/simple-options.ts
+@@ -74,8 +74,8 @@
+ 	high: 16384,
+ };
+ 
+-export function clampReasoning(effort: ThinkingLevel | undefined): Exclude<ThinkingLevel, "xhigh" | "max"> | undefined {
+-	return effort === "xhigh" || effort === "max" ? "high" : effort;
++export function clampReasoning(effort: ThinkingLevel | undefined): Exclude<ThinkingLevel, "xhigh" | "max" | "ultra"> | undefined {
++	return effort === "xhigh" || effort === "max" || effort === "ultra" ? "high" : effort;
+ }
+ 
+ export function thinkingBudgetForLevel(reasoningLevel: ThinkingLevel, customBudgets?: ThinkingBudgets): number {
+--- a/packages/ai/src/models.ts
++++ b/packages/ai/src/models.ts
+@@ -1219,7 +1219,7 @@
+ 	return usage.cost;
+ }
+ 
+-const EXTENDED_THINKING_LEVELS: ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
++const EXTENDED_THINKING_LEVELS: ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+ 
+ export function getSupportedThinkingLevels<TApi extends Api>(model: Model<TApi>): ModelThinkingLevel[] {
+ 	if (!model.reasoning) return ["off"];
+@@ -1227,7 +1227,7 @@
+ 	return EXTENDED_THINKING_LEVELS.filter((level) => {
+ 		const mapped = model.thinkingLevelMap?.[level];
+ 		if (mapped === null) return false;
+-		if (level === "xhigh" || level === "max") return mapped !== undefined;
++		if (level === "xhigh" || level === "max" || level === "ultra") return mapped !== undefined;
+ 		return true;
+ 	});
+ }
+--- a/packages/ai/src/providers/model-schema.ts
++++ b/packages/ai/src/providers/model-schema.ts
+@@ -1,6 +1,6 @@
+ import { type Static, type TSchemaOptions, Type } from "typebox";
+ 
+-export const THINKING_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
++export const THINKING_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
+ export const MODEL_THINKING_LEVELS = ["off", ...THINKING_LEVELS] as const;
+ export const MODEL_INPUT_MODALITIES = ["text", "image"] as const;
+ export const CACHE_RETENTIONS = ["none", "short", "long"] as const;
+--- a/packages/ai/test/ultra-thinking.test.ts
++++ b/packages/ai/test/ultra-thinking.test.ts
+@@ -0,0 +1,52 @@
++import { describe, expect, it, vi } from "vitest";
++import { streamSimple as streamCompletions } from "../src/api/openai-completions.ts";
++import { streamSimple as streamResponses } from "../src/api/openai-responses.ts";
++import { thinkingBudgetForLevel } from "../src/api/simple-options.ts";
++import { clampThinkingLevel, getSupportedThinkingLevels, normalizeContext } from "../src/compat.ts";
++import type { Model } from "../src/types.ts";
++
++const model: Model<"openai-completions"> = {
++	id: "custom-reasoning",
++	name: "Custom Reasoning",
++	api: "openai-completions",
++	provider: "test",
++	baseUrl: "https://offline.invalid/v1",
++	reasoning: true,
++	input: ["text"],
++	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
++	contextWindow: 128000,
++	maxTokens: 4096,
++};
++
++describe("ultra thinking level", () => {
++	it("requires explicit model support and falls back to the highest supported level", () => {
++		expect(getSupportedThinkingLevels(model)).not.toContain("ultra");
++		expect(clampThinkingLevel(model, "ultra")).toBe("high");
++		const maxModel = { ...model, thinkingLevelMap: { xhigh: "xhigh", max: "max" } };
++		expect(clampThinkingLevel(maxModel, "ultra")).toBe("max");
++		expect(getSupportedThinkingLevels({ ...maxModel, thinkingLevelMap: { ultra: null } })).not.toContain("ultra");
++		const ultraModel = { ...maxModel, thinkingLevelMap: { ...maxModel.thinkingLevelMap, ultra: "ultra" } };
++		expect(getSupportedThinkingLevels(ultraModel).slice(-3)).toEqual(["xhigh", "max", "ultra"]);
++		expect(clampThinkingLevel(ultraModel, "ultra")).toBe("ultra");
++		expect(thinkingBudgetForLevel("ultra")).toBe(thinkingBudgetForLevel("high"));
++	});
++
++	it.each(["xhigh", "max", "ultra"] as const)("keeps %s distinct in both OpenAI wire APIs", async (reasoning) => {
++		const context = normalizeContext({ messages: [{ role: "user", content: "Hello", timestamp: 0 }] });
++		const enabled = { ...model, thinkingLevelMap: { xhigh: "xhigh", max: "max", ultra: "ultra" } };
++		const fetch = vi.fn<typeof globalThis.fetch>(async () => { throw new Error("network disabled"); });
++		let payload: unknown;
++		const options = {
++			apiKey: "offline-test",
++			reasoning,
++			fetch,
++			onPayload: (request: unknown) => { payload = request; throw new Error("payload captured"); },
++		};
++		await streamCompletions(enabled, context, options).result();
++		expect(payload).toMatchObject({ reasoning_effort: reasoning });
++		payload = undefined;
++		await streamResponses({ ...enabled, api: "openai-responses" }, context, options).result();
++		expect(payload).toMatchObject({ reasoning: { effort: reasoning } });
++		expect(fetch).not.toHaveBeenCalled();
++	});
++});
+--- a/packages/coding-agent/schemas/models.schema.json
++++ b/packages/coding-agent/schemas/models.schema.json
+@@ -154,6 +154,12 @@
+                         }
+                       },
+                       "max": {
++                        "type": "object",
++                        "patternProperties": {
++                          "^.*$": {}
++                        }
++                      },
++                      "ultra": {
+                         "type": "object",
+                         "patternProperties": {
+                           "^.*$": {}
+@@ -323,6 +329,12 @@
+                           "patternProperties": {
+                             "^.*$": {}
+                           }
++                        },
++                        "ultra": {
++                          "type": "object",
++                          "patternProperties": {
++                            "^.*$": {}
++                          }
+                         }
+                       }
+                     },
+@@ -1150,6 +1162,16 @@
+               "type": "null"
+             }
+           ]
++        },
++        "ultra": {
++          "anyOf": [
++            {
++              "type": "string"
++            },
++            {
++              "type": "null"
++            }
++          ]
+         }
+       }
+     }
+--- a/packages/coding-agent/schemas/settings.schema.json
++++ b/packages/coding-agent/schemas/settings.schema.json
+@@ -758,7 +758,8 @@
+         "medium",
+         "high",
+         "xhigh",
+-        "max"
++        "max",
++        "ultra"
+       ]
+     }
+   }
+--- a/packages/coding-agent/src/cli/args.ts
++++ b/packages/coding-agent/src/cli/args.ts
+@@ -58,7 +58,7 @@
+ 	diagnostics: Array<{ type: "warning" | "error"; message: string }>;
+ }
+ 
+-const VALID_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
++const VALID_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
+ 
+ export function isValidThinkingLevel(level: string): level is ThinkingLevel {
+ 	return VALID_THINKING_LEVELS.includes(level as ThinkingLevel);
+@@ -322,7 +322,7 @@
+                                  Only +name/-name entries add to or remove from the defaults
+   --exclude-tools, -xt <tools>   Comma-separated denylist of tool names or patterns (*) to disable
+                                  Applies to all tools, MCP tools included
+-  --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh, max
++  --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh, max, ultra
+   --extension, -e <path>         Load an extension file or builtin:<name> (can be used multiple times)
+   --no-extensions, -ne           Disable extension discovery and built-in extensions (explicit -e paths still work)
+   --no-mcp                       Disable built-in MCP support: no servers connect and no MCP tools
+--- a/packages/coding-agent/src/core/defaults.ts
++++ b/packages/coding-agent/src/core/defaults.ts
+@@ -9,4 +9,5 @@
+ 	"high",
+ 	"xhigh",
+ 	"max",
++	"ultra",
+ ];
+--- a/packages/coding-agent/src/core/model-config.ts
++++ b/packages/coding-agent/src/core/model-config.ts
+@@ -25,6 +25,7 @@
+ 	high: Type.Optional(SamplingParamsSchema),
+ 	xhigh: Type.Optional(SamplingParamsSchema),
+ 	max: Type.Optional(SamplingParamsSchema),
++	ultra: Type.Optional(SamplingParamsSchema),
+ });
+ 
+ const PositiveTokenCountSchema = Type.Number({ exclusiveMinimum: 0 });
+--- a/packages/coding-agent/src/core/provider-composer.ts
++++ b/packages/coding-agent/src/core/provider-composer.ts
+@@ -167,7 +167,7 @@
+ ): Model<Api>["samplingParamsByThinkingLevel"] {
+ 	if (!override) return base;
+ 	const merged = { ...base };
+-	for (const level of ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const) {
++	for (const level of ["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const) {
+ 		const params = override[level];
+ 		if (params) merged[level] = { ...base?.[level], ...params };
+ 	}
+--- a/packages/coding-agent/src/core/virtual-models.ts
++++ b/packages/coding-agent/src/core/virtual-models.ts
+@@ -38,7 +38,7 @@
+ 	state: TState;
+ }
+ 
+-const THINKING_LEVELS: readonly ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
++const THINKING_LEVELS: readonly ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+ 
+ /**
+  * Why a request is being routed.
+--- a/packages/coding-agent/src/experimental/services/slash-commands-provider.ts
++++ b/packages/coding-agent/src/experimental/services/slash-commands-provider.ts
+@@ -14,6 +14,7 @@
+ 	high: "Deep reasoning",
+ 	xhigh: "Extra-high reasoning",
+ 	max: "Maximum reasoning",
++	ultra: "Ultra reasoning",
+ };
+ 
+ interface RegisteredSlashCommand {
+--- a/packages/coding-agent/src/modes/interactive/components/settings-selector.ts
++++ b/packages/coding-agent/src/modes/interactive/components/settings-selector.ts
+@@ -45,6 +45,7 @@
+ 	high: "Deep reasoning (~16k tokens)",
+ 	xhigh: "Extra-high reasoning (~32k tokens)",
+ 	max: "Maximum reasoning",
++	ultra: "Ultra reasoning",
+ };
+ 
+ const DEFAULT_PROJECT_TRUST_LABELS: Record<DefaultProjectTrust, string> = {
+--- a/packages/coding-agent/src/modes/interactive/components/thinking-selector.ts
++++ b/packages/coding-agent/src/modes/interactive/components/thinking-selector.ts
+@@ -28,6 +28,7 @@
+ 	high: "Deep reasoning (~16k tokens)",
+ 	xhigh: "Extra-high reasoning (~32k tokens)",
+ 	max: "Maximum reasoning",
++	ultra: "Ultra reasoning",
+ };
+ 
+ /**
+--- a/packages/coding-agent/src/modes/interactive/theme/theme.ts
++++ b/packages/coding-agent/src/modes/interactive/theme/theme.ts
+@@ -360,6 +360,7 @@
+ 				return (str: string) => this.fg("thinkingHigh", str);
+ 			case "xhigh":
+ 				return (str: string) => this.fg("thinkingXhigh", str);
++			case "ultra":
+ 			case "max":
+ 				return (str: string) => this.fg("thinkingMax", str);
+ 			default:
+--- a/packages/coding-agent/test/max-thinking.test.ts
++++ b/packages/coding-agent/test/max-thinking.test.ts
+@@ -4,6 +4,7 @@
+ import { fileURLToPath } from "node:url";
+ import { afterEach, describe, expect, it } from "vitest";
+ import { isValidThinkingLevel } from "../src/cli/args.ts";
++import { SessionManager } from "../src/core/session-manager.ts";
+ import { SettingsManager } from "../src/core/settings-manager.ts";
+ import { loadThemeFromPath } from "../src/modes/interactive/theme/theme.ts";
+ 
+@@ -16,13 +17,16 @@
+ });
+ 
+ describe("max thinking level", () => {
+-	it("is accepted by CLI and settings", async () => {
+-		expect(isValidThinkingLevel("max")).toBe(true);
++	it.each(["max", "ultra"] as const)("accepts %s in CLI, settings, and sessions", async (level) => {
++		expect(isValidThinkingLevel(level)).toBe(true);
+ 
+ 		const settings = SettingsManager.inMemory();
+-		settings.setDefaultThinkingLevel("max");
++		settings.setDefaultThinkingLevel(level);
+ 		await settings.flush();
+-		expect(settings.getDefaultThinkingLevel()).toBe("max");
++		expect(settings.getDefaultThinkingLevel()).toBe(level);
++		const session = SessionManager.inMemory();
++		session.appendThinkingLevelChange(level);
++		expect(session.buildSessionContext().thinkingLevel).toBe(level);
+ 	});
+ 
+ 	it("falls back to thinkingXhigh for legacy themes", () => {
+@@ -38,6 +42,9 @@
+ 		writeFileSync(themePath, JSON.stringify(darkTheme));
+ 
+ 		const legacyTheme = loadThemeFromPath(themePath);
++		expect(legacyTheme.getThinkingBorderColor("ultra")("border")).toBe(
++			legacyTheme.getThinkingBorderColor("max")("border"),
++		);
+ 		expect(legacyTheme.getThinkingBorderColor("max")("border")).toBe(
+ 			legacyTheme.getThinkingBorderColor("xhigh")("border"),
+ 		);
+--- a/packages/coding-agent/test/thinking-selector.test.ts
++++ b/packages/coding-agent/test/thinking-selector.test.ts
+@@ -35,6 +35,14 @@
+ 		expect(getLevelRow("high")?.startsWith("→   high")).toBe(true);
+ 	});
+ 
++	it("shows max and ultra as separate choices", () => {
++		const selector = new ThinkingSelectorComponent("ultra", ["max", "ultra"], () => {}, () => {});
++		const rendered = stripAnsi(selector.getSelectList().render(80).join("\n"));
++		expect(rendered).toContain("max");
++		expect(rendered).toContain("Ultra reasoning");
++		expect(selector.getSelectList().getSelectedItem()?.value).toBe("ultra");
++	});
++
+ 	it("uses the configured save binding", () => {
+ 		setKeybindings(new KeybindingsManager({ "app.thinking.save": "ctrl+r" }));
+ 		const saveDefault = vi.fn();

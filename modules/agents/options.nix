@@ -31,6 +31,11 @@ in
           default = null;
           description = "Default model passed to this agent, when supported.";
         };
+        more_thinking = mkOption {
+          type = types.bool;
+          default = false;
+          description = "For Pi, enable the ultra-thinking patch and expose xhigh, max, and ultra for a model endpoint that supports these efforts.";
+        };
         command = mkOption {
           type = types.nullOr types.str;
           default = null;

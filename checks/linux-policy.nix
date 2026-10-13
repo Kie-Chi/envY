@@ -22,7 +22,6 @@ let
         vercelAgentSkills = inputs.vercel-agent-skills;
         piSource = inputs.pi.outPath;
         piPackage = inputs.pi.packages.${system}.default;
-        ohMyPiPackage = inputs.oh-my-pi.packages.${system}.default;
         softwareSourceBindings = import ../modules/software/nix-sources.nix;
         nixGLDefault = null;
       };

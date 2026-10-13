@@ -24,7 +24,7 @@ class AgentCompletionTests(unittest.TestCase):
         self.before = self.path.read_bytes()
         self.enterContext(patch.object(agent, "machine_config_file", return_value=self.path))
         self.manifest = self.enterContext(patch.object(agent_completion, "machine_manifest", return_value={
-            "agents": {"inherited": {"adapter": "codex"}, "omp": {"adapter": "oh-my-pi"}},
+            "agents": {"inherited": {"adapter": "codex"}, "other-pi": {"adapter": "pi"}, "omp": {"adapter": "oh-my-pi"}, "retired": {"adapter": "oh-my-pi"}},
             "llm": {"endpoints": {"shared": {"baseUrl": "https://example.test/v1"}},
                     "credentials": {"shared": {"secretPath": "llm/shared/token"}}},
         }))
@@ -47,7 +47,9 @@ class AgentCompletionTests(unittest.TestCase):
             paths = self.complete(group, "set", "path", "envy.agents.")
             self.assertIn("envy.agents.local-pi.more_thinking", paths)
             self.assertIn("envy.agents.inherited.model", paths)
-            self.assertIn("envy.agents.omp.api", paths)
+            self.assertIn("envy.agents.other-pi.api", paths)
+            self.assertNotIn("envy.agents.omp.api", paths)
+            self.assertNotIn("envy.agents.retired.api", paths)
             self.assertNotIn("envy.agents.omp.more_thinking", paths)
             self.assertNotIn("envy.agents.local-pi.args", paths)
             self.assertIn("envy.llm.endpoints.custom.protocol", self.complete(group, "set", "path", "envy.llm.endpoints.c"))
@@ -57,7 +59,9 @@ class AgentCompletionTests(unittest.TestCase):
     def test_values_follow_namespace_and_selected_field(self):
         examples = (
             ("envy.agents.local-pi.more_thinking", "t", ["true"]),
-            ("envy.agents.omp.api", "openai-r", ["openai-responses"]),
+            ("envy.agents.other-pi.api", "openai-r", ["openai-responses"]),
+            ("envy.agents.omp.api", "", []),
+            ("envy.agents.retired.api", "", []),
             ("envy.agents.inherited.endpoint", "c", ["custom"]),
             ("envy.agents.inherited.credential", "s", ["shared"]),
             ("envy.agents.inherited.adapter", "cl", ["claude-code"]),
@@ -74,13 +78,13 @@ class AgentCompletionTests(unittest.TestCase):
                     self.assertEqual(self.complete(group, "set", "value", prefix, path=path), expected)
 
     def test_show_includes_inherited_but_remove_only_suggests_managed_agents(self):
-        self.assertEqual(self.complete("agent", "show", "name", ""), ["inherited", "local-pi", "omp"])
+        self.assertEqual(self.complete("agent", "show", "name", ""), ["inherited", "local-pi", "other-pi"])
         for command in ("remove", "rm"):
             self.assertEqual(self.complete("agent", command, "name", ""), ["local-pi"])
 
     def test_add_and_credential_set_complete_metadata_references(self):
         for parameter, prefix, expected in (
-            ("adapter", "pi", ["pi"]), ("api", "openai-r", ["openai-responses"]),
+            ("adapter", "pi", ["pi"]), ("adapter", "oh-my", []), ("api", "openai-r", ["openai-responses"]),
             ("endpoint", "c", ["custom"]), ("credential", "s", ["shared"]),
         ):
             self.assertEqual(self.complete("agent", "add", parameter, prefix), expected)

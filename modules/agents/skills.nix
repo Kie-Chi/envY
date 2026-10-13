@@ -67,7 +67,6 @@ in
       (filesFor "claude-code" ".claude/skills")
       (filesFor "stepgo" ".stepgo/skills")
       (filesFor "pi" ".pi/agent/skills")
-      (filesFor "omp" ".omp/agent/skills")
     ];
   };
 }

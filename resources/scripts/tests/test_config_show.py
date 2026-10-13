@@ -141,6 +141,7 @@ class ConfigShowTests(unittest.TestCase):
             "pi": {"adapter": "pi", "more_thinking": True},
             "custom-pi": {"adapter": "pi"},
             "omp": {"adapter": "oh-my-pi", "more_thinking": False},
+            "renamed": {"adapter": "oh-my-pi"},
             "codex": {"adapter": "codex", "more_thinking": False},
         }
         values = {
@@ -172,6 +173,9 @@ class ConfigShowTests(unittest.TestCase):
                     key = f"envy.agents.{name}.more_thinking"
                     self.assertNotIn(key, fields)
                     self.assertNotIn(key, payload["values"])
+                for name in ("omp", "renamed"):
+                    self.assertNotIn(name, payload["agents"])
+                    self.assertFalse(any(key.startswith(f"envy.agents.{name}.") for key in fields))
 
     def test_show_hides_legacy_fields_from_source_and_cached_manifest(self):
         legacy = {
@@ -209,8 +213,8 @@ class ConfigShowTests(unittest.TestCase):
             "envy.agents.codex.endpoint": "local",
             "envy.agents.codex.credential": "local",
             "envy.agents.codex.model": "custom-model",
-            "envy.agents.omp.adapter": "oh-my-pi",
-            "envy.agents.omp.api": "openai-responses",
+            "envy.agents.pi.adapter": "pi",
+            "envy.agents.pi.api": "openai-responses",
         }
         output = io.StringIO()
         console = Console(file=output, force_terminal=False, width=220)
@@ -225,9 +229,9 @@ class ConfigShowTests(unittest.TestCase):
         payload = json.loads(output.getvalue())
         self.assertEqual(payload["source"], "source-fallback")
         self.assertEqual(payload["values"]["envy.agents.codex.model"], "custom-model")
-        self.assertEqual(payload["values"]["envy.agents.omp.api"], "openai-responses")
+        self.assertEqual(payload["values"]["envy.agents.pi.api"], "openai-responses")
         fields = {entry["path"]: entry for entry in payload["fields"]}
-        self.assertEqual(fields["envy.agents.omp.api"]["choices"], ["openai-completions", "openai-responses"])
+        self.assertEqual(fields["envy.agents.pi.api"]["choices"], ["openai-completions", "openai-responses"])
         self.assertTrue(payload["llm"]["credentials"]["local"]["credentialSet"])
         self.assertNotIn("hidden-key", output.getvalue())
 

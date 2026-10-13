@@ -87,10 +87,6 @@
   envy.agents.codex.credential = "xikai";
   envy.agents.codex.endpoint = "xikai-openai";
   envy.agents.codex.model = "gpt-6.1-sol";
-  envy.agents.omp.adapter = "oh-my-pi";
-  envy.agents.omp.credential = "xikai";
-  envy.agents.omp.endpoint = "xikai-openai";
-  envy.agents.omp.model = "gpt-6.1-sol";
   envy.agents.pi.adapter = "pi";
   envy.agents.pi.credential = "xikai";
   envy.agents.pi.endpoint = "xikai-openai";

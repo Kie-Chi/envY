@@ -14,7 +14,7 @@ modules/agents/
 ├── linux/rtk.nix        # Linux-only RTK package
 ├── claude.nix           # Claude package, wrapper defaults, and ccli alias
 ├── generic.nix           # OpenAI-compatible and StepGo adapters
-├── pi.nix              # Pi/OMP wrappers and provider metadata
+├── pi.nix              # Pi wrapper and provider metadata
 ├── pi-extensions.nix   # selected extensions from the locked upstream Pi source
 ├── skills.nix           # skill catalog/selection Home Manager module
 └── skills/
@@ -31,7 +31,7 @@ modules/agents/
 
 There are two distinct selection stages:
 
-1. `agents.skills.active` controls which catalog entries are linked into the selected agents' skill directories during Home Manager activation: `~/.codex/skills`, `~/.claude/skills`, `~/.stepgo/skills`, `~/.pi/agent/skills`, and `~/.omp/agent/skills`. Each catalog entry declares its supported targets.
+1. `agents.skills.active` controls which catalog entries are linked into the selected agents' skill directories during Home Manager activation: `~/.codex/skills`, `~/.claude/skills`, `~/.stepgo/skills`, and `~/.pi/agent/skills`. Each catalog entry declares its supported targets.
 2. For a discovered skill, the agent sees its `name` and `description` metadata first. It reads the `SKILL.md` body only when the task triggers that skill, then reads referenced resources as needed.
 
 This keeps agent capabilities declarative while preserving progressive, task-driven context loading. Changing the physically discoverable set requires a rebuild; ordinary task-level loading does not.
@@ -82,7 +82,7 @@ verified by an actual image request before relying on that feature.
 The shared selection also includes seven frontend skills from
 `emilkowalski/skills` and `vercel-labs/agent-skills`. Their complete directories
 are pinned through the `emil-skills` and `vercel-agent-skills` non-flake inputs
-and linked for Codex, Claude Code, Pi, and OMP. See
+and linked for Codex, Claude Code, and Pi. See
 [the skill and Pi extension selection guide](agent-skills.md) for the research,
 selected capabilities, commands, and update procedure.
 
@@ -109,38 +109,22 @@ receives only its own rendered template.
 
 The Claude wrapper deliberately invokes nixpkgs' `claude` wrapper, not its internal `.claude-wrapped` binary. Nixpkgs uses the outer wrapper to set required runtime environment variables and `PATH`; bypassing it would make this repository responsible for duplicating upstream packaging details.
 
-Pi and Oh My Pi are separate agent commands. `pi` is the upstream
-`earendil-works/pi` CLI and `omp` is the `can1357/oh-my-pi` fork, installed as a
-companion command so the fork's extensions do not silently replace upstream Pi.
-Both wrappers write provider metadata to their application-owned configuration
-locations (`~/.pi/agent/models.json` and `~/.omp/agent/models.yml`) and select
-`envy-pi/gpt-6.1-sol` by default. Each wrapper reads its own agent's endpoint,
-model, API, and credential selections, with separate `envy-agent-pi` and
-`envy-agent-omp` sops templates supplying the API key only at launch. Pi's model file contains an
-`$OPENAI_API_KEY` reference. OMP's model file uses a command-backed
-`apiKey` reference, and the wrapper also passes the resolved key through
-`--api-key`. Neither file contains a decrypted secret.
+`pi` is the upstream `earendil-works/pi` CLI. Its wrapper writes provider
+metadata to `~/.pi/agent/models.json` and selects `envy-pi/gpt-6.1-sol` by
+default. It reads the agent's endpoint, model, API, and credential selections,
+with the `envy-agent-pi` sops template supplying the API key only at launch.
+The model file contains an `$OPENAI_API_KEY` reference, never a decrypted
+secret.
 
-The two OMP credential paths are intentional. OMP validates a custom provider's
-model metadata before applying command-line options, so the command-backed
-`apiKey` satisfies that validation while `--api-key` supplies the runtime
-credential. When no credential is configured, the wrapper does not add
-`--api-key`; endpoint and model selection still come from the normal agent
-configuration. Changes to this adapter must preserve the invariant that
-application files contain references or commands only, while the decrypted
-value exists only in the launch-time sops template environment.
-
-Pi and OMP select their wire API with `envy.agents.<name>.api`. The option
+Pi selects its wire API with `envy.agents.<name>.api`. The option
 defaults to `openai-completions` (`/v1/chat/completions`); set
 `openai-responses` to use `/v1/responses`. The base URL stays at the API root
 (for example `https://models-proxy.stepfun-inc.com/v1`), not the full request
 path. The gateway must support the selected API. For gateways that reject
 GPT reasoning together with function tools on Chat Completions, choose
-Responses rather than disabling reasoning. Pi and OMP can select different
-APIs even when they share an endpoint.
+Responses rather than disabling reasoning.
 
 ```sh
-envy config set envy.agents.omp.api openai-responses --json --yes
 envy config set envy.agents.pi.api openai-responses --json --yes
 envy apply
 ```
@@ -164,7 +148,6 @@ all three as independent choices in `/thinking` and accepts
 `pi --thinking ultra`; the requested effort is sent unchanged to the endpoint.
 The option makes these levels available without changing the startup level.
 It does not add these capabilities to a model or gateway that lacks them.
-OMP keeps its own upstream package and model metadata.
 
 `envy config show --json` exposes the boolean for Pi, including its default.
 Use `envy config set envy.agents.pi.more_thinking true --json --yes` (or
@@ -183,20 +166,26 @@ This API-key integration is distinct from an OpenAI Codex subscription, OAuth
 session, or implementation-specific `codex-backend`. envY does not assume
 Codex OAuth credentials can be reused as a generic API key.
 
-Oh My Pi is a maintained Pi fork rather than a normal plugin package. Its
-additional LSP, debugger, subagent, advisor, and execution features are
-available through `omp`; application state and extensions remain under the
-user's `~/.omp` directory. The `pi-extensions` repository was reviewed as a
-candidate, but command-auditing extensions such as `toolwatch` are intentionally
-not installed declaratively until their policy is selected explicitly.
-
 Upstream Pi additionally loads the official questionnaire, todo, tools, and
 handoff extensions from the same locked source as its executable.
 `pi-extensions.nix` owns four `envy-*.ts` links under
 `~/.pi/agent/extensions/`; Pi keeps ownership of settings, installed package
-state, and session data. These extensions target Pi's API and are not linked
-into OMP. `/handoff <goal>` makes a request to the current model to generate a
-draft for a new session; the user reviews and submits it.
+state, and session data. `/handoff <goal>` makes a request to the current model
+to generate a draft for a new session; the user reviews and submits it.
+
+## Retired Oh My Pi configuration
+
+Oh My Pi (OMP) is no longer a supported envY agent. envY no longer installs
+`omp`, generates its provider configuration, or selects skills for
+`~/.omp/agent/skills`.
+
+`envy config check` identifies legacy OMP settings as redundant. Run
+`envy config refine` to remove `envy.agents.omp.*` from the machine's managed
+configuration block, along with any other named agent instance whose adapter
+is `oh-my-pi`, then run `envy apply` to update the installed environment.
+Shared endpoint and credential definitions are preserved because other agents
+may use them. The migration also preserves application-owned auth, history,
+and other state in `~/.omp`; it does not delete that directory.
 
 ## Shared agent configuration
 

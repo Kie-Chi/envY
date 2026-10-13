@@ -281,8 +281,8 @@ envy sw se hello --source nix --source-id nix:nixpkgs
 envy sw add nix.user.package 'flake:pi#default' --dry-run --json
 ```
 
-Existing local Pi/OMP wrappers retain their local references and separately
-declare upstream source dependencies. Adding the raw upstream package can
+The local Pi wrapper retains its local reference and separately declares its
+upstream source dependency. Adding the raw upstream package can
 conflict with the wrapper's stable package name; envY rejects the conflict.
 Default providers search sources that are selected or ready. Repeat
 `--source-id` on search to choose concrete origins; `--source` still filters

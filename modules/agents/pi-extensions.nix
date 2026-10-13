@@ -9,7 +9,6 @@ in
 {
   # Own individual, prefixed files instead of the extensions directory or
   # settings.json. Pi retains ownership of packages, sessions, and tool state.
-  # OMP has a different extension API; these are upstream-Pi extensions only.
   home.file = lib.listToAttrs (map (name:
     lib.nameValuePair ".pi/agent/extensions/envy-${name}.ts" {
       source = extensionRoot + "/${name}.ts";

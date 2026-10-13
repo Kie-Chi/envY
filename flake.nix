@@ -44,18 +44,6 @@
       url = "github:earendil-works/pi";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    oh-my-pi = {
-      # Keep the agent input tied to the commit recorded in flake.lock.
-      # Branch tarballs can be re-packed and fail Nix's narHash check.
-      url = "github:can1357/oh-my-pi";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.nix-bun.url = "https://api.github.com/repos/ryoppippi/nix-bun/tarball/48e887d7955c1c05b8d4627ed39bafe4bf2455a7";
-      inputs.nix-bun.inputs.nixpkgs.follows = "nixpkgs";
-      inputs.bun2nix.url = "https://api.github.com/repos/nix-community/bun2nix/tarball/0f2a1f0";
-      inputs.bun2nix.inputs.nixpkgs.follows = "nixpkgs";
-      inputs.rust-overlay.url = "https://api.github.com/repos/oxalica/rust-overlay/tarball/b962e5d";
-      inputs.rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
   outputs = { self, nixpkgs, home-manager, darwin, nixgl, sops-nix, ... }@inputs:
@@ -108,7 +96,6 @@
         vercelAgentSkills = inputs.vercel-agent-skills;
         piSource = inputs.pi.outPath;
         piPackage = inputs.pi.packages.${system}.default;
-        ohMyPiPackage = inputs.oh-my-pi.packages.${system}.default;
       };
 
       mkDarwinConfiguration = fileName: _:

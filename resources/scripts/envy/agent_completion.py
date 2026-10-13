@@ -6,7 +6,7 @@ import subprocess
 from envy.evaluation import machine_manifest
 
 
-ADAPTERS = ("claude-code", "codex", "oh-my-pi", "openai-compatible-cli", "pi", "stepgo")
+ADAPTERS = ("claude-code", "codex", "openai-compatible-cli", "pi", "stepgo")
 _AGENT_FIELDS = ("adapter", "endpoint", "credential", "model", "command")
 _PROTOCOLS = ("openai-compatible", "anthropic-compatible", "native")
 _KINDS = ("api-key", "token", "basic")
@@ -22,7 +22,7 @@ def _managed_values():
 
 
 def _metadata():
-    from envy.agent import _managed_manifest
+    from envy.agent import _managed_manifest, is_obsolete_agent
 
     try:
         manifest = machine_manifest(write_cache=False) or {}
@@ -41,8 +41,11 @@ def _metadata():
                 result[name] = result.get(name, {}) | item
         return result
 
+    agents = merge(manifest.get("agents", {}), local_agents)
+    obsolete_agents = {name for name, item in agents.items() if is_obsolete_agent(name, item.get("adapter"))}
     return {
-        "agents": merge(manifest.get("agents", {}), local_agents),
+        "agents": {name: item for name, item in agents.items() if name not in obsolete_agents},
+        "obsolete_agents": obsolete_agents,
         "endpoints": merge(llm.get("endpoints", {}), local_llm["endpoints"]),
         "credentials": merge(llm.get("credentials", {}), local_llm["credentials"]),
     }
@@ -98,7 +101,7 @@ def complete_agent_paths(ctx, incomplete):
     paths = {}
     for name, agent in metadata["agents"].items():
         fields = list(_AGENT_FIELDS)
-        if agent.get("adapter") in {"pi", "oh-my-pi"}:
+        if agent.get("adapter") == "pi":
             fields.append("api")
         if agent.get("adapter") == "pi":
             fields.append("more_thinking")
@@ -114,15 +117,25 @@ def complete_agent_paths(ctx, incomplete):
 def complete_agent_values(ctx, incomplete):
     params = getattr(ctx, "params", {})
     path = params.get("path", "") if isinstance(params, dict) else ""
-    match = re.fullmatch(r"envy\.(agents|llm\.endpoints|llm\.credentials)\.[A-Za-z0-9][A-Za-z0-9_-]*\.([A-Za-z0-9_-]+)", path or "")
+    match = re.fullmatch(r"envy\.(agents|llm\.endpoints|llm\.credentials)\.([A-Za-z0-9][A-Za-z0-9_-]*)\.([A-Za-z0-9_-]+)", path or "")
     if not match:
         return []
-    namespace, field = match.groups()
+    namespace, name, field = match.groups()
     if namespace == "agents":
-        callbacks = {"adapter": complete_adapters, "api": complete_apis,
-                     "endpoint": complete_endpoints, "credential": complete_credentials}
+        from envy.agent import is_obsolete_agent
+
+        if is_obsolete_agent(name) or field not in {"adapter", "api", "endpoint", "credential", "more_thinking"}:
+            return []
+        metadata = _metadata()
+        if name in metadata["obsolete_agents"]:
+            return []
+        callbacks = {"adapter": complete_adapters, "api": complete_apis}
         if field in callbacks:
             return callbacks[field](ctx, incomplete)
+        if field == "endpoint":
+            return _matches(metadata["endpoints"], incomplete, "configured endpoint")
+        if field == "credential":
+            return _matches(metadata["credentials"], incomplete, "credential reference")
         if field == "more_thinking":
             return _matches(("true", "false"), incomplete, path)
     elif namespace == "llm.endpoints" and field == "protocol":

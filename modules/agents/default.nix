@@ -1,4 +1,4 @@
-{ academicResearchSkills, academicResearchSkillsCodex, config, emilSkills, gptImage2PptSkills, lib, machinePlatform, ohMyPiPackage, piPackage, pptMaster, vercelAgentSkills, ... }:
+{ academicResearchSkills, academicResearchSkillsCodex, config, emilSkills, gptImage2PptSkills, lib, machinePlatform, pptMaster, vercelAgentSkills, ... }:
 
 {
   imports = [
@@ -92,18 +92,9 @@
     aliases = lib.mkDefault [ "ccli" ];
   };
 
-  # Pi is the upstream extensible harness. OMP is its enhanced fork and is
-  # installed alongside it as a separate command so either runtime can be
-  # selected without replacing Pi's own application state.
+  # Pi is the upstream extensible harness.
   envy.agents.pi = {
     adapter = lib.mkDefault "pi";
-    endpoint = lib.mkDefault "xikai-openai";
-    credential = lib.mkDefault "stepfun";
-    model = lib.mkDefault "gpt-6.1-sol";
-  };
-
-  envy.agents.omp = {
-    adapter = lib.mkDefault "oh-my-pi";
     endpoint = lib.mkDefault "xikai-openai";
     credential = lib.mkDefault "stepfun";
     model = lib.mkDefault "gpt-6.1-sol";

@@ -29,7 +29,7 @@ from envy.agent_completion import (
     complete_managed_agent_names,
 )
 from envy.config import _escape_nix_string, machine_config_file, read_secrets_data, set_secret_value
-from envy.evaluation import machine_manifest
+from envy.evaluation import invalidate_machine_manifest, machine_manifest
 from envy.jsonio import emit, emit_error
 from envy.mutation import offer_mutation_commit
 from envy.secure_io import atomic_write_text
@@ -48,6 +48,27 @@ _SAFE_SECRET_PATH = re.compile(r"^[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*$")
 _KNOWN_ENDPOINTS = {"stepfun-openai", "stepfun-anthropic", "deepseek-openai"}
 _KNOWN_CREDENTIALS = {"stepfun", "deepseek"}
 API_CHOICES = ("openai-completions", "openai-responses")
+OBSOLETE_AGENT_NAMES = frozenset({"omp"})
+OBSOLETE_AGENT_ADAPTERS = frozenset({"oh-my-pi"})
+
+
+def is_obsolete_agent(name: str, adapter: Any = None) -> bool:
+    """Recognize retired instances, including renamed Oh My Pi agents."""
+    return name in OBSOLETE_AGENT_NAMES or (
+        isinstance(adapter, str) and adapter in OBSOLETE_AGENT_ADAPTERS
+    )
+
+
+def obsolete_agent_paths(values: dict[str, Any]) -> list[str]:
+    names = set(OBSOLETE_AGENT_NAMES)
+    names.update(
+        path.split(".")[2]
+        for path, value in values.items()
+        if re.fullmatch(r"envy\.agents\." + _NAME + r"\.adapter", path)
+        and is_obsolete_agent(path.split(".")[2], value)
+    )
+    return sorted(path for path in values if path.startswith("envy.agents.")
+                  and path.split(".")[2] in names)
 
 
 def _block_pattern() -> re.Pattern[str]:
@@ -141,7 +162,7 @@ def _migration_values(machine_values: dict[str, Any]) -> dict[str, Any]:
 
 
 def _validate_values(values: dict[str, Any]) -> list[str]:
-    errors: list[str] = []
+    errors: list[str] = obsolete_agent_paths(values)
     agent_names: set[str] = set()
     endpoint_names: set[str] = set()
     credential_names: set[str] = set()
@@ -239,6 +260,10 @@ def refine_managed(
         result["added"] = sorted(set(migrated) - set(values))
         values = migrated | values
 
+    result["removed"] = obsolete_agent_paths(values)
+    for obsolete in result["removed"]:
+        values.pop(obsolete)
+
     invalid = _validate_values(values)
     if invalid:
         result["errors"].extend(invalid)
@@ -246,16 +271,24 @@ def refine_managed(
             log.error("agents", "invalid agent managed field", field=path)
         log.hint("Run: envy agent set ... or edit the managed agent block")
     else:
-        if result["added"]:
+        if result["added"] or result["removed"]:
             if write:
                 _write_values(values, path=path)
                 result["changed"] = True
-                log.fix("agents", "migrated missing legacy LLM selections", count=len(result["added"]))
+                if result["added"]:
+                    log.fix("agents", "migrated missing legacy LLM selections", count=len(result["added"]))
+                for obsolete in result["removed"]:
+                    log.fix("agents", "removed obsolete agent field", field=obsolete)
             else:
                 result["errors"].extend(result["added"])
-                log.error("agents", "legacy LLM selections need migration")
+                result["errors"].extend(result["removed"])
+                if result["added"]:
+                    log.error("agents", "legacy LLM selections need migration")
+                for obsolete in result["removed"]:
+                    log.error("agents", "obsolete agent field needs cleanup", field=obsolete)
                 log.hint("Run: envy config refine")
-        log.ok("agents", "managed agent selections are valid", fields=len(values))
+        if not result["errors"]:
+            log.ok("agents", "managed agent selections are valid", fields=len(values))
     return result
 
 
@@ -335,7 +368,7 @@ def config_view(
 
     normalized_agents: dict[str, Any] = {}
     for name, item in agents.items():
-        if not isinstance(item, dict):
+        if not isinstance(item, dict) or is_obsolete_agent(name, item.get("adapter")):
             continue
         agent = dict(item)
         if agent.get("adapter") == "pi":
@@ -379,7 +412,7 @@ def config_view(
     for name, agent in sorted(normalized_agents.items()):
         for field in ("adapter", "endpoint", "credential", "model", "command"):
             add_field(f"envy.agents.{name}.{field}", agent.get(field))
-        if agent.get("adapter") in {"pi", "oh-my-pi"}:
+        if agent.get("adapter") == "pi":
             add_field(
                 f"envy.agents.{name}.api",
                 agent.get("api", "openai-completions"),
@@ -440,6 +473,7 @@ def _write_values(values: dict[str, Any], *, path: Path | None = None) -> Path:
             raise ValueError(f"cannot locate the top-level closing brace in {path}")
         updated = text[:closing].rstrip() + "\n\n" + block + "\n" + text[closing:]
     atomic_write_text(path, updated if updated.endswith("\n") else updated + "\n")
+    invalidate_machine_manifest()
     return path
 
 
@@ -460,6 +494,11 @@ def _set(path: str, value: Any) -> Path:
     values, _present, errors = read_managed_values()
     if errors:
         raise ValueError("cannot edit malformed agent managed block")
+    if path.startswith("envy.agents."):
+        name = path.split(".")[2]
+        adapter = value if path.endswith(".adapter") else values.get(f"envy.agents.{name}.adapter")
+        if is_obsolete_agent(name, adapter):
+            raise typer.BadParameter("OMP is retired; run envy config refine to remove its obsolete configuration")
     values[path] = value
     return _write_values(values)
 
@@ -474,7 +513,7 @@ def _manifest_agents() -> dict[str, Any]:
     secret_data, decrypt_ok = read_secrets_data()
     result = {}
     for name, agent in agents.items():
-        if not isinstance(agent, dict):
+        if not isinstance(agent, dict) or is_obsolete_agent(name, agent.get("adapter")):
             continue
         value = dict(agent)
         credential_name = value.get("credential")
@@ -554,7 +593,7 @@ def cmd_set(
 def cmd_add(
     name: str = typer.Argument(...),
     adapter: str = typer.Option(..., "--adapter", autocompletion=complete_adapters),
-    api: Optional[str] = typer.Option(None, "--api", help="Pi/OMP wire API: openai-completions or openai-responses", autocompletion=complete_apis),
+    api: Optional[str] = typer.Option(None, "--api", help="Pi wire API: openai-completions or openai-responses", autocompletion=complete_apis),
     endpoint: Optional[str] = typer.Option(None, "--endpoint", autocompletion=complete_endpoints),
     credential: Optional[str] = typer.Option(None, "--credential", autocompletion=complete_credentials),
     model: Optional[str] = typer.Option(None, "--model"),
@@ -565,6 +604,8 @@ def cmd_add(
     """Create an agent instance from an adapter and optional LLM selection."""
     if not re.fullmatch(_NAME, name):
         raise typer.BadParameter(f"invalid agent name: {name}")
+    if is_obsolete_agent(name, adapter):
+        raise typer.BadParameter("OMP is retired and cannot be added")
     values = _read_values()
     prefix = f"envy.agents.{name}."
     if any(key.startswith(prefix) for key in values):

@@ -964,7 +964,7 @@ def cmd_doctor():
 @app.command(name="set")
 def cmd_set(
     path: str = typer.Argument(
-        ..., help="Machine or agent path, for example envy.vscode.mode or envy.agents.omp.api",
+        ..., help="Machine or agent path, for example envy.vscode.mode or envy.agents.pi.api",
         autocompletion=complete_machine_paths,
     ),
     value: str = typer.Argument(..., help="Value to write", autocompletion=complete_machine_values),

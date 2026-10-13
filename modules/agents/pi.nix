@@ -1,8 +1,7 @@
-{ config, lib, ohMyPiPackage, piPackage, pkgs, ... }:
+{ config, lib, piPackage, pkgs, ... }:
 
 let
   piConfig = config.envy.agents.pi;
-  ompConfig = config.envy.agents.omp;
   selectedPiPackage = if piConfig.more_thinking then
     import ./pi-package.nix { inherit piPackage pkgs; }
     else piPackage;
@@ -69,44 +68,18 @@ let
       exec "''${cmd[@]}" "$@"
     '';
   };
-  ompWrapper = pkgs.writeShellApplication {
-    name = "omp";
-    text = ''
-      if [ -f "${config.sops.templates.${templateNameFor "omp"}.path}" ]; then
-        # shellcheck source=/dev/null
-        source "${config.sops.templates.${templateNameFor "omp"}.path}"
-      fi
-      cmd=(${lib.escapeShellArg (lib.getExe ohMyPiPackage)})
-      ${lib.optionalString (credentialNameFor ompConfig != null) ''
-      cmd+=(--api-key "$OPENAI_API_KEY")
-      ''}
-      ${lib.optionalString (ompConfig.model != null) ''
-      cmd+=(--model ${lib.escapeShellArg "${providerName}/${ompConfig.model}"})
-      ''}
-      ${lib.concatMapStringsSep "\n" (arg: "cmd+=(${lib.escapeShellArg arg})") ompConfig.args}
-      exec "''${cmd[@]}" "$@"
-    '';
-  };
 in
 {
   config = {
     sops.templates.${templateNameFor "pi"}.content = templateFor piConfig;
-    sops.templates.${templateNameFor "omp"}.content = templateFor ompConfig;
 
     # Model files contain credential references, never decrypted API keys.
     home.file.".pi/agent/models.json".text = builtins.toJSON
       (modelConfigFor piConfig "$OPENAI_API_KEY");
-    # OMP validates custom providers before applying CLI credentials. Its
-    # command-backed apiKey satisfies that validation without embedding the
-    # decrypted secret in the generated model file.
-    home.file.".omp/agent/models.yml".text = builtins.toJSON
-      (modelConfigFor ompConfig "!printf '%s' \"$OPENAI_API_KEY\"");
-
-    envy.software.nix.packages.include = [ piWrapper ompWrapper ];
-    envy.software.nix.packages.sourceDependencies = { pi = [ "nix:pi" ]; omp = [ "nix:oh-my-pi" ]; };
+    envy.software.nix.packages.include = [ piWrapper ];
+    envy.software.nix.packages.sourceDependencies = { pi = [ "nix:pi" ]; };
     envy.software.nix.packages.references = {
       pi = "local:modules/agents/pi.nix#pi";
-      omp = "local:modules/agents/pi.nix#omp";
     };
   };
 }

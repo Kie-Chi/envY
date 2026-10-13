@@ -8,7 +8,7 @@ extensions.
 
 ## Skills
 
-All seven are enabled for Codex, Claude Code, Pi, and OMP. Their selected directories
+All seven are enabled for Codex, Claude Code, and Pi. Their selected directories
 contain Markdown/JSON resources and require no additional API keys or installed
 skill dependencies. They provide instructions; browser rendering and framework
 execution still depend on the tools available in the working project.
@@ -64,8 +64,7 @@ version aligned. Their imports are provided by Pi's extension loader; no
 Home Manager owns only the four `~/.pi/agent/extensions/envy-*.ts` links. Pi
 continues to own `settings.json`, packages, auth, history, and all extension
 session state. Handoff sends conversation context to the already selected
-provider only when invoked and incurs an additional model request. These
-extensions are not installed into OMP, whose extension API differs.
+provider only when invoked and incurs an additional model request.
 
 The actual Nix-evaluated links loaded successfully with the installed Pi 1.1.0
 loader in an isolated temporary agent directory: seven skills and four

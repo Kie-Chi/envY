@@ -17,6 +17,17 @@ from typing import Any, Optional
 import typer
 
 from envy import log
+from envy.agent_completion import (
+    complete_adapters,
+    complete_agent_names,
+    complete_agent_paths,
+    complete_agent_values,
+    complete_apis,
+    complete_credential_paths,
+    complete_credentials,
+    complete_endpoints,
+    complete_managed_agent_names,
+)
 from envy.config import _escape_nix_string, machine_config_file, read_secrets_data, set_secret_value
 from envy.evaluation import machine_manifest
 from envy.jsonio import emit, emit_error
@@ -505,7 +516,7 @@ def cmd_list(json_output: bool = typer.Option(False, "--json")):
 
 
 @app.command(name="show")
-def cmd_show(name: str = typer.Argument(...), json_output: bool = typer.Option(False, "--json")):
+def cmd_show(name: str = typer.Argument(..., autocompletion=complete_agent_names), json_output: bool = typer.Option(False, "--json")):
     """Show one evaluated agent and its non-sensitive selections."""
     agents = _manifest_agents()
     if name not in agents:
@@ -521,8 +532,8 @@ def cmd_show(name: str = typer.Argument(...), json_output: bool = typer.Option(F
 
 @app.command(name="set")
 def cmd_set(
-    path: str = typer.Argument(..., help="For example envy.agents.codex.model"),
-    value: str = typer.Argument(...),
+    path: str = typer.Argument(..., help="For example envy.agents.codex.model", autocompletion=complete_agent_paths),
+    value: str = typer.Argument(..., autocompletion=complete_agent_values),
     json_output: bool = typer.Option(False, "--json"),
     yes: bool = typer.Option(False, "--yes", "-y"),
 ):
@@ -542,10 +553,10 @@ def cmd_set(
 @app.command(name="add")
 def cmd_add(
     name: str = typer.Argument(...),
-    adapter: str = typer.Option(..., "--adapter"),
-    api: Optional[str] = typer.Option(None, "--api", help="Pi/OMP wire API: openai-completions or openai-responses"),
-    endpoint: Optional[str] = typer.Option(None, "--endpoint"),
-    credential: Optional[str] = typer.Option(None, "--credential"),
+    adapter: str = typer.Option(..., "--adapter", autocompletion=complete_adapters),
+    api: Optional[str] = typer.Option(None, "--api", help="Pi/OMP wire API: openai-completions or openai-responses", autocompletion=complete_apis),
+    endpoint: Optional[str] = typer.Option(None, "--endpoint", autocompletion=complete_endpoints),
+    credential: Optional[str] = typer.Option(None, "--credential", autocompletion=complete_credentials),
     model: Optional[str] = typer.Option(None, "--model"),
     command: Optional[str] = typer.Option(None, "--command"),
     json_output: bool = typer.Option(False, "--json"),
@@ -572,7 +583,7 @@ def cmd_add(
 
 @app.command(name="remove")
 @app.command(name="rm", rich_help_panel="Aliases")
-def cmd_remove(name: str = typer.Argument(...), json_output: bool = typer.Option(False, "--json"), yes: bool = typer.Option(False, "--yes", "-y")):
+def cmd_remove(name: str = typer.Argument(..., autocompletion=complete_managed_agent_names), json_output: bool = typer.Option(False, "--json"), yes: bool = typer.Option(False, "--yes", "-y")):
     """Remove an envY-managed agent instance."""
     values = _read_values()
     prefix = f"envy.agents.{name}."
@@ -592,8 +603,8 @@ def cmd_remove(name: str = typer.Argument(...), json_output: bool = typer.Option
 
 @app.command(name="credential-set")
 def cmd_credential_set(
-    name: str = typer.Argument(...),
-    secret_path: str = typer.Option(..., "--secret-path", help="Encrypted YAML path"),
+    name: str = typer.Argument(..., autocompletion=complete_credentials),
+    secret_path: str = typer.Option(..., "--secret-path", help="Encrypted YAML path", autocompletion=complete_credential_paths),
     stdin: bool = typer.Option(False, "--stdin"),
     json_output: bool = typer.Option(False, "--json"),
 ):

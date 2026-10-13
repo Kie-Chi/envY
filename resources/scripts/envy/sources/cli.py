@@ -14,6 +14,7 @@ from envy.evaluation import machine_manifest, invalidate_machine_manifest
 from envy.jsonio import emit, emit_error
 from envy.secure_io import atomic_write_text
 from envy.sources.catalog import catalog
+from envy.sources.completion import complete_ecosystems, complete_source_ids
 from envy.sources.model import Source, SourceError
 from envy.sources.policy import parse_definitions, render_definitions, source_dependents
 from envy.transaction import FileTransaction
@@ -65,7 +66,8 @@ def ls(json_output: bool = typer.Option(False, "--json")):
 
 
 @app.command("show")
-def show(source_id: str, json_output: bool = typer.Option(False, "--json")):
+def show(source_id: str = typer.Argument(..., autocompletion=complete_source_ids),
+         json_output: bool = typer.Option(False, "--json")):
     _, sources = snapshot("software.source.show", json_output)
     if source_id not in sources:
         fail("software.source.show", SourceError("unknown source", "source-not-found"), json_output)
@@ -73,7 +75,8 @@ def show(source_id: str, json_output: bool = typer.Option(False, "--json")):
 
 
 @app.command("search")
-def search(query: str, ecosystem: str | None = None, json_output: bool = typer.Option(False, "--json")):
+def search(query: str, ecosystem: str | None = typer.Option(None, autocompletion=complete_ecosystems),
+           json_output: bool = typer.Option(False, "--json")):
     _, sources = snapshot("software.source.search", json_output)
     found = [s.to_dict() for s in sources.values()
              if query.lower() in (s.id + " " + s.label).lower() and (ecosystem is None or s.ecosystem == ecosystem)]
@@ -192,20 +195,23 @@ def mutate(source_id, action, definition, ref, dry_run, yes, json_output):
 
 
 @app.command("add")
-def add(source_id: str, definition: str | None = None, ref: str | None = None,
+def add(source_id: str = typer.Argument(..., autocompletion=complete_source_ids),
+        definition: str | None = None, ref: str | None = None,
         dry_run: bool = typer.Option(False, "--dry-run"), yes: bool = typer.Option(False, "--yes", "-y"),
         json_output: bool = typer.Option(False, "--json")):
     mutate(source_id, "add", definition, ref, dry_run, yes, json_output)
 
 
 @app.command("rm")
-def rm(source_id: str, dry_run: bool = typer.Option(False, "--dry-run"),
+def rm(source_id: str = typer.Argument(..., autocompletion=complete_source_ids),
+       dry_run: bool = typer.Option(False, "--dry-run"),
        yes: bool = typer.Option(False, "--yes", "-y"), json_output: bool = typer.Option(False, "--json")):
     mutate(source_id, "rm", None, None, dry_run, yes, json_output)
 
 
 @app.command("sync")
-def sync(source_id: str, dry_run: bool = typer.Option(False, "--dry-run"),
+def sync(source_id: str = typer.Argument(..., autocompletion=complete_source_ids),
+         dry_run: bool = typer.Option(False, "--dry-run"),
          yes: bool = typer.Option(False, "--yes", "-y"), json_output: bool = typer.Option(False, "--json")):
     command = "software.source.sync"
     try:

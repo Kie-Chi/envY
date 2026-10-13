@@ -137,6 +137,13 @@ evaluated manifest、精确 identity index，或完成一次对应 provider 的�
 `sw why` 会补全跨 group 的 evaluated/受管条目，`history diff` 与 `rollback`
 会补全真实 generation，`host diff` 与 `host matrix --group` 则补全跨平台 machine
 和 canonical group。按 Tab 只做本地只读查询，不会访问 registry 或求值所有 machines。
+`agent set` 与 `config set` 都会补全当前机器的 agent、endpoint 和 credential
+字段，并按字段提示布尔值、API/协议、adapter 及已声明的连接引用。
+`agent show/rm`、`agent add` 的连接选项和 `credential-set` 的逻辑名称/YAML
+路径也支持补全；候选不读取或展示密钥值，模型名与 URL 仍可自由输入。
+`sw source show/add/rm/sync` 和 `sw add/search --source-id` 支持来源 ID，
+软件缓存候选按当前来源与上下文指纹过滤；`remote-agent start` 则从所选 TOML
+补全目标和 `--agent` 名称，不建立远程连接。
 `config show`、`host list/status`、`software list/status/audit/why`、
 `mirror status/probe/targets/sources/measure` 与 `doctor` 的只读视图支持 `--json`。
 `sw add/rm --json` 则输出稳定的 `software.<action>` envelope，包含完整计划和

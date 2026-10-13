@@ -890,22 +890,26 @@ app = typer.Typer(
 
 def complete_machine_paths(ctx, incomplete: str) -> list[tuple[str, str]]:
     """Complete managed non-secret machine option paths."""
-    del ctx
+    from envy.agent_completion import complete_agent_paths
+
     return [
         (field.path, field.prompt or field.group)
         for field in MACHINE_FIELDS
         if field.path.startswith(incomplete)
-    ]
+    ] + complete_agent_paths(ctx, incomplete)
 
 
 def complete_secret_paths(ctx, incomplete: str) -> list[tuple[str, str]]:
     """Complete secret YAML paths without reading or exposing secret values."""
-    del ctx
-    return [
-        (field.yaml_path, field.prompt or field.group)
+    from envy.agent_completion import complete_credential_paths
+
+    candidates = dict(complete_credential_paths(ctx, incomplete))
+    candidates.update({
+        field.yaml_path: field.prompt or field.group
         for field in SECRET_FIELDS
         if field.yaml_path and field.yaml_path.startswith(incomplete)
-    ]
+    })
+    return sorted(candidates.items())
 
 
 def complete_machine_values(ctx, incomplete: str) -> list[tuple[str, str]]:
@@ -913,7 +917,11 @@ def complete_machine_values(ctx, incomplete: str) -> list[tuple[str, str]]:
     params = getattr(ctx, "params", {}) if ctx is not None else {}
     path = params.get("path") if isinstance(params, dict) else None
     field = next((item for item in MACHINE_FIELDS if item.path == path), None)
-    if field is None or not field.choices:
+    if field is None:
+        from envy.agent_completion import complete_agent_values
+
+        return complete_agent_values(ctx, incomplete)
+    if not field.choices:
         return []
     return [
         (choice, field.path)

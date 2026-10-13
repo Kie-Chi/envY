@@ -231,6 +231,8 @@ class RegistryIndex:
         *,
         limit: int = 50,
         allow_stale: bool = False,
+        source_id: str | None = None,
+        fingerprint: str | None = None,
     ) -> list[IndexedResult]:
         """Return exact-index prefix candidates without creating an empty DB."""
         if not self.path.exists():
@@ -245,6 +247,7 @@ class RegistryIndex:
         )
         parameters: list[object] = [
             provider, kind, escaped_prefix + "%", escaped_prefix + "%",
+            source_id, source_id, fingerprint, fingerprint,
         ]
         if not allow_stale:
             parameters.append(now)
@@ -258,6 +261,7 @@ class RegistryIndex:
                         normalized_name LIKE ? ESCAPE '\\'
                         OR lower(canonical_ref) LIKE ? ESCAPE '\\'
                       )
+                      AND (? IS NULL OR source_id=?) AND (? IS NULL OR fingerprint=?)
                       {freshness}
                     ORDER BY normalized_name, canonical_ref
                     LIMIT ?

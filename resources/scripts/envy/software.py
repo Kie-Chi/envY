@@ -5,6 +5,7 @@ import json
 import math
 import re
 import sqlite3
+import subprocess
 import sys
 from collections import Counter
 from dataclasses import dataclass, replace
@@ -29,6 +30,7 @@ from envy.search.index import RegistryIndex
 from envy.search.model import SearchResult
 from envy.search.providers import resolve_exact
 from envy.sources.catalog import legacy_source_id, source_for
+from envy.sources.completion import complete_add_source_ids, complete_search_source_ids
 from envy.secure_io import atomic_write_text
 from envy.utils import current_machine_id, machine_config_file, platform_name
 
@@ -1210,13 +1212,14 @@ def _ordered_unique(values: list[str]) -> list[str]:
     return list(dict.fromkeys(values))
 
 
-def _completion_policy() -> tuple[
+def _completion_policy(manifest=None) -> tuple[
     tuple[SelectionGroup, ...],
     dict[str, list[SoftwareItem]],
 ]:
     """Load completion candidates without allowing evaluation errors to escape."""
     try:
-        manifest = machine_manifest(write_cache=False)
+        if manifest is None:
+            manifest = machine_manifest(write_cache=False)
         if not manifest_software_groups(manifest):
             return (), {}
         groups = groups_for_manifest(manifest, include_empty=True)
@@ -1368,8 +1371,7 @@ def _complete_smart_targets(incomplete: str, *, action: str) -> list[tuple[str, 
 
 
 def complete_add_targets(ctx, incomplete: str) -> list[tuple[str, str]]:
-    del ctx
-    return _complete_smart_targets(incomplete, action="add")
+    return _complete_add(ctx, incomplete, smart=True)
 
 
 def complete_remove_targets(ctx, incomplete: str) -> list[tuple[str, str]]:
@@ -1378,19 +1380,57 @@ def complete_remove_targets(ctx, incomplete: str) -> list[tuple[str, str]]:
 
 
 def complete_add_items(ctx, incomplete: str) -> list[tuple[str, str]]:
-    group_key = None
-    if ctx is not None:
-        group_key = ctx.params.get("group") or ctx.params.get("group_or_item")
-    if not isinstance(group_key, str):
-        return []
-    groups, all_items_by_group = _completion_policy()
+    return _complete_add(ctx, incomplete, smart=False)
+
+
+def _complete_add(ctx, incomplete: str, *, smart: bool) -> list[tuple[str, str]]:
+    params = getattr(ctx, "params", {}) or {}
+    group_key = params.get("group") or (None if smart else params.get("group_or_item"))
     try:
-        group = require_group(group_key, groups)
-    except typer.BadParameter:
+        manifest = machine_manifest(write_cache=False)
+        if not manifest:
+            return []
+        groups, all_items_by_group = _completion_policy(manifest)
+        if isinstance(group_key, str):
+            groups = (require_group(group_key, groups),)
+        elif not smart:
+            return []
+    except (OSError, RuntimeError, TypeError, ValueError, subprocess.SubprocessError, typer.BadParameter):
         return []
+
+    source_id = params.get("source_id")
+    source_id = source_id if isinstance(source_id, str) else None
+    if source_id:
+        groups = tuple(group for group in groups if group.ecosystem == source_id.split(":", 1)[0])
+    index = RegistryIndex()
+    sources = {}
+    if index.path.exists() and manifest.get("schemaVersion") == 3:
+        try:
+            from envy.sources.catalog import catalog
+            # These observations read local package-manager state and lock data;
+            # they never query a registry or refresh package metadata.
+            sources = catalog(manifest)
+        except (OSError, RuntimeError, TypeError, ValueError, subprocess.SubprocessError):
+            pass
+    candidates = []
+    if smart and group_key is None:
+        candidates.extend((group.key, group.label) for group in groups
+                          if group.key.startswith(incomplete) and group.editable_include)
+    for group in groups:
+        candidates.extend(_complete_add_in_group(
+            group, all_items_by_group.get(group.key, []), incomplete,
+            index=index, manifest=manifest, sources=sources, source_id=source_id,
+            canonical=smart and group_key is None,
+        ))
+    return list(dict(candidates).items())
+
+
+def _complete_add_in_group(group, all_items, incomplete, *, index, manifest, sources,
+                           source_id, canonical):
     items = [
-        item for item in all_items_by_group[group.key]
+        item for item in all_items
         if not item.checked and not item.locked
+        and (not source_id or (item.source_id or legacy_source_id(group.ecosystem, item.ref, group.kind)) == source_id)
     ]
     needle = incomplete.casefold()
     candidates = [
@@ -1402,16 +1442,25 @@ def complete_add_items(ctx, incomplete: str) -> list[tuple[str, str]]:
             or (item.ref or "").casefold().startswith(needle)
         )
     ]
-    if group.ecosystem not in {"homebrew", "npm", "pypi", "native", "url"}:
+    if not group.editable_include:
         return candidates
 
     known = {
         value.casefold()
-        for item in all_items_by_group[group.key]
+        for item in all_items
         for value in (item.id, item.name, item.ref)
         if value
     }
-    for indexed in RegistryIndex().suggest(group.ecosystem, group.kind, incomplete):
+    if manifest.get("schemaVersion") == 3:
+        indexed_results = [indexed for source in sources.values()
+                           if source.ecosystem == group.ecosystem
+                           and (not source_id or source.id == source_id)
+                           and source.capabilities.get("managedInclude")
+                           for indexed in index.suggest(group.ecosystem, group.kind, incomplete,
+                               source_id=source.id, fingerprint=source.fingerprint)]
+    else:
+        indexed_results = index.suggest(group.ecosystem, group.kind, incomplete, source_id=source_id)
+    for indexed in indexed_results:
         result = indexed.result
         identity = {value.casefold() for value in (result.name, result.ref) if value}
         if known & identity:
@@ -1421,7 +1470,12 @@ def complete_add_items(ctx, incomplete: str) -> list[tuple[str, str]]:
             details.append(f"v{result.version}")
         if result.ref:
             details.append(result.ref)
-        candidates.append((result.name, "; ".join(details)))
+        if result.source_id:
+            details.append(result.source_id)
+        value = result.ref if (canonical or group.ecosystem == "nix") and result.ref else result.name
+        if group.ecosystem == "url":
+            value = result.source_id or result.name
+        candidates.append((value, "; ".join(details)))
         known.update(identity)
     return candidates
 
@@ -2554,7 +2608,8 @@ def cmd_add(
         None, "--group", "-g", help="Select a canonical group without an interactive chooser",
         autocompletion=complete_add_groups,
     ),
-    source_id: str | None = typer.Option(None, "--source-id", help="Require a concrete software source"),
+    source_id: str | None = typer.Option(None, "--source-id", help="Require a concrete software source",
+                                       autocompletion=complete_add_source_ids),
     clean: bool = typer.Option(False, "--clean", help="Remove redundant envY-managed state for this item"),
     ref: str | None = typer.Option(None, "--ref", help="Canonical registry reference when item is a custom stable ID"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Apply the displayed plan without confirmation"),
@@ -2635,7 +2690,8 @@ def cmd_search(
         None, "--source", "-s", help="Restrict search providers",
         autocompletion=complete_search_sources,
     ),
-    source_id: list[str] | None = typer.Option(None, "--source-id", help="Filter concrete source identities"),
+    source_id: list[str] | None = typer.Option(None, "--source-id", help="Filter concrete source identities",
+                                             autocompletion=complete_search_source_ids),
     limit: int = typer.Option(10, "--limit", "-n", min=1, max=100),
     exact: bool = typer.Option(False, "--exact", help="Show exact name matches only"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),

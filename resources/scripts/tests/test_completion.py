@@ -1,5 +1,6 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from typer.main import get_command
 
@@ -22,7 +23,8 @@ class CompletionTests(unittest.TestCase):
             complete_machine_values(SimpleNamespace(params={"path": "envy.mirrors.mode"}), "c"),
             [("china", "envy.mirrors.mode")],
         )
-        secret_paths = complete_secret_paths(None, "llm/")
+        with patch("envy.agent_completion.machine_manifest", return_value={}), patch("envy.agent._read_values", return_value={}):
+            secret_paths = complete_secret_paths(None, "llm/")
         self.assertTrue(secret_paths)
         self.assertTrue(all("apikey" not in description.casefold() or value.endswith("apikey") for value, description in secret_paths))
 

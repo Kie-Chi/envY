@@ -84,9 +84,9 @@ China mode 在 Ubuntu 或 Debian 上生成：
 /etc/apt/sources.list.d/envy-mirror.sources
 ```
 
-envY 不覆盖、重命名或删除 `/etc/apt/sources.list` 以及其他软件创建的 source 文件。envY 自己的 `pkg_update`、`pkg_install` 和本地 `.deb` 安装只读取上述 source，避免被慢速系统源拖累。切换到 `upstream` 时只删除 envY 自己的文件。
+envY 不覆盖、重命名或删除 `/etc/apt/sources.list` 以及其他软件创建的 source 文件。搜索、`pkg_update`、`pkg_install` 和本地 `.deb` 的依赖安装共用有效来源集合：用上述镜像替换可确认的发行版 URI，保留厂商仓库和无法分类的外部来源。临时 descriptor 不放宽原 source 文件的访问权限。切换到 `upstream` 时只删除 envY 自己的镜像文件。
 
-Waydroid 是独立第三方 repository。它的安装仍读取完整系统 source set，因此 `repo.waydro.id` 不会被 TUNA Ubuntu/Debian 源遮蔽。腾讯官方 WeChat `.deb` 也保留原始下载 URL，只把依赖解析交给 APT mirror。
+Docker 和 Waydroid 使用统一来源目录中的独立厂商 repository，由各自业务模块声明，公钥按完整指纹核验。来源限定包从私有签名索引解析并核验下载内容，依赖使用同一个有效来源集合，因此厂商源不会被 Ubuntu/Debian 镜像遮蔽。腾讯官方 WeChat `.deb` 保留原始下载 URL，并通过有效来源集合解析依赖。具体来源能力见 [Software](software.md)。
 
 ## Inspection
 

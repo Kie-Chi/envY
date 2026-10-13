@@ -303,6 +303,8 @@ def _policy_text(state: AppState) -> list:
     for index, item in enumerate(items):
         marker = "[x]" if item.checked else ("[-]" if item.locked else "[ ]")
         annotations = []
+        if item.source_id:
+            annotations.append(item.source_id)
         if item.changed:
             annotations.append("pending")
         if item.locked:

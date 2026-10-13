@@ -329,7 +329,7 @@ def manifest_software_groups(
     manifest: dict[str, Any] | None,
 ) -> dict[str, dict[str, Any]]:
     """Return validated manifest v2 software groups keyed by canonical ID."""
-    if not isinstance(manifest, dict) or manifest.get("schemaVersion") != 2:
+    if not isinstance(manifest, dict) or manifest.get("schemaVersion") not in (2, 3):
         return {}
     software = manifest.get("software")
     groups = software.get("groups") if isinstance(software, dict) else None

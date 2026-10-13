@@ -10,6 +10,7 @@ let
 
 in
 {
+  imports = [ ./source-options.nix ];
   options.envy = {
     machine = {
       id = mkOption {

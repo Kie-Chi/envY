@@ -12,10 +12,11 @@ from pathlib import Path
 from typing import Iterable
 
 from envy.search.model import ProviderReport, SearchResult
+from envy.sources.catalog import legacy_source_id
 from envy.secure_io import ensure_private_directory
 
 
-INDEX_SCHEMA_VERSION = 1
+INDEX_SCHEMA_VERSION = 2
 DEFAULT_TTL_SECONDS = 24 * 60 * 60
 NEGATIVE_TTL_SECONDS = 5 * 60
 
@@ -23,7 +24,7 @@ NEGATIVE_TTL_SECONDS = 5 * 60
 def default_index_path() -> Path:
     root = os.environ.get("XDG_CACHE_HOME", "").strip()
     cache_root = Path(root).expanduser() if root else Path.home() / ".cache"
-    return cache_root / "envy" / "registry" / "index-v1.sqlite3"
+    return cache_root / "envy" / "registry" / "index-v2.sqlite3"
 
 
 def canonical_provider(result: SearchResult) -> str:
@@ -70,6 +71,8 @@ class RegistryIndex:
                 value TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS entries (
+                source_id TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
                 provider TEXT NOT NULL,
                 source TEXT NOT NULL,
                 ecosystem TEXT NOT NULL,
@@ -80,17 +83,19 @@ class RegistryIndex:
                 payload_json TEXT NOT NULL,
                 fetched_at INTEGER NOT NULL,
                 expires_at INTEGER NOT NULL,
-                PRIMARY KEY (provider, kind, canonical_ref)
+                PRIMARY KEY (source_id, fingerprint, provider, kind, canonical_ref)
             );
             CREATE INDEX IF NOT EXISTS entries_name_idx
                 ON entries(provider, kind, normalized_name);
             CREATE TABLE IF NOT EXISTS misses (
+                source_id TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
                 provider TEXT NOT NULL,
                 kind TEXT NOT NULL,
                 normalized_name TEXT NOT NULL,
                 checked_at INTEGER NOT NULL,
                 expires_at INTEGER NOT NULL,
-                PRIMARY KEY (provider, kind, normalized_name)
+                PRIMARY KEY (source_id, fingerprint, provider, kind, normalized_name)
             );
         """)
         connection.execute(
@@ -140,6 +145,8 @@ class RegistryIndex:
             if not result.ref or not result.name or not result.ecosystem or not result.kind:
                 continue
             rows.append((
+                result.source_id or legacy_source_id(result.ecosystem, result.ref, result.kind) or result.ecosystem,
+                result.source_fingerprint or "",
                 canonical_provider(result),
                 result.source,
                 result.ecosystem,
@@ -156,10 +163,10 @@ class RegistryIndex:
         with self._connection() as connection:
             connection.executemany("""
                 INSERT INTO entries(
-                    provider, source, ecosystem, kind, normalized_name,
+                    source_id, fingerprint, provider, source, ecosystem, kind, normalized_name,
                     canonical_ref, version, payload_json, fetched_at, expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(provider, kind, canonical_ref) DO UPDATE SET
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_id, fingerprint, provider, kind, canonical_ref) DO UPDATE SET
                     source=excluded.source,
                     ecosystem=excluded.ecosystem,
                     normalized_name=excluded.normalized_name,
@@ -169,8 +176,8 @@ class RegistryIndex:
                     expires_at=excluded.expires_at
             """, rows)
             connection.executemany(
-                "DELETE FROM misses WHERE provider=? AND kind=? AND normalized_name=?",
-                [(row[0], row[3], row[4]) for row in rows],
+                "DELETE FROM misses WHERE source_id=? AND fingerprint=? AND provider=? AND kind=? AND normalized_name=?",
+                [(row[0], row[1], row[2], row[5], row[6]) for row in rows],
             )
         return len(rows)
 
@@ -189,6 +196,8 @@ class RegistryIndex:
         value: str,
         *,
         allow_stale: bool = False,
+        source_id: str | None = None,
+        fingerprint: str | None = None,
     ) -> IndexedResult | None:
         if not self.path.exists():
             return None
@@ -199,10 +208,12 @@ class RegistryIndex:
                     SELECT * FROM entries
                     WHERE provider=? AND kind=?
                       AND (normalized_name=? OR canonical_ref=?)
+                      AND (? IS NULL OR source_id=?) AND (? IS NULL OR fingerprint=?)
                     ORDER BY CASE WHEN canonical_ref=? THEN 0 ELSE 1 END,
                              fetched_at DESC
-                    LIMIT 1
-                """, (provider, kind, normalized, value, value)).fetchone()
+                    LIMIT 2
+                """, (provider, kind, normalized, value, source_id, source_id, fingerprint, fingerprint, value)).fetchall()
+                row = row[0] if len(row) == 1 else None
         except (OSError, sqlite3.Error):
             return None
         if row is None:
@@ -262,29 +273,31 @@ class RegistryIndex:
         value: str,
         *,
         now: int | None = None,
+        source_id: str | None = None,
+        fingerprint: str = "",
     ) -> None:
         timestamp = int(time.time()) if now is None else now
         with self._connection() as connection:
             connection.execute("""
-                INSERT INTO misses(provider, kind, normalized_name, checked_at, expires_at)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(provider, kind, normalized_name) DO UPDATE SET
+                INSERT INTO misses(source_id, fingerprint, provider, kind, normalized_name, checked_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_id, fingerprint, provider, kind, normalized_name) DO UPDATE SET
                     checked_at=excluded.checked_at,
                     expires_at=excluded.expires_at
             """, (
-                provider, kind, value.casefold(), timestamp,
+                (source_id or legacy_source_id(provider) or provider), fingerprint, provider, kind, value.casefold(), timestamp,
                 timestamp + NEGATIVE_TTL_SECONDS,
             ))
 
-    def recently_missing(self, provider: str, kind: str, value: str) -> bool:
+    def recently_missing(self, provider: str, kind: str, value: str, *, source_id: str | None = None, fingerprint: str = "") -> bool:
         if not self.path.exists():
             return False
         try:
             with self._readonly_connection() as connection:
                 row = connection.execute("""
                     SELECT expires_at FROM misses
-                    WHERE provider=? AND kind=? AND normalized_name=?
-                """, (provider, kind, value.casefold())).fetchone()
+                    WHERE source_id=? AND fingerprint=? AND provider=? AND kind=? AND normalized_name=?
+                """, ((source_id or legacy_source_id(provider) or provider), fingerprint, provider, kind, value.casefold())).fetchone()
         except (OSError, sqlite3.Error):
             return False
         return row is not None and int(row["expires_at"]) > int(time.time())
@@ -315,6 +328,13 @@ class RegistryIndex:
             "stale": entries - fresh, "misses": misses, "providers": providers,
         }
 
+    def clear_source(self, source_id: str) -> None:
+        if not self.path.exists():
+            return
+        with self._connection() as connection:
+            connection.execute("DELETE FROM entries WHERE source_id=?", (source_id,))
+            connection.execute("DELETE FROM misses WHERE source_id=?", (source_id,))
+
     def clear(self) -> bool:
         removed = False
         for path in (
@@ -333,7 +353,7 @@ class RegistryIndex:
     def _decode(row: sqlite3.Row) -> IndexedResult | None:
         try:
             payload = json.loads(row["payload_json"])
-            result = SearchResult(**payload)
+            result = SearchResult.from_dict(payload)
             return IndexedResult(
                 result=result,
                 fetched_at=int(row["fetched_at"]),

@@ -72,7 +72,7 @@ in
     envy.darwin.software.homebrew.repositories.effective = taps;
 
     envy.machine.manifest = {
-      schemaVersion = 2;
+      schemaVersion = 3;
       id = config.envy.machine.id;
       platform = config.envy.machine.platform;
       system = config.envy.machine.system;
@@ -118,6 +118,7 @@ in
         probes = mirrorProfile.probes.common ++ mirrorProfile.probes.darwin;
       };
       habits = systemHabits ++ homeHabits;
+      software.sources = config.envy.software.sources;
       software.groups = {
         "nix.user.package" = manifestLib.group {
           label = "Nix packages";
@@ -220,7 +221,14 @@ in
     fonts.packages = fontPackages;
     homebrew = {
       enable = true;
-      inherit brews casks taps;
+      inherit brews casks;
+      taps = map (name:
+        let source = config.envy.software.sources."homebrew:${name}" or null;
+        in if source != null && source.parameters ? url then {
+          inherit name;
+          clone_target = source.parameters.url;
+        } else name
+      ) taps;
       onActivation = {
         autoUpdate = false;
         upgrade = false;

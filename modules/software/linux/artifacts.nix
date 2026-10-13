@@ -1,38 +1,41 @@
 { config, lib, pkgs, sys, ... }:
 
 let
+  sourceDefinitions = pkgs.writeText "envy-artifact-sources.json" (builtins.toJSON config.envy.software.sources);
   artifacts = config.envy.linux.software.url.artifacts.effective;
   installArtifact = artifact:
     let
-      url = artifact.parameters.url or (throw "URL artifact '${artifact.id}' requires parameters.url");
-      format = artifact.parameters.format or "";
-      packageName = artifact.parameters.packageName or artifact.name;
-    in
-    if format != "deb" then throw "Unsupported URL artifact format '${format}' for '${artifact.id}'"
+      parameters = artifact.parameters // { packageName = artifact.parameters.packageName or artifact.name; }
+        // lib.optionalAttrs (artifact.version != null) { version = artifact.version; };
+      format = parameters.format or "";
+      descriptor = pkgs.writeText ("envy-artifact-" + artifact.id + ".json") (builtins.toJSON parameters);
+    in if !(builtins.elem format [ "deb" "rpm" ]) then throw "Unsupported artifact format"
     else ''
-      PKG=${lib.escapeShellArg packageName}
-      if ! pkg_installed "$PKG"; then
-        URL=${lib.escapeShellArg url}
-        TARGET="$TEMP_DIR/$(basename "$URL")"
-        ${pkgs.curl}/bin/curl --fail --location "$URL" --output "$TARGET"
-        pkg_install_files "$TARGET"
-      else
-        log_info "'$PKG' already installed, skip."
-      fi
+      case "$(detect_pkg_manager):${format}" in
+        apt:deb|dnf:rpm|zypper:rpm)
+          PKG=${lib.escapeShellArg parameters.packageName}
+          if ! pkg_installed "$PKG"; then
+            TARGET="$TEMP_DIR/${artifact.id}.${format}"
+            ${pkgs.python3}/bin/python3 -c 'import sys; sys.path.insert(0, "${../../../resources/scripts}"); from envy.sources.artifacts import main; main()' "${descriptor}" "$TARGET"
+            ${pkgs.python3}/bin/python3 -c 'import sys,json; sys.path.insert(0, "${../../../resources/scripts}"); from envy.sources.native.observe import snapshot; json.dump(snapshot(),open(sys.argv[1],"w"))' "$TEMP_DIR/before-sources.json"
+            pkg_install_files "$TARGET"
+            ${pkgs.python3}/bin/python3 -c 'import sys,json; sys.path.insert(0, "${../../../resources/scripts}"); from envy.sources.native.observe import report_bootstrap; report_bootstrap(json.load(open(sys.argv[1])),sys.argv[2],json.load(open(sys.argv[3])))' "${descriptor}" "$TEMP_DIR/before-sources.json" "${sourceDefinitions}"
+            log_info "Artifact installed; native source configuration will be observed on the next source/doctor inspection."
+          fi
+          ;;
+        *) log_warn "Artifact ${artifact.id} is unsupported by this package manager." ;;
+      esac
     '';
+
 in
 {
   home.activation.installSystemArtifacts = sys.task.root {
     name = "system-artifacts";
-    after = [ "configureAptMirror" ];
+    after = [ "configureNativeRepositories" ];
     script = ''
-      if [ "$(detect_pkg_manager)" != "apt" ]; then
-        log_warn "URL artifacts currently require an APT-compatible host."
-      else
-        TEMP_DIR=$(mktemp -d)
-        trap 'rm -rf "$TEMP_DIR"' EXIT
-        ${lib.concatMapStringsSep "\n" installArtifact artifacts}
-      fi
+      TEMP_DIR=$(mktemp -d)
+      trap 'rm -rf "$TEMP_DIR"' EXIT
+      ${lib.concatMapStringsSep "\n" installArtifact artifacts}
     '';
   };
 }

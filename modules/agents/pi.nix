@@ -94,6 +94,7 @@ in
       (modelConfigFor ompConfig "!printf '%s' \"$OPENAI_API_KEY\"");
 
     envy.software.nix.packages.include = [ piWrapper ompWrapper ];
+    envy.software.nix.packages.sourceDependencies = { pi = [ "nix:pi" ]; omp = [ "nix:oh-my-pi" ]; };
     envy.software.nix.packages.references = {
       pi = "local:modules/agents/pi.nix#pi";
       omp = "local:modules/agents/pi.nix#omp";

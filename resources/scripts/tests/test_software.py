@@ -420,8 +420,8 @@ class SoftwarePolicyTests(unittest.TestCase):
         manifest["system"] = "aarch64-darwin"
         groups = software.groups_for_manifest(manifest, include_empty=True)
         exclusions = software.empty_exclusions(groups)
-        result = SimpleNamespace(returncode=0, stdout="hello\n", stderr="")
-        with patch.object(software, "run_process", return_value=result):
+        result = SimpleNamespace(returncode=0, stdout='{"name":"hello","version":"1","drvPath":"/nix/store/example.drv"}', stderr="")
+        with patch("envy.sources.adapters.run_process", return_value=result):
             plan = software.build_desired_plan(
                 action="add", group=groups[0],
                 item_value="nix:legacyPackages.aarch64-darwin.hello",

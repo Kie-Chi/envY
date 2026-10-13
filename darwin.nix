@@ -7,6 +7,7 @@ assert lib.assertMsg (machinePlatform == "darwin")
   # implementation; this file only assembles them for flake.nix.
   imports = [
     ./modules/envy/darwin.nix
+    ./modules/software/sources.nix
     ./modules/mirrors/darwin.nix
     ./modules/agents/darwin.nix
     ./modules/desktops/darwin/nix-darwin.nix

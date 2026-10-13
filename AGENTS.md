@@ -43,6 +43,7 @@ Cross-platform Nix configuration for Darwin (aarch64-darwin) and Linux (x86_64-l
 | `resources/scripts/envy/workflows/` | Check, update, system lifecycle, and shared-branch Git workflows kept out of the CLI registration layer. |
 | `resources/scripts/envy/keys/` | Age/sops storage, device identity, and recovery-key encryption primitives. |
 | `resources/scripts/envy/software.py` | Direct managed include/exclude policy, desired-state planner, checkbox model, atomic writes, and evaluation rollback. |
+| `resources/scripts/envy/sources/` | Unified source catalog, scoped adapters, signed native sources, artifact verification, and registration transactions. |
 | `resources/scripts/envy/search/` | Concurrent registry providers, normalized search results, manifest matching, and TTL cache. |
 | `resources/scripts/envy/search/index.py` | Private SQLite exact-identity index shared by software search/add, with positive and negative TTLs. |
 | `resources/scripts/envy/host.py` | Creates and inspects per-machine files; init only asks for Machine ID and import/copy mode. |
@@ -53,7 +54,7 @@ Cross-platform Nix configuration for Darwin (aarch64-darwin) and Linux (x86_64-l
 | `docs/machines.md` | Multi-machine option model, host initialization, package overrides, and shared-branch workflow. |
 | `docs/install.md` | Remote bootstrap, pinned release, custom target, and existing-checkout behavior. |
 | `docs/mirrors.md` | Two-stage bootstrap/declarative mirror policy, endpoint scope, probes, and ownership boundaries. |
-| `docs/software.md` | Manifest v2 schema, software commands, provider behavior, and ownership boundaries. |
+| `docs/software.md` | Manifest v3 schema (v2 reader compatibility), sources, software commands, provider behavior, and ownership boundaries. |
 | `setup.sh` | Thin launcher: install Nix → run the minimal setup flake app → exec setup.py. |
 | `requires.sh` | Installs Nix if missing. Nothing else — the setup flake app provides runtime tools. |
 
@@ -112,11 +113,12 @@ Hybrid approach (in `setup.py`):
 | `envy config check` | Check `.device-label`, the selected machine file, and secrets.yaml without writing |
 | `envy config refine` | Migrate/refine device metadata, the machine managed block, and secret paths before apply |
 | `envy config show` | Show evaluated machine scalar values and secret-set status |
-| `envy software` / `envy sw` | List the selected machine's manifest v2 software groups |
+| `envy software` / `envy sw` | List the selected machine's manifest v3 software groups |
 | `envy sw ls --details` | Show structured selections, versions, and canonical references |
 | `envy sw add/rm <item>` | Infer or interactively choose a compatible group, then preview and apply desired state; precise `<group> <item>` remains supported |
 | `envy sw en/dis <group> <id>` | Enable or exclude one stable software item ID |
 | `envy sw search <query>` / `envy sw se <query>` | Search registries with isolated timeouts and manifest matching |
+| `envy sw source ls/show/search/add/rm/sync` | Inspect sources, preview scoped registration/selection, and refresh metadata without updating locks |
 | `envy sw audit` / `envy sw why <item>` | Find ambiguous machine policy or explain evaluated ownership/state |
 | `envy sw cache status/clean` | Inspect or clear the exact registry identity index |
 | `envy config edit` | Open the selected versioned machine file in `$EDITOR` |
@@ -215,3 +217,6 @@ For meeting apps such as Tencent Meeting or Feishu, open the app and actually st
 - When adding a new app permission check: add `PermissionReq` entries in `AppSpec.permissions`. Remember that missing TCC records may mean "not requested yet", not necessarily "denied".
 - Modules read non-sensitive machine values from `config.envy.*`; do not reintroduce a separate `cfg` argument.
 - sops-nix on darwin uses activation scripts (not systemd), so secrets are decrypted during `darwin-rebuild switch`.
+
+- Source definitions live in `envy.software.sources`; custom host definitions use a separate `ENVY MANAGED SOURCES` block. Search/add caches bind concrete source IDs and context fingerprints. Never substitute a global Nix registry lookup for project-locked inputs.
+- Shared source registration owns only flake managed input/binding blocks plus flake.lock, validates every machine, and rolls back all files on failure. Native source configuration owns only envY-named repository/keyring files.

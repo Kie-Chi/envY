@@ -6,10 +6,12 @@ let
   installTool = tool:
     let
       packageSpec = if tool.version == null then tool.name else "${tool.name}@${tool.version}";
+      registryFlags = lib.optionalString (tool.sourceId != null && tool.sourceId != "npm:npmjs")
+        ("--registry " + lib.escapeShellArg (tool.parameters.registry or (throw "npm source requires registry")));
       checkPath = "$HOME/.npm-global/lib/node_modules/${tool.name}";
     in ''
       if ! [ -d "${checkPath}" ]; then
-        ${pkgs.nodejs_26}/bin/npm install -g ${lib.escapeShellArg packageSpec}
+        ${pkgs.nodejs_26}/bin/npm install -g ${lib.escapeShellArg packageSpec} ${registryFlags}
       fi
     '';
 in

@@ -16,6 +16,11 @@ let
         machineSystem = system;
         academicResearchSkills = inputs.academic-research-skills;
         academicResearchSkillsCodex = inputs.academic-research-skills-codex;
+        pptMaster = inputs.ppt-master;
+        gptImage2PptSkills = inputs.gpt-image2-ppt-skills;
+        piPackage = inputs.pi.packages.${system}.default;
+        ohMyPiPackage = inputs.oh-my-pi.packages.${system}.default;
+        softwareSourceBindings = import ../modules/software/nix-sources.nix;
         nixGLDefault = null;
       };
       modules = [
@@ -129,7 +134,7 @@ assert inputs.nixpkgs.lib.hasInfix "/usr/sbin/usermod" zshDefaultActivation;
 assert !(inputs.nixpkgs.lib.hasInfix "esudo chsh" zshDefaultActivation);
 assert hasActivation "installNpmTools" server;
 assert hasActivation "installPypiTools" server;
-assert server.config.envy.machine.manifest.schemaVersion == 2;
+assert server.config.envy.machine.manifest.schemaVersion == 3;
 assert server.config.envy.machine.manifest.software.groups ? "nix.user.package";
 assert server.config.envy.machine.manifest.software.groups ? "native.system.package";
 assert server.config.envy.machine.manifest.software.groups ? "npm.user.tool";

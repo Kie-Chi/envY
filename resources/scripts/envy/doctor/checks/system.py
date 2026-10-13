@@ -95,6 +95,8 @@ def run_checks() -> list[CheckResult]:
                 "sudo",
                 "interactive authentication will be required for system operations",
             ))
+    from envy.doctor.checks.sources import run_checks as source_checks
+    results.extend(source_checks(machine_manifest()))
     return results
 
 

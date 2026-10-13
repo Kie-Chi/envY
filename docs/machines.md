@@ -260,7 +260,7 @@ canonical reference。Nix reference 是 package contributor 显式声明的来�
 Linux manifest 直接声明 active groups，不再伪造空的 Homebrew
 或 Darwin system/font 列表。
 
-evaluated manifest 使用 `schemaVersion = 2`，软件结构位于
+evaluated manifest 使用 `schemaVersion = 3`，软件结构位于
 `software.groups.<ecosystem>.<scope>.<kind>`。完整字段见 [software.md](software.md)。
 
 ## Mirror Policy

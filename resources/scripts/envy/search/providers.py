@@ -58,32 +58,11 @@ def available_providers() -> dict[str, Provider]:
 
 
 def search_nix(query: str, limit: int, timeout: float) -> ProviderReport:
-    result = run_process(
-        ["nix", "search", "nixpkgs", query, "--json"],
-        capture=True, check=False, timeout=timeout,
-    )
-    if result.returncode != 0:
-        return _failure("nix", result.stderr)
-    try:
-        values = json.loads(result.stdout or "{}")
-    except json.JSONDecodeError as exc:
-        return _failure("nix", str(exc))
-    rows = []
-    for attr, metadata in values.items():
-        if not isinstance(metadata, dict):
-            continue
-        name = str(metadata.get("pname") or attr.rsplit(".", 1)[-1])
-        rows.append(SearchResult(
-            source="nix",
-            ecosystem="nix",
-            name=name,
-            kind="package",
-            version=_text(metadata.get("version")),
-            description=_text(metadata.get("description")) or "",
-            ref=f"nix:{attr}",
-            homepage=_homepage(metadata.get("homepage")),
-        ))
-    return ProviderReport("nix", rows[:limit])
+    from envy.evaluation import machine_manifest
+    from envy.sources.catalog import source_for
+    from envy.sources.adapters import search
+    manifest = machine_manifest()
+    return search(source_for("nix:nixpkgs", manifest), manifest, query, limit, timeout)
 
 
 def search_homebrew(query: str, limit: int, timeout: float) -> ProviderReport:
@@ -134,7 +113,7 @@ def resolve_homebrew(kind: str, name: str, timeout: float) -> ResolveResult:
             return ResolveResult.not_found()
         return ResolveResult.found(SearchResult(
             source="homebrew", ecosystem="homebrew", name=name,
-            kind="repository", ref=f"homebrew:tap/{name}",
+            kind="repository", ref=f"homebrew:tap/{name}", source_id=f"homebrew:{name}",
         ))
 
     if kind not in {"formula", "cask"}:
@@ -158,8 +137,10 @@ def resolve_homebrew(kind: str, name: str, timeout: float) -> ResolveResult:
     resolved_name = _text(
         item.get("token") if kind == "cask" else item.get("name")
     )
-    if resolved_name != name:
+    full_name = item.get("full_name") or item.get("full_token")
+    if resolved_name != name and full_name != name:
         return ResolveResult.not_found()
+    resolved_name = name
     versions = item.get("versions") if isinstance(item.get("versions"), dict) else {}
     version = _text(item.get("version") or versions.get("stable"))
     description = _text(item.get("desc")) or ""
@@ -168,91 +149,86 @@ def resolve_homebrew(kind: str, name: str, timeout: float) -> ResolveResult:
         source="homebrew", ecosystem="homebrew", name=resolved_name,
         kind=kind, version=version, description=description,
         ref=f"homebrew:{kind}/{resolved_name}", homepage=homepage,
+        source_id=("homebrew:" + item["tap"]) if isinstance(item.get("tap"), str) else None,
     ))
+
+
+def parse_native_search(manager: str, output: str) -> list[SearchResult]:
+    """Parse each manager's C-locale format without guessing identities."""
+    rows = []
+    for line in output.splitlines():
+        name = version = description = None
+        if manager == "apt":
+            match = re.match(r"^(\S+) - (.*)$", line)
+            if match:
+                name, description = match.groups()
+        elif manager == "pacman":
+            match = re.match(r"^([^/\s]+)/([^\s]+)\s+(\S+)", line)
+            if match:
+                _, name, version = match.groups()
+            elif rows and line.startswith(" "):
+                rows[-1].description += (" " if rows[-1].description else "") + line.strip()
+        elif manager == "zypper":
+            cells = [cell.strip() for cell in line.split("|")]
+            if len(cells) >= 4 and cells[3] == "package" and cells[1] != "Name":
+                name, description = cells[1], cells[2]
+        elif manager == "dnf":
+            match = re.match(r"^([^\s:]+)\s*:\s*(.+)$", line.strip())
+            if match is None:
+                match = re.match(r"^([^\s]+\.(?:x86_64|aarch64|noarch|i[3-6]86|ppc64le|s390x))\s+(.+)$", line.strip())
+            if match:
+                name, description = match.groups()
+                name = re.sub(r"\.(?:x86_64|aarch64|noarch|i[3-6]86|ppc64le|s390x)$", "", name)
+        if name and valid_native_name(name):
+            rows.append(SearchResult(source=manager, ecosystem="native", name=name,
+                                     kind="package", version=version, description=description or "",
+                                     ref=f"native:{name}"))
+    return rows
+
+
+def valid_native_name(name: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9+_.-]*(?::[A-Za-z0-9_-]+)?", name))
 
 
 def search_native(query: str, limit: int, timeout: float) -> ProviderReport:
     manager = _native_manager()
-    if manager == "apt":
-        result = run_process(
-            ["apt-cache", "search", "--names-only", query],
-            capture=True, check=False, timeout=timeout,
-        )
-        if result.returncode != 0:
-            return _failure("apt", result.stderr)
-        rows = []
-        for line in (result.stdout or "").splitlines():
-            name, separator, description = line.partition(" - ")
-            if separator:
-                rows.append(SearchResult(
-                    source="apt", ecosystem="native", name=name.strip(),
-                    kind="package", description=description.strip(),
-                    ref=f"native:{name.strip()}",
-                ))
-        return ProviderReport("apt", rows[:limit])
-    if manager == "pacman":
-        result = run_process(
-            ["pacman", "-Ss", query], capture=True, check=False, timeout=timeout,
-        )
-        if result.returncode not in (0, 1):
-            return _failure("pacman", result.stderr)
-        rows = []
-        lines = (result.stdout or "").splitlines()
-        for index in range(0, len(lines), 2):
-            header = lines[index].strip()
-            match = re.match(r"[^/]+/([^ ]+)\s+([^ ]+)", header)
-            if match:
-                description = lines[index + 1].strip() if index + 1 < len(lines) else ""
-                rows.append(SearchResult(
-                    source="pacman", ecosystem="native", name=match.group(1),
-                    kind="package", version=match.group(2), description=description,
-                    ref=f"native:{match.group(1)}",
-                ))
-        return ProviderReport("pacman", rows[:limit])
-    if manager in {"dnf", "zypper"}:
-        command = [manager, "search", query]
-        result = run_process(command, capture=True, check=False, timeout=timeout)
-        if result.returncode not in (0, 1):
-            return _failure(manager, result.stderr)
-        rows = []
-        pattern = re.compile(r"^([^\s:]+)(?:\.[^\s:]+)?\s*:\s*(.+)$")
-        for line in (result.stdout or "").splitlines():
-            match = pattern.match(line.strip())
-            if match:
-                rows.append(SearchResult(
-                    source=manager, ecosystem="native", name=match.group(1),
-                    kind="package", description=match.group(2),
-                    ref=f"native:{match.group(1)}",
-                ))
-        return ProviderReport(manager, rows[:limit])
-    return _failure("native", "no supported native package manager found")
+    commands = {"apt": ["apt-cache", "search", "--names-only", query],
+                "pacman": ["pacman", "-Ss", "--", query],
+                "dnf": ["dnf", "search", "--", query],
+                "zypper": ["zypper", "--non-interactive", "search", "--", query]}
+    if manager is None:
+        return _failure("native", "no supported native package manager found")
+    result = run_process(commands[manager], capture=True, check=False, timeout=timeout,
+                         env={**os.environ, "LC_ALL": "C"})
+    if result.returncode not in (0, 1) or (result.returncode and not result.stdout):
+        return _failure(manager, result.stderr)
+    return ProviderReport(manager, parse_native_search(manager, result.stdout or "")[:limit])
 
 
 def resolve_native(name: str, timeout: float) -> ResolveResult:
+    if not valid_native_name(name):
+        return ResolveResult.not_found("invalid exact native package name")
     manager = _native_manager()
-    commands = {
-        "apt": ["apt-cache", "show", name],
-        "pacman": ["pacman", "-Si", name],
-        "dnf": ["dnf", "info", name],
-        "zypper": ["zypper", "--non-interactive", "info", name],
-    }
+    commands = {"apt": ["apt-cache", "show", name], "pacman": ["pacman", "-Si", name],
+                "dnf": ["dnf", "info", "--", name],
+                "zypper": ["zypper", "--non-interactive", "info", "--", name]}
     if manager is None:
         return ResolveResult.unavailable("no supported native package manager found")
-    result = run_process(
-        commands[manager], capture=True, check=False, timeout=timeout,
-    )
-    if result.returncode != 0 or not (result.stdout or "").strip():
+    result = run_process(commands[manager], capture=True, check=False, timeout=timeout,
+                         env={**os.environ, "LC_ALL": "C"})
+    if result.returncode or not (result.stdout or "").strip():
         return _command_resolve_failure(result.stderr or result.stdout)
-    version = None
-    for pattern in (r"(?mi)^Version\s*:\s*(\S+)", r"(?mi)^version\s*:\s*(\S+)"):
-        match = re.search(pattern, result.stdout or "")
-        if match:
-            version = match.group(1)
-            break
-    return ResolveResult.found(SearchResult(
-        source=manager, ecosystem="native", name=name, kind="package",
-        version=version, ref=f"native:{name}",
-    ))
+    for block in re.split(r"\n\s*\n", result.stdout or ""):
+        fields = dict((key.casefold(), value.strip()) for key, value in
+                      re.findall(r"(?m)^([A-Za-z]+)\s*:\s*(.*)$", block))
+        actual = fields.get("package" if manager == "apt" else "name")
+        if actual == name.split(":", 1)[0]:
+            arch = name.split(":", 1)[1] if ":" in name else None
+            if arch and fields.get("architecture") != arch:
+                continue
+            return ResolveResult.found(SearchResult(source=manager, ecosystem="native", name=name,
+                kind="package", version=fields.get("version"), ref=f"native:{name}"))
+    return ResolveResult.not_found("manager returned no matching canonical package identity")
 
 
 def search_npm(query: str, limit: int, timeout: float) -> ProviderReport:
@@ -416,7 +392,7 @@ def _command_resolve_failure(error: object) -> ResolveResult:
     not_found_markers = (
         "not found", "no available formula", "no cask with this name",
         "e404", "is not in this registry", "unable to locate package",
-        "no matching packages", "target not found",
+        "no matching packages", "target not found", "no packages found",
     )
     if any(marker in lowered for marker in not_found_markers):
         return ResolveResult.not_found(message)

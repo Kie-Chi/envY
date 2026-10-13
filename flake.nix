@@ -2,6 +2,8 @@
   description = "Chi's cross-platform configuration";
 
   inputs = {
+    # BEGIN ENVY MANAGED INPUTS
+    # END ENVY MANAGED INPUTS
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     darwin.url = "github:LnL7/nix-darwin";
     darwin.inputs.nixpkgs.follows = "nixpkgs";
@@ -69,8 +71,25 @@
       darwinMachines = machineFiles darwinMachineDir;
       linuxMachines = machineFiles linuxMachineDir;
 
+      softwareSourceBindings = (import ./modules/software/nix-sources.nix) // {
+        # BEGIN ENVY MANAGED SOURCE BINDINGS
+        # END ENVY MANAGED SOURCE BINDINGS
+      };
+      softwareSourcePackagesFor = system: lib.mapAttrs (_: binding:
+        if binding.input == "nixpkgs" then import nixpkgs { inherit system; config.allowUnfree = true; }
+        else lib.attrByPath [ binding.output system ] { } inputs.${binding.input}
+      ) softwareSourceBindings;
+      softwareSourcePlatforms = lib.mapAttrs (_: binding:
+        lib.filter (platform:
+          binding.input == "nixpkgs" || lib.hasAttrByPath
+            [ binding.output (if platform == "darwin" then darwinSystem else linuxSystem) ]
+            inputs.${binding.input}
+        ) [ "darwin" "linux" ]
+      ) softwareSourceBindings;
       sharedSpecialArgs = machineId: platform: system: {
         inherit machineId;
+        softwareSourcePackages = softwareSourcePackagesFor system;
+        inherit softwareSourceBindings softwareSourcePlatforms;
         machinePlatform = platform;
         machineSystem = system;
         academicResearchSkills = inputs.academic-research-skills;
@@ -300,6 +319,7 @@
           touch "$out"
         '';
 
+      softwareSourcePackages = lib.genAttrs [ darwinSystem linuxSystem ] softwareSourcePackagesFor;
       darwinConfigurations = lib.mapAttrs' (fileName: value:
         lib.nameValuePair (lib.removeSuffix ".nix" fileName)
           (mkDarwinConfiguration fileName value)) darwinMachines;
@@ -326,6 +346,9 @@
         && lib.all
           (configuration:
             let
+              manual = configuration.extendModules {
+                modules = [{ envy.darwin.services.openssh.mode = lib.mkForce "manual"; }];
+              };
               disabled = configuration.extendModules {
                 modules = [{ envy.darwin.services.openssh.mode = lib.mkForce "none"; }];
               };
@@ -333,8 +356,7 @@
                 modules = [{ envy.darwin.services.openssh.mode = lib.mkForce "keep"; }];
               };
             in
-              configuration.config.envy.darwin.services.openssh.mode == "manual"
-              && configuration.config.services.openssh.enable == null
+              manual.config.services.openssh.enable == null
               && disabled.config.services.openssh.enable == false
               && kept.config.services.openssh.enable == true)
           (builtins.attrValues darwinConfigurations)
@@ -357,16 +379,17 @@
               "cache.thalheim.io-1:R7msbosLEZKrxk/lKxf9BTjOOH7Ax3H0Qj0/6wiHOgc="
               configuration.config.nix.settings.extra-trusted-public-keys
             && configuration.config.nix.settings.download-attempts == 3
-            && configuration.config.envy.machine.manifest.schemaVersion == 2
+            && configuration.config.envy.machine.manifest.schemaVersion == 3
+            && configuration.config.envy.machine.manifest.software.sources ? "nix:nixpkgs"
             && configuration.config.envy.machine.manifest ? environment
             && configuration.config.envy.machine.manifest ? shell
             && configuration.config.envy.machine.manifest.software.groups ? "homebrew.system.cask"
             && builtins.any
               (item: item.id == "codegraph")
-              configuration.config.envy.machine.manifest.software.groups."npm.user.tool".selection.effective
+              configuration.config.envy.machine.manifest.software.groups."npm.user.tool".selection.include
             && builtins.any
               (item: item.id == "headroom")
-              configuration.config.envy.machine.manifest.software.groups."pypi.user.tool".selection.effective
+              configuration.config.envy.machine.manifest.software.groups."pypi.user.tool".selection.include
             && !(configuration.config.envy.machine.manifest.software.groups ? "native.system.package"))
           (builtins.attrValues darwinConfigurations)
         && lib.all
@@ -380,7 +403,8 @@
             && builtins.elem
               "cache.thalheim.io-1:R7msbosLEZKrxk/lKxf9BTjOOH7Ax3H0Qj0/6wiHOgc="
               configuration.config.envy.machine.manifest.mirrors.nix.extraTrustedPublicKeys
-            && configuration.config.envy.machine.manifest.schemaVersion == 2
+            && configuration.config.envy.machine.manifest.schemaVersion == 3
+            && configuration.config.envy.machine.manifest.software.sources ? "nix:nixpkgs"
             && configuration.config.envy.machine.manifest ? environment
             && configuration.config.envy.machine.manifest ? shell
             && configuration.config.envy.machine.manifest.software.groups ? "native.system.package"
@@ -395,7 +419,8 @@
       linuxPolicyCheck = import ./checks/linux-policy.nix { inherit inputs; };
     in
     {
-      inherit darwinConfigurations homeConfigurations;
+      inherit darwinConfigurations homeConfigurations softwareSourcePackages softwareSourceBindings;
+      legacyPackages = softwareSourcePackages;
 
       packages.aarch64-darwin.envy = mkEnvyRuntime "aarch64-darwin";
       packages.aarch64-darwin.setup = mkEnvySetupRuntime "aarch64-darwin";

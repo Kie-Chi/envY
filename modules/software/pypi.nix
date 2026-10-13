@@ -10,10 +10,12 @@ let
       withFlags = lib.concatMapStringsSep " "
         (dependency: "--with ${lib.escapeShellArg dependency}")
         withPackages;
+      indexFlags = lib.optionalString (tool.sourceId != null && tool.sourceId != "pypi:pypi")
+        ("--index-url " + lib.escapeShellArg (tool.parameters.index or (throw "PyPI source requires index")));
       checkPath = "$HOME/.local/share/uv/tools/${tool.name}";
     in ''
       if ! [ -d "${checkPath}" ]; then
-        ${pkgs.uv}/bin/uv tool install ${lib.escapeShellArg packageSpec} ${withFlags}
+        ${pkgs.uv}/bin/uv tool install ${lib.escapeShellArg packageSpec} ${withFlags} ${indexFlags}
       fi
     '';
 in

@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from contextlib import ExitStack, contextmanager
@@ -12,6 +13,50 @@ from envy.agent import _read_values, _render, _set, _write_values, refine_manage
 
 
 class AgentConfigTests(unittest.TestCase):
+    def test_list_settings_use_valid_nix_lists_through_both_commands(self):
+        from envy.main import cli
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "machine.nix"
+            outside = '  envy.software.nix.packages.exclude = [ "keep-me" ];\n'
+            path.write_text("{ ... }: {\n" + outside + "}\n")
+            with patch.object(agent, "machine_config_file", return_value=path), patch.object(
+                agent, "offer_mutation_commit"
+            ):
+                _write_values({"envy.agents.pi.adapter": "pi"})
+                for command in ("agent", "config"):
+                    for field, items in (
+                        ("skills", ["animate", "break-ui"]),
+                        ("aliases", ["pcli", "pi-cli"]),
+                        ("args", ['a "quoted" argument', r"C:\work\file"]),
+                        ("skills", []),
+                    ):
+                        key = f"envy.agents.pi.{field}"
+                        with self.subTest(command=command, field=field, items=items):
+                            result = CliRunner().invoke(cli, [command, "set", key, json.dumps(items), "--yes"])
+                            self.assertEqual(result.exit_code, 0, result.output)
+                            self.assertEqual(_read_values(path)[key], items)
+                            self.assertIn(outside, path.read_text())
+                            self.assertNotIn('", "', agent._render_value(items))
+
+    def test_invalid_list_settings_and_unknown_fields_leave_policy_unchanged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "machine.nix"
+            path.write_text("{ ... }: {\n}\n")
+            with patch.object(agent, "machine_config_file", return_value=path):
+                _write_values({"envy.agents.pi.adapter": "pi"})
+                before = path.read_bytes()
+                for field in ("skills", "args", "aliases"):
+                    for value in ('"animate"', '["animate", 1]', '{}', 'null', '[', 'animate'):
+                        with self.subTest(field=field, value=value), self.assertRaises(typer.BadParameter):
+                            _set(f"envy.agents.pi.{field}", value)
+                        self.assertEqual(path.read_bytes(), before)
+                with self.assertRaises(typer.BadParameter):
+                    _set("envy.agents.pi.typo", "unused")
+                self.assertEqual(path.read_bytes(), before)
+                _set("envy.agents.pi.model", "null")
+                self.assertIsNone(_read_values(path)["envy.agents.pi.model"])
+
     @contextmanager
     def obsolete_agent_fixture(self):
         retained = {

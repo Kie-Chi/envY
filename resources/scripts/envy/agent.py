@@ -176,7 +176,9 @@ def _validate_values(values: dict[str, Any]) -> list[str]:
             agent_names.add(name)
             if field not in {"adapter", "api", "endpoint", "credential", "model", "command", "args", "aliases", "skills", "more_thinking"}:
                 errors.append(path)
-            elif field in {"args", "aliases", "skills"} and not isinstance(value, list):
+            elif field in {"args", "aliases", "skills"} and (
+                not isinstance(value, list) or not all(isinstance(item, str) for item in value)
+            ):
                 errors.append(path)
             elif field == "more_thinking" and not isinstance(value, bool):
                 errors.append(path)
@@ -437,7 +439,7 @@ def _render_value(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, list):
-        return "[ " + ", ".join(json.dumps(str(item), ensure_ascii=False) for item in value) + " ]"
+        return "[ " + " ".join(_render_value(item) for item in value) + " ]"
     return f'"{_escape_nix_string(str(value))}"'
 
 
@@ -466,7 +468,7 @@ def _write_values(values: dict[str, Any], *, path: Path | None = None) -> Path:
     text = path.read_text()
     block = _render(values)
     if _block_pattern().search(text):
-        updated = _block_pattern().sub(block, text, count=1)
+        updated = _block_pattern().sub(lambda _: block, text, count=1)
     else:
         closing = text.rfind("\n}")
         if closing < 0:
@@ -484,6 +486,18 @@ def _validate_path(path: str) -> None:
 
 def _set(path: str, value: Any) -> Path:
     _validate_path(path)
+    if path.startswith("envy.agents."):
+        field = path.rsplit(".", 1)[-1]
+        if field in {"args", "aliases", "skills"}:
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except json.JSONDecodeError as exc:
+                    raise typer.BadParameter(f"{path} requires a JSON array of strings") from exc
+            if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+                raise typer.BadParameter(f"{path} requires a JSON array of strings")
+        elif field in {"endpoint", "credential", "model", "command"} and value == "null":
+            value = None
     if path.startswith("envy.agents.") and path.endswith(".api") and value not in API_CHOICES:
         raise typer.BadParameter(f"api must be one of: {', '.join(API_CHOICES)}")
     if path.startswith("envy.agents.") and path.endswith(".more_thinking"):
@@ -500,6 +514,8 @@ def _set(path: str, value: Any) -> Path:
         if is_obsolete_agent(name, adapter):
             raise typer.BadParameter("OMP is retired; run envy config refine to remove its obsolete configuration")
     values[path] = value
+    if path in _validate_values(values):
+        raise typer.BadParameter(f"invalid agent configuration field: {path}")
     return _write_values(values)
 
 

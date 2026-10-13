@@ -5,9 +5,15 @@ on:
   push:
     branches: [master]
 
+# A new push makes older pull-request runs obsolete.  Cancelling those runs
+# keeps the two platform jobs from competing for the same GitHub-hosted
+# runners and Nix cache.
+concurrency:
+  group: envy-checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   platform:
@@ -23,9 +29,20 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - uses: DeterminateSystems/determinate-nix-action@v3
-      - uses: DeterminateSystems/flakehub-cache-action@v3
+      # The Determinate wrapper always attempts a FlakeHub login.  This
+      # repository uses public GitHub inputs and does not need that service,
+      # so install regular Nix explicitly and keep authentication out of CI.
+      - uses: DeterminateSystems/nix-installer-action@v17
+        with:
+          determinate: false
+      # FlakeHub cache requires the repository to be registered with FlakeHub
+      # and fails closed for ordinary GitHub repositories.  Magic Nix Cache
+      # uses the GitHub Actions cache and does not require that account.
+      - uses: DeterminateSystems/magic-nix-cache-action@v9
         if: runner.os != 'macOS'
+        with:
+          use-flakehub: disabled
+          use-gha-cache: enabled
       - name: Evaluate the cross-platform flake
         run: nix flake check path:. --no-build
       - name: Run Envy Python tests

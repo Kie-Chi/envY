@@ -31,10 +31,29 @@ modules/agents/
 
 There are two distinct selection stages:
 
-1. `agents.skills.active` controls which catalog entries are linked into the selected agents' skill directories during Home Manager activation: `~/.codex/skills`, `~/.claude/skills`, `~/.stepgo/skills`, and `~/.pi/agent/skills`. Each catalog entry declares its supported targets.
+1. `agents.skills.active` selects shared catalog entries, filtered by each entry's supported targets. `envy.agents.<name>.skills` adds compatible catalog entries to that selection. Home Manager links the resolved set into `~/.codex/skills`, `~/.claude/skills`, `~/.stepgo/skills`, and `~/.pi/agent/skills` during activation. Instances of the same adapter share a directory and therefore share the union of their selections; `claude` and `claude-code` identify the same skill target.
 2. For a discovered skill, the agent sees its `name` and `description` metadata first. It reads the `SKILL.md` body only when the task triggers that skill, then reads referenced resources as needed.
 
 This keeps agent capabilities declarative while preserving progressive, task-driven context loading. Changing the physically discoverable set requires a rebuild; ordinary task-level loading does not.
+
+`envy agent show <name>` and `envy config show --json` report the resolved set in
+`skills`, and the machine's explicit additions in `configuredSkills`. These are
+the evaluated desired state; application-installed skills and project-local
+skills are outside this catalog. Until `envy apply` completes, the currently
+installed links can differ. Unknown or incompatible catalog selections fail
+configuration validation.
+
+List fields use JSON arrays on the CLI, for example:
+
+```sh
+envy agent set envy.agents.pi.skills '["animate", "break-ui"]' --yes
+envy agent set envy.agents.pi.skills '[]' --yes
+```
+
+An empty additions list retains the shared selection. To remove a shared skill,
+change `agents.skills.active` in its owning module. The same JSON-array syntax
+works for `args` and `aliases`; nullable agent fields accept `null` to clear a
+selection.
 
 ## Adding a skill subpackage
 

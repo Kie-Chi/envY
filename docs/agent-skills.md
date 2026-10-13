@@ -8,7 +8,8 @@ extensions.
 
 ## Skills
 
-All seven are enabled for Codex, Claude Code, and Pi. Their selected directories
+The selected catalog entries are enabled for their declared targets (including
+Codex, Claude Code, and Pi where supported). Their selected directories
 contain Markdown/JSON resources and require no additional API keys or installed
 skill dependencies. They provide instructions; browser rendering and framework
 execution still depend on the tools available in the working project.
@@ -67,9 +68,9 @@ session state. Handoff sends conversation context to the already selected
 provider only when invoked and incurs an additional model request.
 
 The actual Nix-evaluated links loaded successfully with the installed Pi 1.1.0
-loader in an isolated temporary agent directory: seven skills and four
+loader in an isolated temporary agent directory: all selected skills and four
 extensions, zero skill diagnostics or extension warnings/errors, and no
-collisions with built-in commands/tools or each other. All files in the seven
+collisions with built-in commands/tools or each other. All files in the selected
 skill directories remained readable through their links, including companion
 documents and rule references. This smoke check blocked networking and used no
 model requests. Interactive behavior and provider responses remain runtime

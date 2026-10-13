@@ -142,9 +142,11 @@ def _validate_values(values: dict[str, Any]) -> list[str]:
         namespace, name, field = match.groups()
         if namespace == "agents":
             agent_names.add(name)
-            if field not in {"adapter", "api", "endpoint", "credential", "model", "command", "args", "aliases", "skills"}:
+            if field not in {"adapter", "api", "endpoint", "credential", "model", "command", "args", "aliases", "skills", "more_thinking"}:
                 errors.append(path)
             elif field in {"args", "aliases", "skills"} and not isinstance(value, list):
+                errors.append(path)
+            elif field == "more_thinking" and not isinstance(value, bool):
                 errors.append(path)
             elif field == "api" and value not in API_CHOICES:
                 errors.append(path)
@@ -325,6 +327,8 @@ def config_view(
         if not isinstance(item, dict):
             continue
         agent = dict(item)
+        if agent.get("adapter") == "pi":
+            agent.setdefault("more_thinking", False)
         credential_name = agent.get("credential")
         credential = credentials.get(credential_name, {}) if isinstance(credential_name, str) else {}
         agent["credentialSet"] = bool(credential.get("credentialSet", False))
@@ -370,6 +374,8 @@ def config_view(
                 agent.get("api", "openai-completions"),
                 list(API_CHOICES),
             )
+        if agent.get("adapter") == "pi":
+            add_field(f"envy.agents.{name}.more_thinking", agent["more_thinking"], ["true", "false"])
 
     return {
         "evaluated": evaluated,
@@ -435,6 +441,11 @@ def _set(path: str, value: Any) -> Path:
     _validate_path(path)
     if path.startswith("envy.agents.") and path.endswith(".api") and value not in API_CHOICES:
         raise typer.BadParameter(f"api must be one of: {', '.join(API_CHOICES)}")
+    if path.startswith("envy.agents.") and path.endswith(".more_thinking"):
+        if isinstance(value, str) and value in {"true", "false"}:
+            value = value == "true"
+        if not isinstance(value, bool):
+            raise typer.BadParameter(f"{path} must be true or false")
     values, _present, errors = read_managed_values()
     if errors:
         raise ValueError("cannot edit malformed agent managed block")

@@ -6,11 +6,58 @@ from unittest.mock import patch
 
 import typer
 
-from envy import config
-from envy.agent import _read_values, _render, _write_values, refine_managed
+from envy import agent, config
+from envy.agent import _read_values, _render, _set, _write_values, refine_managed
 
 
 class AgentConfigTests(unittest.TestCase):
+    def test_pi_more_thinking_is_boolean_through_both_set_commands(self):
+        key = "envy.agents.pi.more_thinking"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "machine.nix"
+            path.write_text("{ ... }: {\n}\n")
+            with patch("envy.agent.machine_config_file", return_value=path), patch.object(
+                agent, "offer_mutation_commit"
+            ), patch.object(agent, "current_machine_id", return_value="test-machine"):
+                _write_values({"envy.agents.pi.adapter": "pi"})
+                for value in ("true", "false"):
+                    for command in ("config", "agent"):
+                        with self.subTest(value=value, command=command):
+                            if command == "config":
+                                config.set_config_value(key, value, quiet=True)
+                            else:
+                                agent.cmd_set(key, value, json_output=False, yes=True)
+                            self.assertIs(_read_values(path)[key], value == "true")
+                            self.assertIn(f"{key} = {value};", path.read_text())
+                            result = refine_managed(machine_values={}, write=False)
+                            self.assertEqual(result["errors"], [])
+
+    def test_pi_more_thinking_rejects_non_boolean_values_before_writing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "machine.nix"
+            path.write_text("{ ... }: {\n}\n")
+            with patch("envy.agent.machine_config_file", return_value=path):
+                _write_values({"envy.agents.pi.adapter": "pi"})
+                before = path.read_text()
+                for invalid in ("yes", "1", "", "null", '"true"', 1, None):
+                    with self.subTest(value=invalid), self.assertRaises(typer.BadParameter):
+                        _set("envy.agents.pi.more_thinking", invalid)
+                    self.assertEqual(path.read_text(), before)
+
+    def test_refine_rejects_quoted_pi_more_thinking_boolean(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "machine.nix"
+            path.write_text("{ ... }: {\n}\n")
+            with patch("envy.agent.machine_config_file", return_value=path):
+                _write_values({
+                    "envy.agents.pi.adapter": "pi",
+                    "envy.agents.pi.more_thinking": "true",
+                })
+                before = path.read_text()
+                result = refine_managed(machine_values={}, write=True)
+                self.assertEqual(result["errors"], ["envy.agents.pi.more_thinking"])
+                self.assertEqual(path.read_text(), before)
+
     def test_config_api_edit_is_validated_and_survives_refine(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "machine.nix"

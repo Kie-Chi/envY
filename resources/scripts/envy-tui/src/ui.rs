@@ -142,6 +142,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
 
 fn page_keys(screen: Screen) -> &'static str {
     match screen {
+        Screen::Sources => "Enter select source  s sync metadata",
         Screen::Software => "Enter toggle  w why  / filter",
         Screen::Search => "Enter add  / query",
         Screen::Doctor => "Enter details",
@@ -155,6 +156,7 @@ fn page_keys(screen: Screen) -> &'static str {
 
 fn compact_page_keys(screen: Screen) -> &'static str {
     match screen {
+        Screen::Sources => "↵ source  s sync",
         Screen::Software => "↵ toggle  w why  / filter",
         Screen::Search => "↵ add  / query",
         Screen::Doctor => "↵ details",
@@ -402,6 +404,58 @@ fn render_settings(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(table, area, &mut state);
 }
 
+fn render_sources(frame: &mut Frame, app: &App, area: Rect) {
+    let sources = app
+        .payload()
+        .and_then(|v| v.get("sources"))
+        .and_then(Value::as_array);
+    let count = sources.map(Vec::len).unwrap_or(0);
+    let offset = row_offset(app.scroll, count, area);
+    let rows = sources
+        .into_iter()
+        .flatten()
+        .skip(offset)
+        .map(|source| {
+            Row::new(vec![
+                text(source.get("id")),
+                text(source.get("type")),
+                text(source.get("registered")),
+                text(source.get("selected")),
+                text(source.get("ready")),
+                text(source.get("owner")),
+            ])
+        })
+        .collect::<Vec<_>>();
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Min(26),
+            Constraint::Length(10),
+            Constraint::Length(12),
+            Constraint::Length(10),
+            Constraint::Length(8),
+            Constraint::Min(16),
+        ],
+    )
+    .header(Row::new([
+        "SOURCE",
+        "TYPE",
+        "REGISTERED",
+        "SELECTED",
+        "READY",
+        "OWNER",
+    ]))
+    .row_highlight_style(Style::default().bg(SELECTED))
+    .highlight_symbol("▸ ")
+    .block(
+        Block::default()
+            .title(" Sources · Enter select repository · s sync metadata ")
+            .borders(Borders::ALL),
+    );
+    let mut state = selected_state(app.sources_selected, offset, count == 0);
+    frame.render_stateful_widget(table, area, &mut state);
+}
+
 fn render_software(frame: &mut Frame, app: &App, area: Rect) {
     let table_area = if app.input_bar_height() > 0 {
         let sections = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(area);
@@ -457,7 +511,7 @@ fn render_software(frame: &mut Frame, app: &App, area: Rect) {
                 Cell::from(entry.item.clone()),
                 Cell::from(entry.version.clone()),
                 Cell::from(entry.state.clone()).style(state_style),
-                Cell::from(entry.reference.clone()),
+                Cell::from(format!("{} · {}", entry.source_id, entry.reference)),
             ])
         })
         .collect::<Vec<_>>();
@@ -555,11 +609,16 @@ fn render_search(frame: &mut Frame, app: &App, area: Rect) {
         .skip(offset)
         .map(|entry| {
             Row::new(vec![
-                Cell::from(entry.source.clone()),
+                Cell::from(
+                    entry
+                        .source_id
+                        .clone()
+                        .unwrap_or_else(|| entry.source.clone()),
+                ),
                 Cell::from(entry.kind.clone()),
                 Cell::from(entry.name.clone()),
                 Cell::from(entry.version.clone()),
-                Cell::from(entry.description.clone()),
+                Cell::from(format!("{} · {}", entry.availability, entry.description)),
                 Cell::from(entry.reference.clone()),
             ])
         })
@@ -873,13 +932,14 @@ fn render_section_navigation(frame: &mut Frame, app: &App, area: Rect) {
             let selected = match app.screen {
                 Screen::Software => 0,
                 Screen::Search => 1,
-                Screen::Mirror => 2,
-                Screen::Config => 3,
+                Screen::Sources => 2,
+                Screen::Mirror => 3,
+                Screen::Config => 4,
                 _ => 0,
             };
             (
                 "Configure",
-                ["Software", "Search", "Mirrors", "Settings"].as_slice(),
+                ["Software", "Search", "Sources", "Mirrors", "Settings"].as_slice(),
                 selected,
             )
         }
@@ -948,6 +1008,7 @@ fn render_body(frame: &mut Frame, app: &App, area: Rect) {
     }
     match app.screen {
         Screen::Home => render_home(frame, app, content_area),
+        Screen::Sources => render_sources(frame, app, content_area),
         Screen::Software => render_software(frame, app, content_area),
         Screen::Search => render_search(frame, app, content_area),
         Screen::Doctor => render_doctor(frame, app, content_area),

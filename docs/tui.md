@@ -26,6 +26,8 @@ envy config show --json
 envy status --json
 envy sw ls --details --json
 envy sw why firefox --json
+envy sw source ls --json
+envy sw source show nix:nixpkgs --json
 envy host status --json
 envy host matrix --json
 envy history --json
@@ -88,7 +90,7 @@ meaningful for scripts and the TUI.
 The frontend lives in `resources/scripts/envy-tui/` and is implemented with
 Rust/Ratatui and Crossterm. Its stable top-level sections are **Home**,
 **Configure**, and **Activity**. Home presents status and recommendations;
-Configure contains Software, Search, Mirrors, and Settings; Activity contains
+Configure contains Software, Sources, Search, Mirrors, and Settings; Activity contains
 Health, Generations, and Operations. The leaf views execute background commands
 and provide keyboard navigation, loading/error states, scrolling, and a help
 overlay. Each data view is loaded only on first visit and then kept in memory

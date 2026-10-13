@@ -63,6 +63,7 @@ pub struct App {
     pub scroll: usize,
     pub visible_rows: usize,
     pub software_selected: usize,
+    pub sources_selected: usize,
     pub search_selected: usize,
     pub doctor_selected: usize,
     pub history_selected: usize,
@@ -122,6 +123,7 @@ impl App {
             scroll: 0,
             visible_rows: 1,
             software_selected: 0,
+            sources_selected: 0,
             search_selected: 0,
             doctor_selected: 0,
             history_selected: 0,
@@ -364,9 +366,10 @@ impl App {
                 self.status = "Home has no secondary views".to_string();
             }
             NavigationSection::Configure => {
-                const VIEWS: [Screen; 4] = [
+                const VIEWS: [Screen; 5] = [
                     Screen::Software,
                     Screen::Search,
+                    Screen::Sources,
                     Screen::Mirror,
                     Screen::Config,
                 ];
@@ -418,6 +421,7 @@ impl App {
     pub fn row_count(&self) -> usize {
         match self.screen {
             Screen::Software => self.software_entries().len(),
+            Screen::Sources => count_rows(self.payload(), "sources"),
             Screen::Search | Screen::Doctor => result_rows(self.payload()),
             Screen::History => match self.history_view {
                 HistoryView::Generations => generation_rows(self.payload()),
@@ -434,6 +438,7 @@ impl App {
     fn selected(&self) -> usize {
         match self.screen {
             Screen::Software => self.software_selected,
+            Screen::Sources => self.sources_selected,
             Screen::Search => self.search_selected,
             Screen::Doctor => self.doctor_selected,
             Screen::History => match self.history_view {
@@ -451,6 +456,7 @@ impl App {
     fn set_selected(&mut self, value: usize) {
         match self.screen {
             Screen::Software => self.software_selected = value,
+            Screen::Sources => self.sources_selected = value,
             Screen::Search => self.search_selected = value,
             Screen::Doctor => self.doctor_selected = value,
             Screen::History => match self.history_view {
@@ -548,12 +554,54 @@ impl App {
         spawn_mutation(self.tx.clone(), request, MutationStage::Preview, intent);
     }
 
+    fn selected_source(&self) -> Option<Value> {
+        self.payload()?
+            .get("sources")?
+            .as_array()?
+            .get(self.sources_selected)
+            .cloned()
+    }
+
+    fn begin_source_mutation(&mut self) {
+        let Some(source) = self.selected_source() else {
+            return;
+        };
+        let id = source["id"].as_str().unwrap_or("").to_string();
+        let group = match source["type"].as_str() {
+            Some("native") if source["parameters"]["system"] != true => "native.system.repository",
+            Some("tap") => "homebrew.system.repository",
+            _ => {
+                self.status =
+                    "Use the source CLI for definitions and shared Nix registration".into();
+                return;
+            }
+        };
+        self.begin_mutation(MutationIntent {
+            source_id: Some(id.clone()),
+            source_operation: true,
+            action: if source["selected"] == true {
+                SoftwareAction::Remove
+            } else {
+                SoftwareAction::Add
+            },
+            group: group.into(),
+            operand: id.clone(),
+            item: id
+                .split_once(':')
+                .map(|(_, name)| name)
+                .unwrap_or("")
+                .to_string(),
+        });
+    }
+
     fn begin_selected_mutation(&mut self) {
         let Some(entry) = self.software_entries().get(self.software_selected).cloned() else {
             self.status = "No software item selected".to_string();
             return;
         };
         self.begin_mutation(MutationIntent {
+            source_id: None,
+            source_operation: false,
             action: if entry.effective {
                 SoftwareAction::Remove
             } else {
@@ -663,6 +711,8 @@ impl App {
             chooser.entry.reference.clone()
         };
         self.begin_mutation(MutationIntent {
+            source_id: chooser.entry.source_id.clone(),
+            source_operation: false,
             action: SoftwareAction::Add,
             group: group.id.clone(),
             operand,
@@ -727,7 +777,12 @@ impl App {
     }
 
     fn invalidate_after_mutation(&mut self) {
-        for screen in [Screen::Home, Screen::Software, Screen::Doctor] {
+        for screen in [
+            Screen::Home,
+            Screen::Software,
+            Screen::Sources,
+            Screen::Doctor,
+        ] {
             self.pages.remove(&screen);
         }
         self.search_cache.clear();
@@ -907,6 +962,7 @@ impl App {
         for screen in [
             Screen::Home,
             Screen::Software,
+            Screen::Sources,
             Screen::Doctor,
             Screen::Mirror,
             Screen::Hosts,
@@ -1726,6 +1782,13 @@ impl App {
                 self.input_mode = InputMode::Search;
                 self.status = "Type a query and press Enter".to_string();
             }
+            KeyCode::Char('s') if self.screen == Screen::Sources => {
+                if let Some(source) = self.selected_source() {
+                    self.workflow_confirmation = Some(WorkflowAction::SyncSource(
+                        source["id"].as_str().unwrap_or("").into(),
+                    ));
+                }
+            }
             KeyCode::Char('/') | KeyCode::Char('s') => {
                 self.set_screen(Screen::Search);
                 self.input_mode = InputMode::Search;
@@ -1735,6 +1798,7 @@ impl App {
                 let index = character as usize - '1' as usize;
                 self.set_section(NavigationSection::ALL[index]);
             }
+            KeyCode::Enter if self.screen == Screen::Sources => self.begin_source_mutation(),
             KeyCode::Enter if self.screen == Screen::Config => {
                 self.begin_setting_edit();
             }
@@ -1943,6 +2007,8 @@ mod tests {
     fn search_result_only_offers_compatible_manifest_groups() {
         let mut app = app();
         let entry = crate::model::SearchEntry {
+            source_id: None,
+            availability: "installable".into(),
             source: "homebrew".into(),
             ecosystem: "homebrew".into(),
             kind: "formula".into(),
@@ -1997,6 +2063,8 @@ mod tests {
         let mut app = app();
         app.pending_mutation = Some(MutationPreview {
             intent: MutationIntent {
+                source_id: None,
+                source_operation: false,
                 action: SoftwareAction::Add,
                 group: "nix.user.package".into(),
                 operand: "git".into(),
@@ -2306,5 +2374,23 @@ mod tests {
 
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(app.setting_chooser.as_ref().unwrap().selected, 0);
+    }
+    #[test]
+    fn source_sync_shortcut_preserves_source_screen_and_requests_confirmation() {
+        let mut app = app();
+        app.screen = Screen::Sources;
+        app.pages.insert(
+            Screen::Sources,
+            PageState {
+                payload: Some(json!({"sources":[{"id":"native:vendor"}]})),
+                ..PageState::default()
+            },
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        assert_eq!(app.screen, Screen::Sources);
+        assert_eq!(
+            app.workflow_confirmation,
+            Some(WorkflowAction::SyncSource("native:vendor".into()))
+        );
     }
 }

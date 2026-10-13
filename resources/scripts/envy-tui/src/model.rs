@@ -36,6 +36,7 @@ impl NavigationSection {
 pub enum Screen {
     Home,
     Software,
+    Sources,
     Search,
     Doctor,
     History,
@@ -52,9 +53,12 @@ impl Screen {
     pub fn section(self) -> NavigationSection {
         match self {
             Self::Home => NavigationSection::Home,
-            Self::Software | Self::Search | Self::Hosts | Self::Mirror | Self::Config => {
-                NavigationSection::Configure
-            }
+            Self::Software
+            | Self::Sources
+            | Self::Search
+            | Self::Hosts
+            | Self::Mirror
+            | Self::Config => NavigationSection::Configure,
             Self::Doctor | Self::History | Self::Journal => NavigationSection::Activity,
         }
     }
@@ -63,6 +67,7 @@ impl Screen {
         match self {
             Self::Home => "Home",
             Self::Software => "Software",
+            Self::Sources => "Sources",
             Self::Search => "Search",
             Self::Doctor => "Doctor",
             Self::History => "History",
@@ -138,6 +143,7 @@ pub enum WorkflowAction {
     Plan,
     Apply,
     Doctor,
+    SyncSource(String),
     OpenApp(String),
     OpenSettings(String),
 }
@@ -148,6 +154,7 @@ impl WorkflowAction {
             Self::Plan => "Preview configuration".to_string(),
             Self::Apply => "Apply configuration".to_string(),
             Self::Doctor => "Verify with doctor".to_string(),
+            Self::SyncSource(id) => format!("Sync source {id}"),
             Self::OpenApp(name) => format!("Open {name}"),
             Self::OpenSettings(_) => "Open System Settings".to_string(),
         }
@@ -158,6 +165,16 @@ impl WorkflowAction {
             Self::Plan => (envy, vec!["plan".to_string()]),
             Self::Apply => (envy, vec!["apply".to_string()]),
             Self::Doctor => (envy, vec!["doctor".to_string()]),
+            Self::SyncSource(id) => (
+                envy,
+                vec![
+                    "sw".into(),
+                    "source".into(),
+                    "sync".into(),
+                    id.clone(),
+                    "--yes".into(),
+                ],
+            ),
             Self::OpenApp(name) => ("open".to_string(), vec!["-a".to_string(), name.clone()]),
             Self::OpenSettings(target) => (
                 "open".to_string(),
@@ -177,6 +194,7 @@ impl WorkflowAction {
             Self::Plan => "envy plan".to_string(),
             Self::Apply => "envy apply".to_string(),
             Self::Doctor => "envy doctor".to_string(),
+            Self::SyncSource(id) => format!("envy sw source sync {id:?} --yes"),
             Self::OpenApp(name) => format!("open -a {name:?}"),
             Self::OpenSettings(_) => "open macOS Privacy & Security settings".to_string(),
         }
@@ -186,7 +204,10 @@ impl WorkflowAction {
     /// TUI log popup. GUI launchers (`open …`) have no output worth streaming
     /// and keep the existing leave-screen path.
     pub fn is_streamable(&self) -> bool {
-        matches!(self, Self::Plan | Self::Apply | Self::Doctor)
+        matches!(
+            self,
+            Self::Plan | Self::Apply | Self::Doctor | Self::SyncSource(_)
+        )
     }
 }
 
@@ -208,6 +229,8 @@ impl SoftwareAction {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MutationIntent {
+    pub source_id: Option<String>,
+    pub source_operation: bool,
     pub action: SoftwareAction,
     pub group: String,
     /// Operand passed to envY. Search uses a canonical registry reference.
@@ -224,6 +247,7 @@ pub struct MutationPreview {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SoftwareEntry {
+    pub source_id: String,
     pub group: String,
     pub label: String,
     pub item: String,
@@ -244,6 +268,8 @@ pub struct SoftwareGroup {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchEntry {
+    pub source_id: Option<String>,
+    pub availability: String,
     pub source: String,
     pub ecosystem: String,
     pub kind: String,
@@ -500,10 +526,15 @@ pub fn software_entries(payload: Option<&Value>) -> Vec<SoftwareEntry> {
                 "excluded"
             };
             entries.push(SoftwareEntry {
+                source_id: text(item.get("sourceId")),
                 group: group_id.clone(),
                 label: group_label.clone(),
                 item: text(item.get("id")),
-                version: text(item.get("version")),
+                version: text(
+                    item.get("version")
+                        .filter(|v| !v.is_null())
+                        .or_else(|| item.get("resolvedVersion")),
+                ),
                 state: state.to_string(),
                 reference: text(item.get("ref")),
                 effective,
@@ -541,6 +572,15 @@ pub fn search_entries(payload: Option<&Value>) -> Vec<SearchEntry> {
             results
                 .iter()
                 .map(|result| SearchEntry {
+                    source_id: result
+                        .get("sourceId")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    availability: result
+                        .get("availability")
+                        .and_then(Value::as_str)
+                        .unwrap_or("installable")
+                        .to_string(),
                     source: text(result.get("source")),
                     ecosystem: text(result.get("ecosystem")),
                     kind: text(result.get("kind")),
@@ -563,6 +603,9 @@ pub fn search_entries(payload: Option<&Value>) -> Vec<SearchEntry> {
 
 pub fn compatible_groups(entry: &SearchEntry, payload: Option<&Value>) -> Vec<SoftwareGroup> {
     let groups = software_groups(payload);
+    if entry.availability == "discovery-only" || entry.availability == "unsupported" {
+        return Vec::new();
+    }
     if let Some(managed) = &entry.managed_group {
         if let Some(group) = groups.iter().find(|group| &group.id == managed) {
             return vec![group.clone()];
@@ -1019,5 +1062,13 @@ mod tests {
             .find(|row| row.key == SettingKey::Config("envy.user.name".to_string()))
             .unwrap();
         assert!(name.freeform());
+    }
+    #[test]
+    fn discovery_only_search_has_no_install_groups() {
+        let payload = serde_json::json!({"results":[{"source":"cargo","sourceId":"cargo:crates.io",
+            "ecosystem":"cargo","kind":"tool","name":"tool","availability":"discovery-only"}]});
+        let entry = search_entries(Some(&payload)).remove(0);
+        assert_eq!(entry.source_id.as_deref(), Some("cargo:crates.io"));
+        assert!(compatible_groups(&entry, Some(&serde_json::json!({"groups":[]}))).is_empty());
     }
 }

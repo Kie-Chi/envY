@@ -7,7 +7,7 @@ from envy.evaluation import machine_manifest
 
 
 ADAPTERS = ("claude-code", "codex", "openai-compatible-cli", "pi", "stepgo")
-_AGENT_FIELDS = ("adapter", "endpoint", "credential", "model", "command")
+_AGENT_FIELDS = ("adapter", "endpoint", "credential", "model", "contextWindow", "maxTokens", "command", "additionalSettings")
 _PROTOCOLS = ("openai-compatible", "anthropic-compatible", "native")
 _KINDS = ("api-key", "token", "basic")
 
@@ -124,6 +124,8 @@ def complete_agent_values(ctx, incomplete):
     if namespace == "agents":
         from envy.agent import is_obsolete_agent
 
+        if field in {"model", "contextWindow", "maxTokens", "command", "additionalSettings"}:
+            return []
         if is_obsolete_agent(name) or field not in {"adapter", "api", "endpoint", "credential", "moreThinking"}:
             return []
         metadata = _metadata()

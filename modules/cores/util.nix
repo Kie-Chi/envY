@@ -26,6 +26,7 @@ let
     ps.rich
     ps.prompt-toolkit
     ps.pyyaml
+    ps.tomli-w
   ]);
 
   # Special package for envy Python CLI — writeShellApplication wraps it with all runtime deps

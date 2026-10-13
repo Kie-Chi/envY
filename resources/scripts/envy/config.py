@@ -654,6 +654,7 @@ def refine_config(*, write: bool = True, strict: bool = False) -> RefineReport:
 def refine_agents(*, write: bool = True, strict: bool = False) -> RefineReport:
     """Migrate legacy scalar LLM settings into the dynamic agent block."""
     report = RefineReport()
+    log.debug("agents", "starting managed agent validation", write=write, strict=strict)
     path = machine_config_file()
     if not path.exists():
         report.errors.append(str(path))
@@ -676,8 +677,15 @@ def refine_agents(*, write: bool = True, strict: bool = False) -> RefineReport:
     report.warnings.extend(result.get("warnings", []))
     report.errors.extend(result.get("errors", []))
     report.changed = bool(result.get("changed", False))
-    if strict and report.errors:
-        log.error("agents", "agent refinement blocked by invalid fields")
+    if report.errors:
+        log.error(
+            "agents",
+            "agent refinement blocked by invalid fields",
+            count=len(report.errors),
+            fields=", ".join(report.errors),
+        )
+    else:
+        log.debug("agents", "managed agent validation passed", changed=report.changed)
     return report
 
 
@@ -810,13 +818,13 @@ def refine_secrets(*, write: bool = True, strict: bool = False, prune: bool = Fa
 
 def refine_all(*, write: bool = True, strict: bool = False, include_secrets: bool = True,
                prune: bool = False) -> RefineReport:
-    log.step("config", "checking device metadata, selected machine, and secrets")
+    log.step("config", "checking device metadata, selected machine, agents, software, and secrets")
+    log.debug("config", "validation started", write=write, strict=strict, include_secrets=include_secrets)
     report = RefineReport()
     device_report = refine_device_metadata(write=write, strict=strict)
     report.extend(device_report)
     if not device_report.ok:
-        if strict:
-            log.error("config", "refine failed")
+        log.error("config", "validation failed", count=len(report.errors))
         return report
     report.extend(refine_sensitive_permissions(write=write))
     # refine_config migrates agents before deleting old LLM scalar fields.
@@ -825,9 +833,14 @@ def refine_all(*, write: bool = True, strict: bool = False, include_secrets: boo
     if include_secrets:
         report.extend(refine_secrets(write=write, strict=strict, prune=prune))
     if report.ok:
-        log.ok("config", "refine completed")
-    elif strict:
-        log.error("config", "refine failed")
+        log.ok("config", "refine completed" if write else "check completed")
+    else:
+        log.error(
+            "config",
+            "refine failed" if write else "check failed",
+            count=len(report.errors),
+            fields=", ".join(report.errors),
+        )
     return report
 
 
@@ -925,8 +938,8 @@ def complete_machine_values(ctx, incomplete: str) -> list[tuple[str, str]]:
 
 @app.command(name="check")
 def cmd_check():
-    """Check device metadata, the selected machine file, and secrets without writing."""
-    report = refine_all(write=False, strict=False, include_secrets=True)
+    """Strictly check all managed configuration without writing."""
+    report = refine_all(write=False, strict=True, include_secrets=True)
     if not report.ok:
         raise typer.Exit(code=1)
 
@@ -936,7 +949,7 @@ def cmd_refine(
     prune: bool = typer.Option(False, "--prune", help="Remove known obsolete config/secret paths"),
 ):
     """Refine device metadata, the selected machine file, and secrets.yaml."""
-    report = refine_all(write=True, strict=False, include_secrets=True, prune=prune)
+    report = refine_all(write=True, strict=True, include_secrets=True, prune=prune)
     if not report.ok:
         raise typer.Exit(code=1)
     if report.changed:

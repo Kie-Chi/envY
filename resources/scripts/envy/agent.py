@@ -40,6 +40,7 @@ from envy.legacy import (
     obsolete_agent_paths,
 )
 from envy.mutation import offer_mutation_commit
+from envy.nix_literals import LiteralError, LiteralReader
 from envy.secure_io import atomic_write_text
 from envy.transaction import FileTransaction
 from envy.utils import SECRETS_FILE, current_machine_id
@@ -49,9 +50,6 @@ MANAGED_START = "  # BEGIN ENVY MANAGED AGENTS"
 MANAGED_END = "  # END ENVY MANAGED AGENTS"
 _NAME = r"[A-Za-z0-9][A-Za-z0-9_-]*"
 _PATH_RE = re.compile(r"^envy\.(agents|llm\.(?:endpoints|credentials))\." + _NAME + r"(?:\.[A-Za-z0-9_-]+)?$")
-_ASSIGNMENT_RE = re.compile(
-    r"^\s*(envy\.(?:agents|llm\.(?:endpoints|credentials))\.[A-Za-z0-9_.-]+)\s*=\s*(.*?)\s*;\s*$"
-)
 _SAFE_SECRET_PATH = re.compile(r"^[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*$")
 _KNOWN_ENDPOINTS = {"stepfun-openai", "stepfun-anthropic", "deepseek-openai"}
 _KNOWN_CREDENTIALS = {"stepfun", "deepseek"}
@@ -60,27 +58,6 @@ API_CHOICES = ("openai-completions", "openai-responses")
 
 def _block_pattern() -> re.Pattern[str]:
     return re.compile(rf"(?ms)^{re.escape(MANAGED_START)}$.*?^{re.escape(MANAGED_END)}$")
-
-
-def _parse_value(raw: str) -> Any:
-    if raw in {"true", "false"}:
-        return raw == "true"
-    if raw == "null":
-        return None
-    if raw.startswith('"') and raw.endswith('"'):
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            return raw[1:-1]
-    if raw.startswith("[") and raw.endswith("]"):
-        values = []
-        for match in re.finditer(r'"(?:\\.|[^"\\])*"', raw):
-            try:
-                values.append(json.loads(match.group(0)))
-            except json.JSONDecodeError:
-                continue
-        return values
-    return raw
 
 
 def _read_values(path: Path | None = None) -> dict[str, Any]:
@@ -105,14 +82,37 @@ def read_managed_values(path: Path | None = None) -> tuple[dict[str, Any], bool,
         return {}, True, ["agent managed block markers are malformed"]
     values: dict[str, Any] = {}
     errors: list[str] = []
-    for line in match.group(0).splitlines():
-        assignment = _ASSIGNMENT_RE.match(line)
-        if assignment:
-            values[assignment.group(1)] = _parse_value(assignment.group(2))
-            continue
-        stripped = line.strip()
-        if stripped.startswith("envy."):
-            errors.append("agent managed block contains a malformed assignment")
+    block = match.group(0)
+    reader = LiteralReader(block)
+    base_line = text.count("\n", 0, match.start()) + 1
+    while True:
+        # peek skips comments but restores position. Keep that position to
+        # locate failures without including any assignment values in output.
+        start = reader.position
+        field = "agent managed block"
+        try:
+            if not reader.peek():
+                break
+            parts = [reader.take()]
+            while reader.peek() == ".":
+                reader.take()
+                parts.append(reader.take())
+            field = ".".join(parts)
+            if not _PATH_RE.fullmatch(field):
+                raise LiteralError("invalid managed field path")
+            reader.expect("=")
+            value = reader.value()
+            reader.expect(";")
+            if field in values:
+                raise LiteralError("duplicate managed assignment")
+            values[field] = value
+        except LiteralError as exc:
+            line = base_line + block.count("\n", 0, reader.position)
+            errors.append(f"{field}: {exc} (line {line})")
+            # Do not attempt recovery inside a nested attrset: doing so could
+            # interpret its members as independent machine assignments.
+            break
+    log.debug("agents", "managed block parsed", path=str(path), fields=len(values), errors=len(errors))
     return values, True, errors
 
 
@@ -161,11 +161,17 @@ def _validate_values(values: dict[str, Any]) -> list[str]:
         namespace, name, field = match.groups()
         if namespace == "agents":
             agent_names.add(name)
-            if field not in {"adapter", "api", "endpoint", "credential", "model", "command", "args", "aliases", "skills", "moreThinking", *AGENT_FIELD_ALIASES}:
+            if field not in {"adapter", "api", "endpoint", "credential", "model", "contextWindow", "maxTokens", "command", "args", "aliases", "skills", "additionalSettings", "moreThinking", *AGENT_FIELD_ALIASES}:
+                errors.append(path)
+            elif field in {"contextWindow", "maxTokens"} and value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value <= 0
+            ):
                 errors.append(path)
             elif field in {"args", "aliases", "skills"} and (
                 not isinstance(value, list) or not all(isinstance(item, str) for item in value)
             ):
+                errors.append(path)
+            elif field == "additionalSettings" and not isinstance(value, dict):
                 errors.append(path)
             elif field in {"moreThinking", *AGENT_FIELD_ALIASES} and not isinstance(value, bool):
                 errors.append(path)
@@ -218,6 +224,9 @@ def refine_managed(
     values, present, errors = read_managed_values(path)
     result: dict[str, Any] = {"added": [], "removed": [], "warnings": [], "errors": list(errors), "changed": False}
     if errors:
+        for error in errors:
+            log.error("agents", "cannot parse managed agent configuration", path=str(path or machine_config_file()), reason=error)
+        log.hint("Use literal Nix settings or builtins.fromJSON in the managed agent block; no values were changed.")
         return result
     if not present:
         migrated = _migration_values(machine_values)
@@ -407,7 +416,7 @@ def config_view(
         add_field(f"envy.llm.credentials.{name}.secretPath", credential.get("secretPath"))
 
     for name, agent in sorted(normalized_agents.items()):
-        for field in ("adapter", "endpoint", "credential", "model", "command"):
+        for field in ("adapter", "endpoint", "credential", "model", "contextWindow", "maxTokens", "command"):
             add_field(f"envy.agents.{name}.{field}", agent.get(field))
         if agent.get("adapter") == "pi":
             add_field(
@@ -429,10 +438,15 @@ def config_view(
 
 
 def _render_value(value: Any) -> str:
+    if isinstance(value, dict):
+        encoded = json.dumps(json.dumps(value, ensure_ascii=False, allow_nan=False), ensure_ascii=False)
+        return "builtins.fromJSON " + encoded.replace("${", r"\${")
     if value is None:
         return "null"
     if isinstance(value, bool):
         return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
     if isinstance(value, list):
         return "[ " + " ".join(_render_value(item) for item in value) + " ]"
     return f'"{_escape_nix_string(str(value))}"'
@@ -496,10 +510,26 @@ def _set(path: str, value: Any) -> Path:
                     raise typer.BadParameter(f"{path} requires a JSON array of strings") from exc
             if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
                 raise typer.BadParameter(f"{path} requires a JSON array of strings")
-        elif field in {"endpoint", "credential", "model", "command"} and value == "null":
-            value = None
+        elif field in {"endpoint", "credential", "model", "contextWindow", "maxTokens"}:
+            if value == "null":
+                value = None
+            elif field in {"contextWindow", "maxTokens"}:
+                try:
+                    value = int(value)
+                except (TypeError, ValueError):
+                    raise typer.BadParameter(f"{path} must be a positive integer or null") from None
+                if value <= 0:
+                    raise typer.BadParameter(f"{path} must be a positive integer or null")
     if path.startswith("envy.agents.") and path.endswith(".api") and value not in API_CHOICES:
         raise typer.BadParameter(f"api must be one of: {', '.join(API_CHOICES)}")
+    if path.startswith("envy.agents.") and path.endswith(".additionalSettings"):
+        try:
+            value = json.loads(value) if isinstance(value, str) else value
+            if not isinstance(value, dict):
+                raise ValueError
+            json.dumps(value, allow_nan=False)
+        except (ValueError, TypeError):
+            raise typer.BadParameter("additionalSettings must be a JSON object") from None
     if path.startswith("envy.agents.") and path.endswith(".moreThinking"):
         if isinstance(value, str) and value in {"true", "false"}:
             value = value == "true"

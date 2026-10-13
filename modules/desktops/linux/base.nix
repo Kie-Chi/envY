@@ -156,8 +156,21 @@ in
     asRoot = true;
     script = ''
       if pkg_installed "waydroid"; then
-        waydroid prop set persist.waydroid.multi_windows true
-        esudo_system ${sys.cmds.systemctl} restart waydroid-container
+        WAYDROID_BIN=""
+        if [ -x /usr/bin/waydroid ]; then
+          WAYDROID_BIN=/usr/bin/waydroid
+        elif WAYDROID_BIN="$(command -v waydroid 2>/dev/null)" && [ -x "$WAYDROID_BIN" ]; then
+          :
+        else
+          WAYDROID_BIN=""
+        fi
+
+        if [ -n "$WAYDROID_BIN" ]; then
+          "$WAYDROID_BIN" prop set persist.waydroid.multi_windows true
+          esudo_system ${sys.cmds.systemctl} restart waydroid-container
+        else
+          log_warn "Waydroid package is installed, but the waydroid command is unavailable; skipping initialization."
+        fi
       fi
     '';
   });

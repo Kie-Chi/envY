@@ -43,6 +43,10 @@ let
           name = agent.model;
           reasoning = true;
           input = [ "text" "image" ];
+        } // lib.optionalAttrs (agent.contextWindow != null) {
+          contextWindow = agent.contextWindow;
+        } // lib.optionalAttrs (agent.maxTokens != null) {
+          maxTokens = agent.maxTokens;
         } // lib.optionalAttrs (agent.adapter == "pi" && agent.moreThinking) {
           thinkingLevelMap = {
             xhigh = "xhigh";
@@ -73,9 +77,16 @@ in
   config = {
     sops.templates.${templateNameFor "pi"}.content = templateFor piConfig;
 
-    # Model files contain credential references, never decrypted API keys.
-    home.file.".pi/agent/models.json".text = builtins.toJSON
-      (modelConfigFor piConfig "$OPENAI_API_KEY");
+    agents.settingsFiles.pi = {
+      target = ".pi/agent/settings.json";
+      format = "json";
+    };
+    envy.agents.pi.runtimeFiles = [ {
+      name = "models";
+      target = ".pi/agent/models.json";
+      format = "json";
+      data = modelConfigFor piConfig "$OPENAI_API_KEY";
+    } ];
     envy.software.nix.packages.include = [ piWrapper ];
     envy.software.nix.packages.sourceDependencies = { pi = [ "nix:pi" ]; };
     envy.software.nix.packages.references = {

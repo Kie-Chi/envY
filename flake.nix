@@ -203,6 +203,7 @@
             ps.rich
             ps.prompt-toolkit
             ps.pyyaml
+            ps.tomli-w
           ]))
           git
           curl
@@ -226,6 +227,7 @@
           ps.rich
           ps.prompt-toolkit
           ps.pyyaml
+          ps.tomli-w
         ]);
 
       mkEnvyRuntime = system:
@@ -274,6 +276,7 @@
             ps.rich
             ps.prompt-toolkit
             ps.pyyaml
+            ps.tomli-w
           ]);
         in pkgs.runCommand "envy-python-tests" {
           nativeBuildInputs = [ python pkgs.git ];

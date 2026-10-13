@@ -303,6 +303,38 @@ let
           inherit target owner group mode;
         };
 
+      # Return true when every key/value in `needle` is structurally present in
+      # `haystack`. Attribute key order is irrelevant; lists are compared in
+      # order and must have the same length. Scalars use exact equality.
+      contains = needle: haystack:
+        if builtins.isAttrs needle && builtins.isAttrs haystack then
+          lib.all (name:
+            builtins.hasAttr name haystack
+            && contains needle.${name} haystack.${name}
+          ) (builtins.attrNames needle)
+        else if builtins.isList needle && builtins.isList haystack then
+          builtins.length needle == builtins.length haystack
+          && (builtins.length needle == 0 || lib.all (index:
+            contains (builtins.elemAt needle index) (builtins.elemAt haystack index)
+          ) (lib.range 0 (builtins.length needle - 1)))
+        else needle == haystack;
+
+      # Merge declarations into application-owned files after Home Manager has
+      # generated its links, leaving a writable user-owned result.
+      mergeWritable = { name, format ? "json", data, target }:
+        let
+          source = renderedFile { inherit name data; format = "json"; };
+          python = pkgs.python3.withPackages (ps: [ ps.pyyaml ps.tomli-w ]);
+        in lib.hm.dag.entryAfter [ "linkGeneration" ] ''
+          _LOG_CTX="${name}"
+          if [ -z "$DRY_RUN_CMD" ]; then
+            PYTHONPATH=${../../resources/scripts} ${python}/bin/python -m envy.structured_config \
+              --format ${lib.escapeShellArg format} \
+              --source ${lib.escapeShellArg (toString source)} \
+              --target "$HOME"/${lib.escapeShellArg target}
+          fi
+        '';
+
       activation = {
         after ? [ "userBoundary" ],
         pre ? "",
@@ -398,6 +430,9 @@ let
         ''}
       '';
 
+    contains = config.contains;
+    merge = lib.recursiveUpdate;
+    mergeWritable = config.mergeWritable;
     render = config.renderers;
     mkRenderedText = config.renderedText;
     mkRenderedFile = config.renderedFile;

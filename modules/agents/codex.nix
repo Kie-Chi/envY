@@ -2,6 +2,7 @@
 
 let
   agentConfig = config.envy.agents.codex;
+  prompts = import ./prompts.nix { inherit lib pkgs; };
   endpoint = if agentConfig.endpoint == null
     || !(builtins.hasAttr agentConfig.endpoint config.envy.llm.endpoints) then null
     else config.envy.llm.endpoints.${agentConfig.endpoint};
@@ -18,6 +19,7 @@ let
         source "${config.sops.templates.${templateName}.path}"
       fi
       cmd=(${lib.escapeShellArg (lib.getExe pkgs.codex)})
+      ${prompts.shellArgs "codex"}
       ${lib.concatMapStringsSep "\n" (arg: "cmd+=(${lib.escapeShellArg arg})") agentConfig.args}
       exec "''${cmd[@]}" "$@"
     '';

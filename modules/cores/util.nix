@@ -11,7 +11,7 @@ let
     in
     lib.mapAttrsToList
       (scriptName: fileType:
-        if builtins.elem scriptName [ "envy" "ccli" ] then
+        if builtins.elem scriptName [ "envy" ] then
           null  # handled by a dedicated package/module
         else if fileType == "regular" then
           pkgs.writeShellScriptBin scriptName (builtins.readFile (dirPath + "/${scriptName}"))

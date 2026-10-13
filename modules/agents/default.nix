@@ -96,6 +96,8 @@
   # Pi is the upstream extensible harness.
   envy.agents.pi = {
     adapter = lib.mkDefault "pi";
+    # Codemode is the preferred path for repository-scale and multi-step work.
+    additionalSettings.defaultTools = lib.mkDefault [ "+codemode" ];
     # xikai is a Darwin machine-owned endpoint; the portable default must use
     # the shared StepFun endpoint so Linux targets remain configured.
     endpoint = lib.mkDefault "stepfun-openai";

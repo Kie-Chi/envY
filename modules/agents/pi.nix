@@ -2,6 +2,7 @@
 
 let
   piConfig = config.envy.agents.pi;
+  prompts = import ./prompts.nix { inherit lib pkgs; };
   selectedPiPackage = if piConfig.moreThinking then
     import ./pi-package.nix { inherit piPackage pkgs; }
     else piPackage;
@@ -65,6 +66,7 @@ let
         source "${config.sops.templates.${templateNameFor "pi"}.path}"
       fi
       cmd=(${lib.escapeShellArg (lib.getExe selectedPiPackage)})
+      ${prompts.shellArgs "pi"}
       ${lib.optionalString (piConfig.model != null) ''
       cmd+=(--model ${lib.escapeShellArg "${providerName}/${piConfig.model}"})
       ''}

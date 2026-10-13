@@ -14,7 +14,9 @@ modules/agents/
 ├── linux/rtk.nix        # Linux-only RTK package
 ├── claude.nix           # Claude package, wrapper defaults, and ccli alias
 ├── generic.nix           # OpenAI-compatible and StepGo adapters
-├── pi.nix              # Pi wrapper and provider metadata
+├── pi.nix              # Pi wrapper, prompt, and provider metadata
+├── prompts.nix         # shared and provider-specific system prompt loader
+├── prompts/            # shared, Claude, Pi, and Codex instructions
 ├── pi-extensions.nix   # selected extensions from the locked upstream Pi source
 ├── skills.nix           # skill catalog/selection Home Manager module
 └── skills/
@@ -108,6 +110,10 @@ selected capabilities, commands, and update procedure.
 ## Provider boundary
 
 Each agent gets an adapter module (`codex.nix`, `claude.nix`, and generic adapters for compatible CLIs). The adapter owns package installation, stable command wrappers, protocol-specific environment names, and skill integration. `modules/llm` owns only non-sensitive endpoint metadata and sops credential declarations. A credential is a logical reference such as `stepfun`; its value is available only through an activation-time sops placeholder and is never a Nix evaluation-time string.
+
+Each adapter receives the shared prompt from `prompts/common.md` and may append provider-specific instructions from `prompts/claude.md`, `prompts/pi.md`, or `prompts/codex.md`. Claude uses `--system-prompt` and preserves the `CCLI_SYSTEM_PROMPT` and `~/.config/ccli/prompt` overrides. Pi uses `--append-system-prompt`, so Pi's built-in system prompt and project context remain available. Codex receives the same rules through `developer_instructions` in its configuration override.
+
+Pi enables `+codemode` in its adapter defaults. This preserves the normal `read`, `bash`, `edit`, and `write` tools and adds codemode; a machine can override the complete `defaultTools` list through `envy.agents.pi.additionalSettings`. The Pi prompt recommends codemode for repository-scale, parallel, and multi-step work.
 
 Machine-owned agent selections live under `envy.agents`. Provider-specific settings that are outside the fixed schema belong in `additionalSettings`:
 

@@ -35,6 +35,7 @@ let
   homePolicy = config.home-manager.users.${config.envy.user.name}.envy.software;
   homeLlm = config.home-manager.users.${config.envy.user.name}.envy.llm;
   homeAgents = config.home-manager.users.${config.envy.user.name}.envy.agents;
+  homeSkills = config.home-manager.users.${config.envy.user.name}.agents.skills.effective;
   systemHabits = config.envy.machine.habits;
   homeHabits = config.home-manager.users.${config.envy.user.name}.envy.machine.habits;
 in
@@ -72,7 +73,7 @@ in
     envy.darwin.software.homebrew.repositories.effective = taps;
 
     envy.machine.manifest = {
-      schemaVersion = 2;
+      schemaVersion = 3;
       id = config.envy.machine.id;
       platform = config.envy.machine.platform;
       system = config.envy.machine.system;
@@ -97,7 +98,9 @@ in
         }) homeLlm.credentials;
         endpoints = homeLlm.endpoints;
       };
-      agents = lib.mapAttrs (_: agent: agent // {
+      agents = lib.mapAttrs (name: agent: agent // {
+        configuredSkills = agent.skills;
+        skills = homeSkills.${name};
         credentialConfigured = agent.credential != null
           && builtins.hasAttr agent.credential homeLlm.credentials;
         endpointConfigured = agent.endpoint != null
@@ -118,6 +121,7 @@ in
         probes = mirrorProfile.probes.common ++ mirrorProfile.probes.darwin;
       };
       habits = systemHabits ++ homeHabits;
+      software.sources = config.envy.software.sources;
       software.groups = {
         "nix.user.package" = manifestLib.group {
           label = "Nix packages";
@@ -220,7 +224,14 @@ in
     fonts.packages = fontPackages;
     homebrew = {
       enable = true;
-      inherit brews casks taps;
+      inherit brews casks;
+      taps = map (name:
+        let source = config.envy.software.sources."homebrew:${name}" or null;
+        in if source != null && source.parameters ? url then {
+          inherit name;
+          clone_target = source.parameters.url;
+        } else name
+      ) taps;
       onActivation = {
         autoUpdate = false;
         upgrade = false;

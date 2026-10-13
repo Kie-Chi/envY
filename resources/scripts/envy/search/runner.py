@@ -19,7 +19,7 @@ from envy.search.providers import available_providers
 from envy.utils import platform_name
 
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 CACHE_TTL_SECONDS = 15 * 60
 SOURCE_ALIASES = {
     "apt": "native",
@@ -39,6 +39,7 @@ def search_and_render(
     json_output: bool,
     refresh: bool = False,
     timeout: float = 10,
+    source_ids: list[str] | None = None,
 ) -> None:
     selected = _normalize_sources(sources)
     providers = available_providers()
@@ -49,15 +50,35 @@ def search_and_render(
             f"unavailable search source(s): {', '.join(unknown)}; available: {available}"
         )
     active = {name: providers[name] for name in selected} if selected else providers
+    manifest = machine_manifest()
+    from envy.sources.catalog import catalog
+    from envy.sources.adapters import search
+    declared = catalog(manifest)
+    if source_ids:
+        missing = set(source_ids) - set(declared)
+        if missing:
+            raise typer.BadParameter("unknown source IDs: " + ", ".join(sorted(missing)))
+    # Keep dependency injection for provider tests; production providers are
+    # expanded into concrete origins before running concurrently.
+    if source_ids or all(getattr(provider, "__module__", "") == "envy.search.providers" for provider in active.values()):
+        candidates = [source for sid, source in declared.items()
+                      if (not source_ids or sid in source_ids)
+                      and (source.ecosystem in active or (source_ids and not selected))
+                      and (source_ids or source.capabilities.get("search"))
+                      and (source_ids or source.ready or source.selected)
+                      and platform_name() in source.platforms]
+        active = {source.id: (lambda q, n, t, source=source: search(source, manifest or {}, q, n, t))
+                  for source in candidates}
+    contexts = {sid: source.fingerprint for sid, source in declared.items() if sid in active}
     if not active:
         log.error("software", "no search providers are available")
         raise typer.Exit(code=1)
 
-    reports = None if refresh else _read_cache(query, sorted(active), limit)
+    reports = None if refresh else _read_cache(query, sorted(active), limit, contexts)
     if reports is None:
         reports = _run_providers(active, query, limit, timeout)
         if all(report.error is None for report in reports):
-            _write_cache(query, sorted(active), limit, reports)
+            _write_cache(query, sorted(active), limit, reports, contexts)
 
     # Query cache and exact identity index have different lifecycles. Preserve
     # every successful provider result even when another provider failed.
@@ -69,7 +90,7 @@ def search_and_render(
     results = [result for report in reports for result in report.results]
     if exact:
         results = [result for result in results if result.name.casefold() == query.casefold()]
-    _mark_managed(results, machine_manifest())
+    _mark_managed(results, manifest)
     results.sort(key=lambda result: _rank(result, query))
 
     if json_output:
@@ -78,6 +99,7 @@ def search_and_render(
             "platform": platform_name(),
             "results": [result.to_dict() for result in results],
             "providers": [report.to_dict() for report in reports],
+            "sources": [source.to_dict() for sid, source in declared.items() if sid in active],
         }
         log.console.print_json(json.dumps(payload, ensure_ascii=False))
         return
@@ -95,7 +117,7 @@ def search_and_render(
     table.add_column("Description")
     for result in results:
         table.add_row(
-            result.source,
+            result.source_id or result.source,
             result.kind,
             result.name,
             result.version or "",
@@ -135,6 +157,8 @@ def _mark_managed(results: list[SearchResult], manifest) -> None:
             continue
         for item in effective:
             if isinstance(item, dict) and isinstance(item.get("name"), str):
+                from envy.sources.catalog import legacy_source_id
+                item_source = item.get("sourceId") or legacy_source_id(ecosystem, item.get("ref"), group.get("kind", ""))
                 names = [item["name"]]
                 parameters = item.get("parameters")
                 provider_names = parameters.get("names") if isinstance(parameters, dict) else None
@@ -145,11 +169,13 @@ def _mark_managed(results: list[SearchResult], manifest) -> None:
                     )
                 ref = item.get("ref") if isinstance(item.get("ref"), str) else None
                 managed.setdefault(ecosystem, []).extend(
-                    (name.casefold(), ref, group_id)
+                    (name.casefold(), ref, group_id, item_source)
                     for name in names
                 )
     for result in results:
-        for name, ref, group_id in managed.get(result.ecosystem, []):
+        for name, ref, group_id, item_source in managed.get(result.ecosystem, []):
+            if result.source_id and item_source and result.source_id != item_source:
+                continue
             if name == result.name.casefold() or (ref and ref == result.ref):
                 result.managed_group = group_id
                 break
@@ -172,27 +198,33 @@ def _normalize_sources(values: list[str] | None) -> list[str] | None:
     result = []
     for value in values:
         for raw in value.split(","):
-            source = SOURCE_ALIASES.get(raw.strip().casefold(), raw.strip().casefold())
+            raw = raw.strip().casefold()
+            if raw in ("apt", "dnf", "pacman", "zypper"):
+                from envy.sources.catalog import native_manager
+                if raw != native_manager():
+                    raise typer.BadParameter(f"native manager alias {raw} does not match this host")
+            source = SOURCE_ALIASES.get(raw, raw)
             if source and source not in result:
                 result.append(source)
     return result
 
 
-def _cache_path(query: str, sources: list[str], limit: int) -> Path:
+def _cache_path(query: str, sources: list[str], limit: int, contexts=None) -> Path:
     payload = json.dumps({
         "version": CACHE_VERSION,
         "platform": platform_name(),
         "query": query.casefold(),
         "sources": sources,
         "limit": limit,
+        "contexts": contexts or {},
     }, sort_keys=True, separators=(",", ":")).encode()
     key = hashlib.sha256(payload).hexdigest()
     root = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
     return root / "envy" / "search" / f"{key}.json"
 
 
-def _read_cache(query: str, sources: list[str], limit: int) -> list[ProviderReport] | None:
-    path = _cache_path(query, sources, limit)
+def _read_cache(query: str, sources: list[str], limit: int, contexts=None) -> list[ProviderReport] | None:
+    path = _cache_path(query, sources, limit, contexts)
     try:
         value = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
@@ -220,7 +252,7 @@ def _read_cache(query: str, sources: list[str], limit: int) -> list[ProviderRepo
             return None
         try:
             results = [
-                SearchResult(**item)
+                SearchResult.from_dict(item)
                 for item in raw_results
                 if isinstance(item, dict)
             ]
@@ -232,8 +264,8 @@ def _read_cache(query: str, sources: list[str], limit: int) -> list[ProviderRepo
     return reports
 
 
-def _write_cache(query: str, sources: list[str], limit: int, reports: list[ProviderReport]) -> None:
-    path = _cache_path(query, sources, limit)
+def _write_cache(query: str, sources: list[str], limit: int, reports: list[ProviderReport], contexts=None) -> None:
+    path = _cache_path(query, sources, limit, contexts)
     try:
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         path.write_text(json.dumps({
@@ -243,3 +275,18 @@ def _write_cache(query: str, sources: list[str], limit: int, reports: list[Provi
         path.chmod(0o600)
     except OSError:
         pass
+
+
+
+def invalidate_source_cache(source_id: str) -> None:
+    """Discard this source's query snapshots after explicit metadata synchronization."""
+    root = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "envy" / "search"
+    for path in root.glob("*.json"):
+        try:
+            reports = json.loads(path.read_text()).get("reports", [])
+            if any(report.get("source") == source_id or
+                   any(item.get("sourceId") == source_id for item in report.get("results", []))
+                   for report in reports):
+                path.unlink()
+        except (OSError, ValueError, AttributeError):
+            continue

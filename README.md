@@ -88,7 +88,7 @@ envy host select <machine-id>
 |---|---|
 | `envy status` | 用一个一致快照展示当前 machine、Git、generation、software、Doctor 摘要与推荐下一步；`--json` 供 TUI 使用 |
 | `envy apply` | Refine 并应用当前平台的 machine target |
-| `envy sync` | 从远端快进共享 `master`，成功后应用当前机器 |
+| `envy sync` | 同步共享 `master`；本地与远端分叉时先尝试自动 merge，成功后应用当前机器 |
 | `envy sync --no-apply` | 仅同步，不应用 |
 | `envy sync --build-only` | 同步后只构建当前平台 target |
 | `envy push "<message>"` | 分析 worktree 与 outgoing commits，确认影响范围后提交并 push |
@@ -137,6 +137,13 @@ evaluated manifest、精确 identity index，或完成一次对应 provider 的�
 `sw why` 会补全跨 group 的 evaluated/受管条目，`history diff` 与 `rollback`
 会补全真实 generation，`host diff` 与 `host matrix --group` 则补全跨平台 machine
 和 canonical group。按 Tab 只做本地只读查询，不会访问 registry 或求值所有 machines。
+`agent set` 与 `config set` 都会补全当前机器的 agent、endpoint 和 credential
+字段，并按字段提示布尔值、API/协议、adapter 及已声明的连接引用。
+`agent show/rm`、`agent add` 的连接选项和 `credential-set` 的逻辑名称/YAML
+路径也支持补全；候选不读取或展示密钥值，模型名与 URL 仍可自由输入。
+`sw source show/add/rm/sync` 和 `sw add/search --source-id` 支持来源 ID，
+软件缓存候选按当前来源与上下文指纹过滤；`remote-agent start` 则从所选 TOML
+补全目标和 `--agent` 名称，不建立远程连接。
 `config show`、`host list/status`、`software list/status/audit/why`、
 `mirror status/probe/targets/sources/measure` 与 `doctor` 的只读视图支持 `--json`。
 `sw add/rm --json` 则输出稳定的 `software.<action>` envelope，包含完整计划和

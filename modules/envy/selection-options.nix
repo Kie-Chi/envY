@@ -22,6 +22,11 @@ let
         default = null;
         description = "Canonical envY software reference, when available.";
       };
+      sourceId = mkOption {
+        type = types.nullOr types.nonEmptyStr;
+        default = null;
+        description = "Stable identity of the declared software source.";
+      };
       parameters = mkOption {
         type = types.attrsOf types.anything;
         default = { };
@@ -38,6 +43,16 @@ in
       type = types.listOf types.package;
       default = [ ];
       inherit description;
+    };
+    sourceDependencies = mkOption {
+      type = types.attrsOf (types.listOf types.nonEmptyStr);
+      default = { };
+      description = "Upstream software sources used by local wrapper derivations.";
+    };
+    sourceIds = mkOption {
+      type = types.attrsOf types.nonEmptyStr;
+      default = { };
+      description = "Source identities keyed by final package name.";
     };
     references = mkOption {
       type = types.attrsOf types.nonEmptyStr;

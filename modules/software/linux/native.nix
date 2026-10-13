@@ -1,7 +1,17 @@
-{ config, lib, sys, ... }:
+{ config, lib, pkgs, sys, ... }:
 
 let
   packages = config.envy.linux.software.native.packages.effective;
+  descriptor = pkgs.writeText "envy-native-packages.json" (builtins.toJSON {
+    sources = config.envy.software.sources; inherit packages;
+  });
+  sourceInstaller = pkgs.writeShellApplication {
+    name = "envy-native-install";
+    runtimeInputs = [ pkgs.python3 pkgs.gnupg ];
+    text = ''
+      exec python3 -c 'import sys; sys.path.insert(0, "${../../../resources/scripts}"); from envy.sources.native.backend import main; main()' install --definitions "${descriptor}"
+    '';
+  };
   packageNameFor = item: manager:
     let names = item.parameters.names or { };
     in names.${manager} or item.name;
@@ -25,7 +35,7 @@ let
         *) PKG=${lib.escapeShellArg item.name} ;;
       esac
     '';
-  collectPackage = item: ''
+  collectPackage = item: lib.optionalString (item.sourceId == null || item.sourceId == "native:system") ''
     ${resolvePackage item}
     if pkg_installed "$PKG"; then
       log_info "'$PKG' already installed, skip."
@@ -38,7 +48,7 @@ in
 {
   home.activation.installNativePackages = sys.task.root {
     name = "native-packages";
-    after = [ "configureAptMirror" ];
+    after = [ "configureNativeRepositories" ];
     pre = ''
       MISSING_PKGS=()
       log_debug "starting native package installation"
@@ -52,8 +62,9 @@ in
         pkg_update
         pkg_install "''${MISSING_PKGS[@]}"
       else
-        log_info "all native packages satisfied, nothing to install."
+        log_info "all native system packages satisfied."
       fi
+      esudo_system ${sourceInstaller}/bin/envy-native-install
     '';
   };
 }

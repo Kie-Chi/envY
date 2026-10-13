@@ -17,6 +17,7 @@ in
       description = "Whether the Linux machine is a desktop or server.";
     };
     software = {
+      native.repositories = itemSelection "Linux native software repositories";
       native.packages = itemSelection "Linux native system packages";
       url.artifacts = itemSelection "Linux system artifacts installed from fixed URLs";
     };

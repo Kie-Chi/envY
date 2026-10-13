@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from contextlib import ExitStack, contextmanager
@@ -5,26 +6,209 @@ from pathlib import Path
 from unittest.mock import patch
 
 import typer
+from typer.testing import CliRunner
 
-from envy import config
-from envy.agent import _read_values, _render, _write_values, refine_managed
+from envy import agent, config
+from envy.agent import _read_values, _render, _set, _write_values, refine_managed
 
 
 class AgentConfigTests(unittest.TestCase):
+    def test_list_settings_use_valid_nix_lists_through_both_commands(self):
+        from envy.main import cli
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "machine.nix"
+            outside = '  envy.software.nix.packages.exclude = [ "keep-me" ];\n'
+            path.write_text("{ ... }: {\n" + outside + "}\n")
+            with patch.object(agent, "machine_config_file", return_value=path), patch.object(
+                agent, "offer_mutation_commit"
+            ):
+                _write_values({"envy.agents.pi.adapter": "pi"})
+                for command in ("agent", "config"):
+                    for field, items in (
+                        ("skills", ["animate", "break-ui"]),
+                        ("aliases", ["pcli", "pi-cli"]),
+                        ("args", ['a "quoted" argument', r"C:\work\file"]),
+                        ("skills", []),
+                    ):
+                        key = f"envy.agents.pi.{field}"
+                        with self.subTest(command=command, field=field, items=items):
+                            result = CliRunner().invoke(cli, [command, "set", key, json.dumps(items), "--yes"])
+                            self.assertEqual(result.exit_code, 0, result.output)
+                            self.assertEqual(_read_values(path)[key], items)
+                            self.assertIn(outside, path.read_text())
+                            self.assertNotIn('", "', agent._render_value(items))
+
+    def test_invalid_list_settings_and_unknown_fields_leave_policy_unchanged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "machine.nix"
+            path.write_text("{ ... }: {\n}\n")
+            with patch.object(agent, "machine_config_file", return_value=path):
+                _write_values({"envy.agents.pi.adapter": "pi"})
+                before = path.read_bytes()
+                for field in ("skills", "args", "aliases"):
+                    for value in ('"animate"', '["animate", 1]', '{}', 'null', '[', 'animate'):
+                        with self.subTest(field=field, value=value), self.assertRaises(typer.BadParameter):
+                            _set(f"envy.agents.pi.{field}", value)
+                        self.assertEqual(path.read_bytes(), before)
+                with self.assertRaises(typer.BadParameter):
+                    _set("envy.agents.pi.typo", "unused")
+                self.assertEqual(path.read_bytes(), before)
+                _set("envy.agents.pi.model", "null")
+                self.assertIsNone(_read_values(path)["envy.agents.pi.model"])
+
+    @contextmanager
+    def obsolete_agent_fixture(self):
+        retained = {
+            "envy.llm.endpoints.shared.baseUrl": "https://example.test/v1",
+            "envy.llm.credentials.shared.secretPath": "llm/shared/apikey",
+            "envy.agents.pi.adapter": "pi",
+            "envy.agents.pi.endpoint": "shared",
+            "envy.agents.pi.credential": "shared",
+            "envy.agents.omp2.adapter": "codex",
+        }
+        obsolete = {
+            "envy.agents.omp.adapter": "oh-my-pi",
+            "envy.agents.omp.endpoint": "missing-old-endpoint",
+            "envy.agents.omp.credential": "shared",
+            "envy.agents.omp.oldOption": "unused",
+            "envy.agents.renamed.adapter": "oh-my-pi",
+            "envy.agents.renamed.model": "old-model",
+        }
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            path = Path(directory) / "machine.nix"
+            outside = '  # hand-maintained policy\n  envy.agents.manual.adapter = "oh-my-pi";\n'
+            path.write_text("{ ... }: {\n" + outside + "\n" + _render(retained | obsolete) + "\n}\n")
+            stack.enter_context(patch.object(agent, "machine_config_file", return_value=path))
+            stack.enter_context(patch.object(config, "machine_config_file", return_value=path))
+            stack.enter_context(patch.object(agent, "read_secrets_data", side_effect=AssertionError("no secret reads")))
+            stack.enter_context(patch.object(agent, "offer_mutation_commit"))
+            yield path, retained, obsolete, outside
+
+    def test_refine_reports_then_removes_only_obsolete_managed_agent_fields(self):
+        with self.obsolete_agent_fixture() as (path, retained, obsolete, outside):
+            before = path.read_bytes()
+            checked = config.refine_agents(write=False)
+            self.assertFalse(checked.ok)
+            self.assertFalse(checked.changed)
+            self.assertEqual(checked.removed, sorted(obsolete))
+            self.assertEqual(checked.errors, sorted(obsolete))
+            self.assertEqual(path.read_bytes(), before)
+
+            refined = config.refine_agents(write=True)
+            self.assertTrue(refined.ok)
+            self.assertTrue(refined.changed)
+            self.assertEqual(refined.removed, sorted(obsolete))
+            self.assertEqual(_read_values(path), retained)
+            self.assertIn(outside, path.read_text())
+            once = path.read_bytes()
+            again = config.refine_agents(write=True)
+            self.assertTrue(again.ok)
+            self.assertFalse(again.changed)
+            self.assertEqual(again.removed, [])
+            self.assertEqual(path.read_bytes(), once)
+
+    def test_obsolete_cleanup_does_not_write_when_live_config_is_invalid(self):
+        with self.obsolete_agent_fixture() as (path, retained, obsolete, _):
+            _write_values(retained | obsolete | {"envy.agents.pi.endpoint": "missing-live-endpoint"})
+            before = path.read_bytes()
+            report = config.refine_agents(write=True)
+            self.assertIn("envy.agents.pi.endpoint", report.errors)
+            self.assertFalse(report.changed)
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_obsolete_cleanup_does_not_rewrite_malformed_blocks(self):
+        with self.obsolete_agent_fixture() as (path, _, _, _):
+            path.write_text(path.read_text().replace(agent.MANAGED_END, '  envy.agents.omp.args = [\n' + agent.MANAGED_END))
+            before = path.read_bytes()
+            report = config.refine_agents(write=True)
+            self.assertTrue(report.errors)
+            self.assertFalse(report.changed)
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_retired_omp_cannot_be_added_or_edited_through_either_cli(self):
+        from envy.main import cli
+
+        commands = [
+            ["agent", "add", "omp", "--adapter", "pi"],
+            ["agent", "add", "custom", "--adapter", "oh-my-pi"],
+        ]
+        for command in ("agent", "config"):
+            commands.extend([
+                [command, "set", "envy.agents.omp.model", "new-model"],
+                [command, "set", "envy.agents.renamed.model", "new-model"],
+                [command, "set", "envy.agents.pi.adapter", "oh-my-pi"],
+            ])
+        with self.obsolete_agent_fixture() as (path, _, _, _):
+            before = path.read_bytes()
+            for args in commands:
+                with self.subTest(args=args):
+                    result = CliRunner().invoke(cli, args + ["--yes"])
+                    self.assertNotEqual(result.exit_code, 0)
+                    self.assertIn("OMP is retired", result.output)
+                    self.assertEqual(path.read_bytes(), before)
+
+    def test_pi_more_thinking_is_boolean_through_both_set_commands(self):
+        key = "envy.agents.pi.more_thinking"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "machine.nix"
+            path.write_text("{ ... }: {\n}\n")
+            with patch("envy.agent.machine_config_file", return_value=path), patch.object(
+                agent, "offer_mutation_commit"
+            ), patch.object(agent, "current_machine_id", return_value="test-machine"):
+                _write_values({"envy.agents.pi.adapter": "pi"})
+                for value in ("true", "false"):
+                    for command in ("config", "agent"):
+                        with self.subTest(value=value, command=command):
+                            if command == "config":
+                                config.set_config_value(key, value, quiet=True)
+                            else:
+                                agent.cmd_set(key, value, json_output=False, yes=True)
+                            self.assertIs(_read_values(path)[key], value == "true")
+                            self.assertIn(f"{key} = {value};", path.read_text())
+                            result = refine_managed(machine_values={}, write=False)
+                            self.assertEqual(result["errors"], [])
+
+    def test_pi_more_thinking_rejects_non_boolean_values_before_writing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "machine.nix"
+            path.write_text("{ ... }: {\n}\n")
+            with patch("envy.agent.machine_config_file", return_value=path):
+                _write_values({"envy.agents.pi.adapter": "pi"})
+                before = path.read_text()
+                for invalid in ("yes", "1", "", "null", '"true"', 1, None):
+                    with self.subTest(value=invalid), self.assertRaises(typer.BadParameter):
+                        _set("envy.agents.pi.more_thinking", invalid)
+                    self.assertEqual(path.read_text(), before)
+
+    def test_refine_rejects_quoted_pi_more_thinking_boolean(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "machine.nix"
+            path.write_text("{ ... }: {\n}\n")
+            with patch("envy.agent.machine_config_file", return_value=path):
+                _write_values({
+                    "envy.agents.pi.adapter": "pi",
+                    "envy.agents.pi.more_thinking": "true",
+                })
+                before = path.read_text()
+                result = refine_managed(machine_values={}, write=True)
+                self.assertEqual(result["errors"], ["envy.agents.pi.more_thinking"])
+                self.assertEqual(path.read_text(), before)
+
     def test_config_api_edit_is_validated_and_survives_refine(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "machine.nix"
             path.write_text("{ ... }: {\n}\n")
             with patch("envy.agent.machine_config_file", return_value=path):
-                _write_values({"envy.agents.omp.adapter": "oh-my-pi"})
-                config.set_config_value("envy.agents.omp.api", "openai-responses", quiet=True)
+                _write_values({"envy.agents.pi.adapter": "pi"})
+                config.set_config_value("envy.agents.pi.api", "openai-responses", quiet=True)
                 result = refine_managed(machine_values={}, write=False)
                 self.assertEqual(result["errors"], [])
-                self.assertEqual(_read_values(path)["envy.agents.omp.api"], "openai-responses")
+                self.assertEqual(_read_values(path)["envy.agents.pi.api"], "openai-responses")
                 before = path.read_text()
                 for invalid in ("responses", "", "openai-codex-responses"):
                     with self.subTest(api=invalid), self.assertRaises(typer.BadParameter):
-                        config.set_config_value("envy.agents.omp.api", invalid, quiet=True)
+                        config.set_config_value("envy.agents.pi.api", invalid, quiet=True)
                     self.assertEqual(path.read_text(), before)
 
     def test_render_round_trips_scalars_and_lists(self):

@@ -238,6 +238,48 @@ class GitImpactTests(unittest.TestCase):
             with self.assertRaises(typer.Exit):
                 git_workflow.select_sync_target(["origin/master", "backup/master"])
 
+    def test_sync_merges_local_and_remote_divergence(self):
+        with patch.object(git_workflow, "git_is_ancestor", side_effect=[False, False]), patch.object(
+            git_workflow, "run_process", return_value=SimpleNamespace(returncode=0)
+        ) as run_process, patch.object(git_workflow.log, "step") as step, patch.object(
+            git_workflow.log, "ok"
+        ):
+            git_workflow.merge_sync_target("origin/master")
+
+        run_process.assert_called_once_with(
+            ["git", "merge", "--no-edit", "origin/master"],
+            cwd=git_workflow.ENVY_ROOT,
+            check=False,
+        )
+        step.assert_called_once_with("git", "merging remote history", branch="origin/master")
+
+    def test_sync_merge_conflict_preserves_manual_recovery_instructions(self):
+        output = StringIO()
+        with patch.object(git_workflow, "git_is_ancestor", side_effect=[False, False]), patch.object(
+            git_workflow, "run_process", return_value=SimpleNamespace(returncode=1)
+        ), patch.object(
+            git_workflow.log, "console", Console(file=output, force_terminal=False, width=180)
+        ):
+            with self.assertRaises(typer.Exit) as raised:
+                git_workflow.merge_sync_target("origin/master")
+
+        self.assertEqual(raised.exception.exit_code, 1)
+        rendered = output.getvalue()
+        self.assertIn("git status", rendered)
+        self.assertIn("git add <path>", rendered)
+        self.assertIn("git commit", rendered)
+        self.assertIn("git merge --abort", rendered)
+        self.assertIn("envy check --all", rendered)
+
+    def test_sync_fast_forwards_when_local_is_ancestor(self):
+        with patch.object(git_workflow, "git_is_ancestor", side_effect=[False, True]), patch.object(
+            git_workflow, "run_checked_git"
+        ) as run_checked:
+            git_workflow.merge_sync_target("origin/master")
+        run_checked.assert_called_once_with(
+            ["merge", "--ff-only", "origin/master"], "fast-forward"
+        )
+
     def test_push_preflight_rejects_remote_ahead_before_commit(self):
         verify = SimpleNamespace(returncode=0)
         with patch.object(git_workflow, "run_checked_git"), patch.object(

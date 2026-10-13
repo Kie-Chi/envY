@@ -2,6 +2,8 @@
   description = "Chi's cross-platform configuration";
 
   inputs = {
+    # BEGIN ENVY MANAGED INPUTS
+    # END ENVY MANAGED INPUTS
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     darwin.url = "github:LnL7/nix-darwin";
     darwin.inputs.nixpkgs.follows = "nixpkgs";
@@ -27,24 +29,20 @@
       url = "tarball+https://api.github.com/repos/JuneYaooo/gpt-image2-ppt-skills/tarball/main";
       flake = false;
     };
+    emil-skills = {
+      url = "github:emilkowalski/skills";
+      flake = false;
+    };
+    vercel-agent-skills = {
+      url = "github:vercel-labs/agent-skills";
+      flake = false;
+    };
     pi = {
       # Use the GitHub fetcher so flake.lock records an immutable commit rev.
       # The API tarball endpoint for a branch can be re-packed in place and
       # then fail Nix's locked narHash check on every machine.
       url = "github:earendil-works/pi";
       inputs.nixpkgs.follows = "nixpkgs";
-    };
-    oh-my-pi = {
-      # Keep the agent input tied to the commit recorded in flake.lock.
-      # Branch tarballs can be re-packed and fail Nix's narHash check.
-      url = "github:can1357/oh-my-pi";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.nix-bun.url = "https://api.github.com/repos/ryoppippi/nix-bun/tarball/48e887d7955c1c05b8d4627ed39bafe4bf2455a7";
-      inputs.nix-bun.inputs.nixpkgs.follows = "nixpkgs";
-      inputs.bun2nix.url = "https://api.github.com/repos/nix-community/bun2nix/tarball/0f2a1f0";
-      inputs.bun2nix.inputs.nixpkgs.follows = "nixpkgs";
-      inputs.rust-overlay.url = "https://api.github.com/repos/oxalica/rust-overlay/tarball/b962e5d";
-      inputs.rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
@@ -69,16 +67,35 @@
       darwinMachines = machineFiles darwinMachineDir;
       linuxMachines = machineFiles linuxMachineDir;
 
+      softwareSourceBindings = (import ./modules/software/nix-sources.nix) // {
+        # BEGIN ENVY MANAGED SOURCE BINDINGS
+        # END ENVY MANAGED SOURCE BINDINGS
+      };
+      softwareSourcePackagesFor = system: lib.mapAttrs (_: binding:
+        if binding.input == "nixpkgs" then import nixpkgs { inherit system; config.allowUnfree = true; }
+        else lib.attrByPath [ binding.output system ] { } inputs.${binding.input}
+      ) softwareSourceBindings;
+      softwareSourcePlatforms = lib.mapAttrs (_: binding:
+        lib.filter (platform:
+          binding.input == "nixpkgs" || lib.hasAttrByPath
+            [ binding.output (if platform == "darwin" then darwinSystem else linuxSystem) ]
+            inputs.${binding.input}
+        ) [ "darwin" "linux" ]
+      ) softwareSourceBindings;
       sharedSpecialArgs = machineId: platform: system: {
         inherit machineId;
+        softwareSourcePackages = softwareSourcePackagesFor system;
+        inherit softwareSourceBindings softwareSourcePlatforms;
         machinePlatform = platform;
         machineSystem = system;
         academicResearchSkills = inputs.academic-research-skills;
         academicResearchSkillsCodex = inputs.academic-research-skills-codex;
         pptMaster = inputs.ppt-master;
         gptImage2PptSkills = inputs.gpt-image2-ppt-skills;
+        emilSkills = inputs.emil-skills;
+        vercelAgentSkills = inputs.vercel-agent-skills;
+        piSource = inputs.pi.outPath;
         piPackage = inputs.pi.packages.${system}.default;
-        ohMyPiPackage = inputs.oh-my-pi.packages.${system}.default;
       };
 
       mkDarwinConfiguration = fileName: _:
@@ -300,6 +317,7 @@
           touch "$out"
         '';
 
+      softwareSourcePackages = lib.genAttrs [ darwinSystem linuxSystem ] softwareSourcePackagesFor;
       darwinConfigurations = lib.mapAttrs' (fileName: value:
         lib.nameValuePair (lib.removeSuffix ".nix" fileName)
           (mkDarwinConfiguration fileName value)) darwinMachines;
@@ -309,8 +327,10 @@
       # The historical Linux CLI invoked .#default after pulling. Expose that
       # target only when its ignored legacy config exists, and derive identity
       # from that file instead of guessing one of the versioned hosts.
+      # Test only the path here: importing legacy config to decide the output
+      # names would also break named targets when an old config link is stale.
       homeConfigurations = namedHomeConfigurations // lib.optionalAttrs
-        (legacyLinuxConfiguration != null)
+        (legacyConfigPath != null)
         { default = legacyLinuxConfiguration; };
 
       platformOptionBoundaries =
@@ -324,6 +344,9 @@
         && lib.all
           (configuration:
             let
+              manual = configuration.extendModules {
+                modules = [{ envy.darwin.services.openssh.mode = lib.mkForce "manual"; }];
+              };
               disabled = configuration.extendModules {
                 modules = [{ envy.darwin.services.openssh.mode = lib.mkForce "none"; }];
               };
@@ -331,8 +354,7 @@
                 modules = [{ envy.darwin.services.openssh.mode = lib.mkForce "keep"; }];
               };
             in
-              configuration.config.envy.darwin.services.openssh.mode == "manual"
-              && configuration.config.services.openssh.enable == null
+              manual.config.services.openssh.enable == null
               && disabled.config.services.openssh.enable == false
               && kept.config.services.openssh.enable == true)
           (builtins.attrValues darwinConfigurations)
@@ -355,16 +377,17 @@
               "cache.thalheim.io-1:R7msbosLEZKrxk/lKxf9BTjOOH7Ax3H0Qj0/6wiHOgc="
               configuration.config.nix.settings.extra-trusted-public-keys
             && configuration.config.nix.settings.download-attempts == 3
-            && configuration.config.envy.machine.manifest.schemaVersion == 2
+            && configuration.config.envy.machine.manifest.schemaVersion == 3
+            && configuration.config.envy.machine.manifest.software.sources ? "nix:nixpkgs"
             && configuration.config.envy.machine.manifest ? environment
             && configuration.config.envy.machine.manifest ? shell
             && configuration.config.envy.machine.manifest.software.groups ? "homebrew.system.cask"
             && builtins.any
               (item: item.id == "codegraph")
-              configuration.config.envy.machine.manifest.software.groups."npm.user.tool".selection.effective
+              configuration.config.envy.machine.manifest.software.groups."npm.user.tool".selection.include
             && builtins.any
               (item: item.id == "headroom")
-              configuration.config.envy.machine.manifest.software.groups."pypi.user.tool".selection.effective
+              configuration.config.envy.machine.manifest.software.groups."pypi.user.tool".selection.include
             && !(configuration.config.envy.machine.manifest.software.groups ? "native.system.package"))
           (builtins.attrValues darwinConfigurations)
         && lib.all
@@ -378,13 +401,16 @@
             && builtins.elem
               "cache.thalheim.io-1:R7msbosLEZKrxk/lKxf9BTjOOH7Ax3H0Qj0/6wiHOgc="
               configuration.config.envy.machine.manifest.mirrors.nix.extraTrustedPublicKeys
-            && configuration.config.envy.machine.manifest.schemaVersion == 2
+            && configuration.config.envy.machine.manifest.schemaVersion == 3
+            && configuration.config.envy.machine.manifest.software.sources ? "nix:nixpkgs"
             && configuration.config.envy.machine.manifest ? environment
             && configuration.config.envy.machine.manifest ? shell
             && configuration.config.envy.machine.manifest.software.groups ? "native.system.package"
             && !(configuration.config.envy.machine.manifest.software.groups ? "homebrew.system.cask"))
           (builtins.attrValues homeConfigurations);
       mkPlatformOptionCheck = system:
+        assert import ./checks/legacy-linux-compatibility.nix { inherit inputs; };
+        assert import ./checks/agent-skills.nix { inherit inputs; };
         assert platformOptionBoundaries;
         nixpkgs.legacyPackages.${system}.runCommand "envy-platform-option-boundaries" { } ''
           touch $out
@@ -392,7 +418,8 @@
       linuxPolicyCheck = import ./checks/linux-policy.nix { inherit inputs; };
     in
     {
-      inherit darwinConfigurations homeConfigurations;
+      inherit darwinConfigurations homeConfigurations softwareSourcePackages softwareSourceBindings;
+      legacyPackages = softwareSourcePackages;
 
       packages.aarch64-darwin.envy = mkEnvyRuntime "aarch64-darwin";
       packages.aarch64-darwin.setup = mkEnvySetupRuntime "aarch64-darwin";

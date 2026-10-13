@@ -1,12 +1,27 @@
 { pkgs, config, lib, sys, ... }:
 
-let
-  mirrorProfile = (import ../../mirrors/catalog.nix).${config.envy.mirrors.mode};
-  dockerMirrorArg = lib.optionalString
-    (mirrorProfile.dockerInstallerMirror != null)
-    "--mirror ${mirrorProfile.dockerInstallerMirror}";
-in
 {
+  envy.software.sources."native:docker" = {
+    label = "Docker official repository";
+    ecosystem = "native"; type = "native"; scope = "system";
+    platforms = [ "linux" ]; owner = "modules/devps/linux/base.nix";
+    parameters = {
+      distros = [ "ubuntu" "debian" ];
+      apt = {
+        uri = "https://download.docker.com/linux/{distro}";
+        suites = [ "{codename}" ]; components = [ "stable" ];
+        keyUrl = "https://download.docker.com/linux/ubuntu/gpg";
+        keyFingerprint = "9DC858229FC7DD38854AE2D88D81803C0EBFCD88";
+      };
+    };
+  };
+  envy.linux.software.native.repositories.include = [
+    { id = "docker"; name = "docker"; ref = "native:docker"; sourceId = "native:docker"; }
+  ];
+  envy.linux.software.native.packages.include = map (name: {
+    id = name; inherit name; ref = "native:" + name; sourceId = "native:docker";
+  }) [ "docker-ce" "docker-ce-cli" "containerd.io" "docker-buildx-plugin" "docker-compose-plugin" ];
+
   envy.software.nix.packages.include = with pkgs; [
     # env management
     mamba-cpp
@@ -37,9 +52,9 @@ in
     '';
   };
 
-  home.activation.installNativeDocker = sys.task.root {
+  home.activation.installNativeDocker = lib.mkIf (builtins.any (item: item.name == "docker-ce") config.envy.linux.software.native.packages.effective) (sys.task.root {
     name = "installNativeDocker";
-    after = [ "configureAptMirror" ];
+    after = [ "installNativePackages" ];
     script = ''
       envy_state_dir="$HOME/.config/envy"
       legacy_state_dir="$HOME/.config/dotfiles"
@@ -55,8 +70,6 @@ in
       if [ ! -e "$envy_state_dir/docker.installed" ] && [ ! -e "$legacy_state_dir/docker.installed" ]; then
         log_info "No Docker found, installing..."
         $DRY_RUN_CMD ${sys.cmds.mkdir} -p "$envy_state_dir"
-        $DRY_RUN_CMD ${pkgs.curl}/bin/curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
-        $DRY_RUN_CMD esudo_system ${sys.cmds.sh} /tmp/get-docker.sh ${dockerMirrorArg}
         $DRY_RUN_CMD esudo ${sys.cmds.usermod} -aG docker ${config.envy.user.name}
         if [ -z "$DRY_RUN_CMD" ]; then
           if id -nG "${config.envy.user.name}" | ${sys.cmds.grep} -qw "docker"; then
@@ -89,6 +102,6 @@ in
         esudo_system ${sys.cmds.systemctl} restart docker
       fi
     '';
-  };
+  });
 
 }

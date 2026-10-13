@@ -136,6 +136,47 @@ class ConfigShowTests(unittest.TestCase):
         self.assertEqual(payload["agents"]["codex"]["credentialSet"], True)
         self.assertNotIn('"secret"', output.getvalue())
 
+    def test_pi_more_thinking_exposes_boolean_choices_only_for_pi(self):
+        agents = {
+            "pi": {"adapter": "pi", "more_thinking": True},
+            "custom-pi": {"adapter": "pi"},
+            "omp": {"adapter": "oh-my-pi", "more_thinking": False},
+            "renamed": {"adapter": "oh-my-pi"},
+            "codex": {"adapter": "codex", "more_thinking": False},
+        }
+        values = {
+            f"envy.agents.{name}.{field}": value
+            for name, item in agents.items() for field, value in item.items()
+        }
+        for evaluated in (True, False):
+            with self.subTest(evaluated=evaluated):
+                manifest = {"agents": agents} if evaluated else None
+                output = io.StringIO()
+                console = Console(file=output, force_terminal=False, width=220)
+                with patch.object(config, "machine_manifest", return_value=manifest), patch.object(
+                    config, "read_machine_nix", return_value={}
+                ), patch.object(config, "read_device_metadata", return_value={}), patch.object(
+                    config, "read_secrets_yaml", return_value=({}, False)
+                ), patch("envy.agent._read_values", return_value=values), patch.object(
+                    config.log, "console", console
+                ):
+                    config.cmd_show(refresh=False, json_output=True)
+                payload = json.loads(output.getvalue())
+                fields = {entry["path"]: entry for entry in payload["fields"]}
+                for name in ("pi", "custom-pi"):
+                    key = f"envy.agents.{name}.more_thinking"
+                    expected = name == "pi"
+                    self.assertEqual(fields[key]["choices"], ["true", "false"])
+                    self.assertEqual(payload["values"][key], str(expected).lower())
+                    self.assertIs(payload["agents"][name]["more_thinking"], expected)
+                for name in ("omp", "codex"):
+                    key = f"envy.agents.{name}.more_thinking"
+                    self.assertNotIn(key, fields)
+                    self.assertNotIn(key, payload["values"])
+                for name in ("omp", "renamed"):
+                    self.assertNotIn(name, payload["agents"])
+                    self.assertFalse(any(key.startswith(f"envy.agents.{name}.") for key in fields))
+
     def test_show_hides_legacy_fields_from_source_and_cached_manifest(self):
         legacy = {
             "envy.llm.steps.url": "https://legacy.example",
@@ -172,8 +213,8 @@ class ConfigShowTests(unittest.TestCase):
             "envy.agents.codex.endpoint": "local",
             "envy.agents.codex.credential": "local",
             "envy.agents.codex.model": "custom-model",
-            "envy.agents.omp.adapter": "oh-my-pi",
-            "envy.agents.omp.api": "openai-responses",
+            "envy.agents.pi.adapter": "pi",
+            "envy.agents.pi.api": "openai-responses",
         }
         output = io.StringIO()
         console = Console(file=output, force_terminal=False, width=220)
@@ -188,9 +229,9 @@ class ConfigShowTests(unittest.TestCase):
         payload = json.loads(output.getvalue())
         self.assertEqual(payload["source"], "source-fallback")
         self.assertEqual(payload["values"]["envy.agents.codex.model"], "custom-model")
-        self.assertEqual(payload["values"]["envy.agents.omp.api"], "openai-responses")
+        self.assertEqual(payload["values"]["envy.agents.pi.api"], "openai-responses")
         fields = {entry["path"]: entry for entry in payload["fields"]}
-        self.assertEqual(fields["envy.agents.omp.api"]["choices"], ["openai-completions", "openai-responses"])
+        self.assertEqual(fields["envy.agents.pi.api"]["choices"], ["openai-completions", "openai-responses"])
         self.assertTrue(payload["llm"]["credentials"]["local"]["credentialSet"])
         self.assertNotIn("hidden-key", output.getvalue())
 

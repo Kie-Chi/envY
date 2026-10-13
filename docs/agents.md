@@ -14,6 +14,8 @@ modules/agents/
 ├── linux/rtk.nix        # Linux-only RTK package
 ├── claude.nix           # Claude package, wrapper defaults, and ccli alias
 ├── generic.nix           # OpenAI-compatible and StepGo adapters
+├── pi.nix              # Pi wrapper and provider metadata
+├── pi-extensions.nix   # selected extensions from the locked upstream Pi source
 ├── skills.nix           # skill catalog/selection Home Manager module
 └── skills/
     ├── catalog.nix      # skill registry and target agents
@@ -29,10 +31,29 @@ modules/agents/
 
 There are two distinct selection stages:
 
-1. `agents.skills.active` controls which catalog entries are linked into `~/.codex/skills` and/or `~/.claude/skills` during Home Manager activation.
+1. `agents.skills.active` selects shared catalog entries, filtered by each entry's supported targets. `envy.agents.<name>.skills` adds compatible catalog entries to that selection. Home Manager links the resolved set into `~/.codex/skills`, `~/.claude/skills`, `~/.stepgo/skills`, and `~/.pi/agent/skills` during activation. Instances of the same adapter share a directory and therefore share the union of their selections; `claude` and `claude-code` identify the same skill target.
 2. For a discovered skill, the agent sees its `name` and `description` metadata first. It reads the `SKILL.md` body only when the task triggers that skill, then reads referenced resources as needed.
 
 This keeps agent capabilities declarative while preserving progressive, task-driven context loading. Changing the physically discoverable set requires a rebuild; ordinary task-level loading does not.
+
+`envy agent show <name>` and `envy config show --json` report the resolved set in
+`skills`, and the machine's explicit additions in `configuredSkills`. These are
+the evaluated desired state; application-installed skills and project-local
+skills are outside this catalog. Until `envy apply` completes, the currently
+installed links can differ. Unknown or incompatible catalog selections fail
+configuration validation.
+
+List fields use JSON arrays on the CLI, for example:
+
+```sh
+envy agent set envy.agents.pi.skills '["animate", "break-ui"]' --yes
+envy agent set envy.agents.pi.skills '[]' --yes
+```
+
+An empty additions list retains the shared selection. To remove a shared skill,
+change `agents.skills.active` in its owning module. The same JSON-array syntax
+works for `args` and `aliases`; nullable agent fields accept `null` to clear a
+selection.
 
 ## Adding a skill subpackage
 
@@ -77,6 +98,13 @@ The image skill expects `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and usually
 the agent wrappers, but whether it exposes the image generation API must be
 verified by an actual image request before relying on that feature.
 
+The shared selection also includes seven frontend skills from
+`emilkowalski/skills` and `vercel-labs/agent-skills`. Their complete directories
+are pinned through the `emil-skills` and `vercel-agent-skills` non-flake inputs
+and linked for Codex, Claude Code, and Pi. See
+[the skill and Pi extension selection guide](agent-skills.md) for the research,
+selected capabilities, commands, and update procedure.
+
 ## Provider boundary
 
 Each agent gets an adapter module (`codex.nix`, `claude.nix`, and generic adapters for compatible CLIs). The adapter owns package installation, stable command wrappers, protocol-specific environment names, and skill integration. `modules/llm` owns only non-sensitive endpoint metadata and sops credential declarations. A credential is a logical reference such as `stepfun`; its value is available only through an activation-time sops placeholder and is never a Nix evaluation-time string.
@@ -100,38 +128,22 @@ receives only its own rendered template.
 
 The Claude wrapper deliberately invokes nixpkgs' `claude` wrapper, not its internal `.claude-wrapped` binary. Nixpkgs uses the outer wrapper to set required runtime environment variables and `PATH`; bypassing it would make this repository responsible for duplicating upstream packaging details.
 
-Pi and Oh My Pi are separate agent commands. `pi` is the upstream
-`earendil-works/pi` CLI and `omp` is the `can1357/oh-my-pi` fork, installed as a
-companion command so the fork's extensions do not silently replace upstream Pi.
-Both wrappers write provider metadata to their application-owned configuration
-locations (`~/.pi/agent/models.json` and `~/.omp/agent/models.yml`) and select
-`envy-pi/gpt-6.1-sol` by default. Each wrapper reads its own agent's endpoint,
-model, API, and credential selections, with separate `envy-agent-pi` and
-`envy-agent-omp` sops templates supplying the API key only at launch. Pi's model file contains an
-`$OPENAI_API_KEY` reference. OMP's model file uses a command-backed
-`apiKey` reference, and the wrapper also passes the resolved key through
-`--api-key`. Neither file contains a decrypted secret.
+`pi` is the upstream `earendil-works/pi` CLI. Its wrapper writes provider
+metadata to `~/.pi/agent/models.json` and selects `envy-pi/gpt-6.1-sol` by
+default. It reads the agent's endpoint, model, API, and credential selections,
+with the `envy-agent-pi` sops template supplying the API key only at launch.
+The model file contains an `$OPENAI_API_KEY` reference, never a decrypted
+secret.
 
-The two OMP credential paths are intentional. OMP validates a custom provider's
-model metadata before applying command-line options, so the command-backed
-`apiKey` satisfies that validation while `--api-key` supplies the runtime
-credential. When no credential is configured, the wrapper does not add
-`--api-key`; endpoint and model selection still come from the normal agent
-configuration. Changes to this adapter must preserve the invariant that
-application files contain references or commands only, while the decrypted
-value exists only in the launch-time sops template environment.
-
-Pi and OMP select their wire API with `envy.agents.<name>.api`. The option
+Pi selects its wire API with `envy.agents.<name>.api`. The option
 defaults to `openai-completions` (`/v1/chat/completions`); set
 `openai-responses` to use `/v1/responses`. The base URL stays at the API root
 (for example `https://models-proxy.stepfun-inc.com/v1`), not the full request
 path. The gateway must support the selected API. For gateways that reject
 GPT reasoning together with function tools on Chat Completions, choose
-Responses rather than disabling reasoning. Pi and OMP can select different
-APIs even when they share an endpoint.
+Responses rather than disabling reasoning.
 
 ```sh
-envy config set envy.agents.omp.api openai-responses --json --yes
 envy config set envy.agents.pi.api openai-responses --json --yes
 envy apply
 ```
@@ -142,16 +154,57 @@ Settings frontend. `envy agent set` edits the same managed block, and
 API selections are rejected before writing. Reapply and restart the agent to
 regenerate its model file; manually editing a generated file is not persistent.
 
+Pi can opt in to additional thinking levels for endpoints that support them:
+
+```nix
+envy.agents.pi.more_thinking = true;
+```
+
+This machine option defaults to `false`. When enabled, envY builds the locked
+Pi source with `modules/agents/patches/pi-ultra-thinking.patch` and declares
+`xhigh`, `max`, and `ultra` in the custom model's `thinkingLevelMap`. Pi exposes
+all three as independent choices in `/thinking` and accepts
+`pi --thinking ultra`; the requested effort is sent unchanged to the endpoint.
+The option makes these levels available without changing the startup level.
+It does not add these capabilities to a model or gateway that lacks them.
+
+`envy config show --json` exposes the boolean for Pi, including its default.
+Use `envy config set envy.agents.pi.more_thinking true --json --yes` (or
+`envy agent set envy.agents.pi.more_thinking true --json --yes`), then
+`envy apply` and restart Pi. Disabling it restores the upstream Pi package
+and omits the extra model mappings. Keep any saved startup thinking level
+within the upstream version's supported levels when disabling the patch.
+
+The patch changes both the runtime libraries and bundled CLI. Its install
+check covers CLI parsing, model metadata, settings, the thinking selector,
+capability clamping, and Chat Completions/Responses request payloads without
+sending a request. Rebuild it when updating the Pi input so upstream schema
+or bundle changes cannot silently remove `ultra` support.
+
 This API-key integration is distinct from an OpenAI Codex subscription, OAuth
 session, or implementation-specific `codex-backend`. envY does not assume
 Codex OAuth credentials can be reused as a generic API key.
 
-Oh My Pi is a maintained Pi fork rather than a normal plugin package. Its
-additional LSP, debugger, subagent, advisor, and execution features are
-available through `omp`; application state and extensions remain under the
-user's `~/.omp` directory. The `pi-extensions` repository was reviewed as a
-candidate, but command-auditing extensions such as `toolwatch` are intentionally
-not installed declaratively until their policy is selected explicitly.
+Upstream Pi additionally loads the official questionnaire, todo, tools, and
+handoff extensions from the same locked source as its executable.
+`pi-extensions.nix` owns four `envy-*.ts` links under
+`~/.pi/agent/extensions/`; Pi keeps ownership of settings, installed package
+state, and session data. `/handoff <goal>` makes a request to the current model
+to generate a draft for a new session; the user reviews and submits it.
+
+## Retired Oh My Pi configuration
+
+Oh My Pi (OMP) is no longer a supported envY agent. envY no longer installs
+`omp`, generates its provider configuration, or selects skills for
+`~/.omp/agent/skills`.
+
+`envy config check` identifies legacy OMP settings as redundant. Run
+`envy config refine` to remove `envy.agents.omp.*` from the machine's managed
+configuration block, along with any other named agent instance whose adapter
+is `oh-my-pi`, then run `envy apply` to update the installed environment.
+Shared endpoint and credential definitions are preserved because other agents
+may use them. The migration also preserves application-owned auth, history,
+and other state in `~/.omp`; it does not delete that directory.
 
 ## Shared agent configuration
 
@@ -186,7 +239,8 @@ through the repository's `darwin.nix` composition root and contributes only
 Darwin Homebrew distribution policy. `flake.nix` does not import either feature
 implementation directly.
 
-The current shared configuration is intentionally explicit:
+Skill selection is explicit in `modules/agents/default.nix`; for example, the
+research subset is:
 
 ```nix
 agents = {

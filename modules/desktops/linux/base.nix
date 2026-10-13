@@ -13,6 +13,25 @@ let
 in
 {
   config = lib.mkIf isDesktop {
+  envy.software.sources."native:waydroid" = {
+    label = "Waydroid official repository"; ecosystem = "native"; type = "native";
+    scope = "system"; platforms = [ "linux" ]; owner = "modules/desktops/linux/base.nix";
+    parameters = {
+      distros = [ "ubuntu" "debian" ];
+      apt = {
+        uri = "https://repo.waydro.id/";
+        suites = [ "{codename}" ]; components = [ "main" ];
+        keyUrl = "https://repo.waydro.id/waydroid.gpg";
+        keyFingerprint = "7CE0331F71E0A238BB1002D70E406D181DCEE19C";
+      };
+    };
+  };
+  envy.linux.software.native.repositories.include = lib.optionals waydroidEnabled [
+    { id = "waydroid"; name = "waydroid"; ref = "native:waydroid"; sourceId = "native:waydroid"; }
+  ];
+  envy.linux.software.native.packages.include = lib.optionals waydroidEnabled [
+    { id = "waydroid"; name = "waydroid"; ref = "native:waydroid"; sourceId = "native:waydroid"; }
+  ];
   envy.software.nix.packages.include = (with pkgs; [
     # utils
     xclip
@@ -133,15 +152,10 @@ in
 
   home.activation.installWayDroid = lib.mkIf waydroidEnabled (sys.task.activation {
     name = "installWayDroid";
-    after = [ "configureAptMirror" ];
+    after = [ "installNativePackages" ];
     asRoot = true;
     script = ''
-      ${sys.cmds.curl} -fsSL https://repo.waydro.id > /tmp/waydroid.sh
       if pkg_installed "waydroid"; then
-        log_info "Package 'waydroid' is already installed."
-      else
-        esudo_system ${pkgs.bash}/bin/bash /tmp/waydroid.sh
-        esudo_system ${sys.cmds.apt} install -y waydroid
         waydroid prop set persist.waydroid.multi_windows true
         esudo_system ${sys.cmds.systemctl} restart waydroid-container
       fi

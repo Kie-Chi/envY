@@ -34,11 +34,12 @@ in
         message = "envy.linux.software.url.artifacts contains the same stable ID with conflicting metadata";
       }
     ];
+    envy.linux.software.native.repositories.effective = selectItems policy.software.native.repositories;
     envy.linux.software.native.packages.effective = selectItems policy.software.native.packages;
     envy.linux.software.url.artifacts.effective = selectItems policy.software.url.artifacts;
 
     envy.machine.manifest = {
-      schemaVersion = 2;
+      schemaVersion = 3;
       id = config.envy.machine.id;
       platform = config.envy.machine.platform;
       system = config.envy.machine.system;
@@ -62,7 +63,9 @@ in
         }) config.envy.llm.credentials;
         endpoints = config.envy.llm.endpoints;
       };
-      agents = lib.mapAttrs (_: agent: agent // {
+      agents = lib.mapAttrs (name: agent: agent // {
+        configuredSkills = agent.skills;
+        skills = config.agents.skills.effective.${name};
         credentialConfigured = agent.credential != null
           && builtins.hasAttr agent.credential config.envy.llm.credentials;
         endpointConfigured = agent.endpoint != null
@@ -84,6 +87,7 @@ in
         probes = mirrorProfile.probes.common ++ mirrorProfile.probes.linux;
       };
       habits = config.envy.machine.habits;
+      software.sources = config.envy.software.sources;
       software.groups = {
         "nix.user.package" = manifestLib.group {
           label = "Nix packages";
@@ -97,6 +101,17 @@ in
           reconcileRemove = true;
           editableInclude = true;
           selection = manifestLib.packageSelection homePolicy.nix.packages;
+        };
+        "native.system.repository" = manifestLib.group {
+          label = "Native repositories";
+          optionPath = "envy.linux.software.native.repositories";
+          ecosystem = "native";
+          platforms = [ "linux" ];
+          scope = "system";
+          kind = "repository";
+          installer = "native";
+          editableInclude = true;
+          selection = manifestLib.itemSelection policy.software.native.repositories;
         };
         "native.system.package" = manifestLib.group {
           label = "Native system packages";
@@ -117,6 +132,7 @@ in
           scope = "system";
           kind = "artifact";
           installer = "native-artifact";
+          editableInclude = true;
           selection = manifestLib.itemSelection policy.software.url.artifacts;
         };
         "npm.user.tool" = manifestLib.group {

@@ -147,14 +147,9 @@ let
           if [ ! -x "$APT_CMD" ]; then
             APT_CMD="$(command -v apt)"
           fi
-          if [ -f /etc/apt/sources.list.d/envy-mirror.sources ]; then
-            esudo_system "$APT_CMD" \
-              -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/envy-mirror.sources \
-              -o Dir::Etc::sourceparts=- \
-              "$@"
-          else
-            esudo_system "$APT_CMD" "$@"
-          fi
+          esudo_system ${pkgs.python3}/bin/python3 -c \
+            'import sys; sys.path.insert(0, "${../../resources/scripts}"); from envy.sources.native.backend import main; main()' \
+            apt -- "$APT_CMD" "$@"
         }
       '';
 
@@ -169,7 +164,7 @@ let
               esudo_system /usr/bin/dnf makecache -y
               ;;
             pacman)
-              esudo_system /usr/bin/pacman -Sy --noconfirm
+              echo "Pacman: retaining existing sync database; run a full pacman -Syu explicitly when needed."
               ;;
             zypper)
               esudo_system /usr/bin/zypper --gpg-auto-import-keys refresh

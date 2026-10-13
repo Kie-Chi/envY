@@ -17,8 +17,25 @@ class SearchResult:
     publisher: str | None = None
     managed_group: str | None = None
 
+    source_id: str | None = None
+    source_fingerprint: str | None = None
+    availability: str = "installable"
+    resolved_version: str | None = None
+
     def to_dict(self) -> dict[str, object]:
-        return asdict(self)
+        data = asdict(self)
+        data["sourceId"] = data.pop("source_id")
+        data["sourceFingerprint"] = data.pop("source_fingerprint")
+        data["resolvedVersion"] = data.pop("resolved_version") or self.version
+        return data
+
+    @classmethod
+    def from_dict(cls, data):
+        data = dict(data)
+        for public, internal in (("sourceId", "source_id"), ("sourceFingerprint", "source_fingerprint"), ("resolvedVersion", "resolved_version")):
+            if public in data:
+                data[internal] = data.pop(public)
+        return cls(**data)
 
 
 @dataclass

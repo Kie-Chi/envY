@@ -46,6 +46,11 @@ pub fn run_json(args: &[&str]) -> Result<Value, String> {
 fn load_target(target: &LoadTarget) -> Result<Value, String> {
     match target {
         LoadTarget::Screen(Screen::Home) => run_json(&["status", "--json"]),
+        LoadTarget::Screen(Screen::Sources) => {
+            let response = run_json(&["sw", "source", "ls", "--json"])?;
+            let response = envelope_result(response, "source catalog failed")?;
+            Ok(response.get("data").cloned().unwrap_or(Value::Null))
+        }
         LoadTarget::Screen(Screen::Software) => run_json(&["sw", "ls", "--details", "--json"]),
         LoadTarget::Search(query) => run_json(&["sw", "search", query, "--json"]),
         LoadTarget::Screen(Screen::Doctor) => run_json(&["doctor", "--json"]),
@@ -212,6 +217,18 @@ pub fn mutation_args(stage: MutationStage, intent: &MutationIntent) -> Vec<Strin
         intent.group.clone(),
         intent.operand.clone(),
     ];
+    if intent.source_operation {
+        args = vec![
+            "sw".into(),
+            "source".into(),
+            intent.action.command().into(),
+            intent.source_id.clone().unwrap_or_default(),
+        ];
+    } else if let Some(source_id) = &intent.source_id {
+        if intent.action == SoftwareAction::Add {
+            args.extend(["--source-id".into(), source_id.clone()]);
+        }
+    }
     match stage {
         MutationStage::Preview => args.push("--dry-run".to_string()),
         MutationStage::Apply => args.push("--yes".to_string()),
@@ -229,7 +246,15 @@ pub fn validate_mutation_response(
     if payload.get("schemaVersion").and_then(Value::as_u64) != Some(1) {
         return Err("unsupported software mutation schema".to_string());
     }
-    let expected_command = format!("software.{}", intent.action.command());
+    let expected_command = format!(
+        "software.{}{}",
+        if intent.source_operation {
+            "source."
+        } else {
+            ""
+        },
+        intent.action.command()
+    );
     if payload.get("command").and_then(Value::as_str) != Some(expected_command.as_str()) {
         return Err("software mutation command does not match the request".to_string());
     }
@@ -245,6 +270,11 @@ pub fn validate_mutation_response(
         .get("expected")
         .and_then(|expected| expected.get("effective"))
         .and_then(Value::as_bool);
+    if let Some(source_id) = &intent.source_id {
+        if plan.get("sourceId").and_then(Value::as_str) != Some(source_id.as_str()) {
+            return Err("software plan source does not match the request".into());
+        }
+    }
     if group != Some(intent.group.as_str())
         || item != Some(intent.item.as_str())
         || action != Some(intent.action.command())
@@ -328,7 +358,14 @@ pub fn spawn_setting(tx: Sender<Message>, request: u64, key: SettingKey, value: 
                 } else {
                     "config"
                 };
-                let args = [command, "set", path.as_str(), value.as_str(), "--json", "--yes"];
+                let args = [
+                    command,
+                    "set",
+                    path.as_str(),
+                    value.as_str(),
+                    "--json",
+                    "--yes",
+                ];
                 run_json(&args)
                     .and_then(|payload| envelope_result(payload, "configuration update failed"))
             }
@@ -479,6 +516,8 @@ mod tests {
 
     fn intent(operand: &str) -> MutationIntent {
         MutationIntent {
+            source_id: None,
+            source_operation: false,
             action: SoftwareAction::Add,
             group: "homebrew.system.formula".to_string(),
             operand: operand.to_string(),
@@ -538,6 +577,41 @@ mod tests {
         assert_eq!(
             strip_ansi("\u{1b}]8;;https://example.com\u{7}link\u{1b}]8;;\u{7}"),
             "link"
+        );
+    }
+    #[test]
+    fn search_mutation_keeps_concrete_source_and_checks_response() {
+        let mut request = intent("homebrew:formula/git");
+        request.source_id = Some("homebrew:homebrew/core".into());
+        let args = mutation_args(MutationStage::Preview, &request);
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--source-id", "homebrew:homebrew/core"]));
+        let wrong_source = json!({"schemaVersion":1,"command":"software.add","ok":true,
+            "data":{"result":"dry-run","plan":{"action":"add","group":{"id":request.group},
+                "item":"git","sourceId":"homebrew:other/tap","expected":{"effective":true}}}});
+        assert!(
+            validate_mutation_response(MutationStage::Preview, &request, wrong_source).is_err()
+        );
+    }
+
+    #[test]
+    fn source_mutation_calls_source_cli_with_preview_flags() {
+        let mut request = intent("vendor");
+        request.group = "native.system.repository".into();
+        request.item = "vendor".into();
+        request.source_id = Some("native:vendor".into());
+        request.source_operation = true;
+        assert_eq!(
+            mutation_args(MutationStage::Preview, &request),
+            vec![
+                "sw",
+                "source",
+                "add",
+                "native:vendor",
+                "--dry-run",
+                "--json"
+            ]
         );
     }
 }

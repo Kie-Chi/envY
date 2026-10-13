@@ -4,6 +4,10 @@
 alias. Software is not a `config` subcommand, and there is no top-level
 `envy search` command.
 
+跨生态统一来源的设计与实施记录见 [Software 统一来源改造计划](software-sources-plan.md)。
+可重复执行的端到端测试与验收范围见 [Software source E2E](software-sources-e2e.md)。
+本页记录已实现的接口、来源约束与后端能力。
+
 ## Commands
 
 | Command | Alias | Purpose |
@@ -19,6 +23,9 @@ alias. Software is not a `config` subcommand, and there is no top-level
 | `envy software audit` |  | Find stale, redundant, or ambiguous machine policy |
 | `envy software why <item>` |  | Explain evaluated state and machine/shared ownership |
 | `envy software cache status` |  | Inspect the exact registry identity index |
+| `envy sw source ls/show/search` |  | Inspect declared and observed software sources |
+| `envy sw source add/rm` |  | Preview and save machine sources or shared Nix registration |
+| `envy sw source sync` |  | Verify metadata and invalidate this source's caches |
 
 `envy sw ls --details` includes versions and canonical references. `enable` and
 日常使用可以只提供软件名。envY 会先从 evaluated manifest 和精确 identity
@@ -72,7 +79,7 @@ written. Existing manifest items can be enabled offline because their evaluated
 identity is already known. New Homebrew, npm, PyPI, and native entries use the
 fresh exact index first and otherwise perform a provider-specific exact lookup;
 a fuzzy search match or a synthesized reference is not sufficient. Nix entries
-continue to validate the requested nixpkgs attribute by evaluating its `pname`.
+validate a derivation in the project-locked input, including its stable name and drvPath.
 
 `add --refresh` bypasses the exact identity index. `add --offline` never contacts
 a registry and may use a stale positive identity, but it refuses a complete
@@ -99,10 +106,10 @@ result:
 - An item still present in evaluated `exclude` is reported as excluded by
   another hand-written or imported policy.
 
-## Manifest V2
+## Manifest V3
 
-`envy.machine.manifest.schemaVersion` is `2`. Software lives under
-`software.groups`; the previous parallel `packages`, `homebrew`, `inclusions`,
+`envy.machine.manifest.schemaVersion` is `3`; Python readers accept v2 and v3.
+Software groups remain under `software.groups`, and definitions live under `software.sources`; the previous parallel `packages`, `homebrew`, `inclusions`,
 and `exclusions` documents no longer exist.
 
 Group IDs use exactly three dimensions:
@@ -118,6 +125,7 @@ nix.user.package
 nix.system.font
 homebrew.system.cask
 native.system.package
+native.system.repository
 npm.user.tool
 pypi.user.tool
 url.system.artifact
@@ -142,9 +150,11 @@ Each group contains:
 | `reconcile` | Whether apply installs, upgrades, or removes entries |
 | `selection` | Structured `include`, stable-ID `exclude`, and evaluated `effective` |
 
-Items use `id`, `name`, optional `version`, optional canonical `ref`, and
+Items use `id`, `name`, optional `sourceId`, optional declared `version`, optional canonical `ref`, and
 structured provider `parameters`. Exclusions always use `id`, so changing a
-package version or display name does not invalidate machine policy.
+package version or display name does not invalidate machine policy. Query versions
+and evaluated Nix derivation versions use `resolvedVersion`; a registry lookup
+does not silently add a version pin.
 
 Installer-specific parameters stay on the item instead of creating more option
 trees:
@@ -197,8 +207,8 @@ instead of silently dropping that provider.
 
 Search also writes every successful normalized result to the exact registry
 index, even when another provider fails. This index is stored at
-`$XDG_CACHE_HOME/envy/registry/index-v1.sqlite3` (or
-`~/.cache/envy/registry/index-v1.sqlite3`), uses mode `0600` inside a `0700`
+`$XDG_CACHE_HOME/envy/registry/index-v2.sqlite3` (or
+`~/.cache/envy/registry/index-v2.sqlite3`), uses mode `0600` inside a `0700`
 directory, and has a 24-hour positive TTL. Definite misses are cached for five
 minutes to avoid repeated typo lookups. Query-result cache and exact identity
 index are intentionally separate.
@@ -228,7 +238,7 @@ commit guidance, while the normal interactive CLI remains unchanged.
 
 | Source | Implementation |
 |---|---|
-| Nix | `nix search nixpkgs --json` |
+| Nix | Project `legacyPackages.<system>.<input>` search and `softwareSourcePackages` exact evaluation |
 | Homebrew | formula and cask searches |
 | Native Linux | apt, dnf, pacman, or zypper detected at runtime |
 | npm | `npm search --json` |
@@ -245,7 +255,127 @@ remain separate from artifact download configuration.
 Business modules continue to own shared software entries. `modules/envy/`
 defines selection types, computes effective values, and emits manifest groups.
 `modules/software/` owns generic npm, uv, native package, and fixed-URL installer
-behavior. The single `ENVY MANAGED SOFTWARE` block assigns the existing
+behavior. The `ENVY MANAGED SOFTWARE` block assigns the existing
 ecosystem `.include` and `.exclude` options directly. `add/rm` may update both;
 setup and `en/dis` update only exclusions while preserving managed includes.
 No workflow rewrites hand-maintained policy or shared module contributions.
+
+
+## Unified sources
+
+A source identifies the logical origin; a mirror changes transport, and a Nix
+binary cache accelerates builds. Those are separate responsibilities. Runtime
+sources expose known, registered, selected, and ready independently, along with
+adapter capabilities and a context fingerprint. Observed external repositories
+are read-only observations, never imported automatically into machine policy.
+
+```bash
+envy sw source ls --json
+envy sw source show nix:nixpkgs --json
+envy sw source search docker --ecosystem native
+envy sw source add native:docker --dry-run --json
+envy sw source sync native:docker --dry-run --json
+envy sw se docker-ce --source native --source-id native:docker
+envy sw add native.system.package docker-ce --source-id native:docker --dry-run --json
+envy sw se hello --source nix --source-id nix:nixpkgs
+envy sw add nix.user.package 'flake:pi#default' --dry-run --json
+```
+
+The local Pi wrapper retains its local reference and separately declares its
+upstream source dependency. Adding the raw upstream package can
+conflict with the wrapper's stable package name; envY rejects the conflict.
+Default providers search sources that are selected or ready. Repeat
+`--source-id` on search to choose concrete origins; `--source` still filters
+providers. Native manager aliases must match the current manager.
+
+The v2 SQLite identity key includes source ID, fingerprint, ecosystem, kind,
+and reference. Fingerprints cover the project lock graph, platform, native
+source set and trust files, registry transport, or actual Homebrew tap revision.
+A changed context cannot reuse an old identity, including in offline mode.
+Definite misses and provider failures remain separate. Metadata sync invalidates
+both the identity index and this source's query cache. Nix sync reads metadata
+with lock updates disabled; updates use `envy update inputs <name>`.
+
+Source mutations retain JSON envelope v1 and support `--dry-run`, `--json`,
+and `--yes`. Shared Nix registration reports its flake diff, lock change scope,
+and validation across every machine:
+
+```bash
+envy sw source add nix:extra-tools --ref github:OWNER/REPOSITORY --dry-run --json
+```
+
+Registration manages only marked input/binding blocks, locks the input, checks
+all machines and both supported systems, and restores flake.nix/flake.lock on
+failure. Removal rejects consumers and never takes over handwritten inputs.
+Registered package providers currently expose their `packages.<system>`
+outputs; nixpkgs uses the project's package set. Inputs without packages on both
+project systems fail shared registration.
+
+Custom public sources use a JSON definition file. envY writes it into the
+selected host's separate `ENVY MANAGED SOURCES` block:
+
+```bash
+envy sw source add native:vendor --definition vendor-source.json --dry-run --json
+```
+
+A native definition contains `label`, `ecosystem = "native"`, `type =
+"native"`, Linux platforms, system scope, and per-manager parameters. APT
+parameters are uri, suites, components, optional architectures, keyUrl, and a
+full pinned signing keyFingerprint. The only runtime placeholders are
+`{distro}`, `{codename}`, and `{architecture}`. Source/package additions
+select required repositories in the same host transaction; explicit source
+exclusions block them. Removing a source with effective dependents is rejected.
+
+## Native repositories and artifacts
+
+APT discovery and installation use the same effective source reader. When the
+envY mirror exists, confidently identified Ubuntu/Debian entries are replaced,
+while vendor and unknown sources are retained. External files stay owned by the
+system; temporary descriptors do not widen source-file access. Authentication
+continues through APT's existing configuration and is never exported in JSON.
+
+Repository activation verifies the pinned primary key and manages only
+envY-named source/keyring files. Equivalent external APT repositories remain
+external. Docker and Waydroid now declare their repositories and packages in
+their owning modules instead of executing downloaded installer scripts.
+Their first maintained vendor definitions support Ubuntu/Debian APT.
+
+Source-constrained APT package installation reads a private signature-verified
+index, downloads the selected repository artifact, verifies its hash and native
+metadata, then installs the local file with dependencies from the effective
+source set. Private metadata refresh disables system caches and update hooks.
+Existing installed native packages remain installed; policy removal is not an
+uninstall, and no general native upgrade or migration of installed provenance
+is claimed.
+
+DNF and Zypper support envY-owned repository descriptors and pinned signing
+keys. Package search/exact resolution works through the observed system source
+set, but repository-constrained search/install and private metadata sync are
+reported unsupported on these managers. Pacman uses the existing sync database;
+envY does not run an automatic partial or full system upgrade and reports
+repository configuration unsupported. Cargo and Go remain discovery-only.
+
+A URL artifact definition uses ecosystem url/type artifact and supplies a
+public fixed URL, deb/rpm format, packageName, full SHA256 (hex or SRI), and
+optional version, architecture, and bootstrapRepository. Add the source, then
+add its software selection:
+
+```bash
+envy sw source add url:vendor-app --definition vendor-app.json --dry-run --json
+envy sw add url.system.artifact url:vendor-app --source-id url:vendor-app --dry-run --json
+```
+
+Before saving a new artifact include, envY verifies content hash, package name,
+version when declared, and native architecture. Apply repeats verification.
+APT installs deb; DNF/Zypper install rpm. Legacy direct artifacts retain their
+definitions and receive package metadata checks; Doctor reports missing pinned
+hashes. Installation observes repository-file changes and checks a declared
+bootstrap repository without silently adopting it. System package scripts and
+package database changes are not covered by file-transaction rollback.
+
+TUI Configure includes Sources; Enter previews a repository selection and s
+requests metadata sync. Search shows concrete origins and availability and
+passes source IDs back to the CLI. Setup shows source annotations and reuses
+the repository checkbox group; custom definitions and shared input registration
+remain in the scoped source CLI. Doctor reports pending sources, unsupported
+legacy native version constraints, and unpinned legacy artifacts.

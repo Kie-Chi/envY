@@ -268,6 +268,32 @@ def _names(root: dict[str, Any], section: str) -> list[str]:
     return sorted(_table(root.get(section), section))
 
 
+def _complete_config_names(ctx, incomplete: str, section: str) -> list[tuple[str, str]]:
+    """Read configured names only; completion never resolves or starts a relay."""
+    params = getattr(ctx, "params", {}) if ctx is not None else {}
+    config_file = params.get("config_file") if isinstance(params, dict) else None
+    try:
+        root = _read_config(_config_path(Path(config_file) if config_file is not None else None))
+        values = root.get(section, root.get("targets", {}) if section == "connections" else {})
+        names = _table(values, section)
+    except (AgentConfigError, OSError, TypeError, ValueError):
+        return []
+    description = "configured connection" if section == "connections" else "configured remote agent"
+    return [
+        (name, description)
+        for name, value in sorted(names.items())
+        if isinstance(value, dict) and name.startswith(incomplete)
+    ]
+
+
+def complete_connection_names(ctx, incomplete: str) -> list[tuple[str, str]]:
+    return _complete_config_names(ctx, incomplete, "connections")
+
+
+def complete_remote_agent_names(ctx, incomplete: str) -> list[tuple[str, str]]:
+    return _complete_config_names(ctx, incomplete, "agents")
+
+
 def _format(value: str, values: dict[str, str], field: str) -> str:
     try:
         return value.format_map(values)
@@ -664,8 +690,12 @@ def list_config(
 @app.command("start", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def start_agent(
     ctx: typer.Context,
-    target: str | None = typer.Argument(None, help="Configured connection name."),
-    agent: str | None = typer.Option(None, "--agent", "-a", help="Configured agent name."),
+    target: str | None = typer.Argument(
+        None, help="Configured connection name.", autocompletion=complete_connection_names,
+    ),
+    agent: str | None = typer.Option(
+        None, "--agent", "-a", help="Configured agent name.", autocompletion=complete_remote_agent_names,
+    ),
     prompt: str | None = typer.Option(None, "--prompt", help="Override the configured system prompt."),
     config_file: Path | None = typer.Option(None, "--config-file", help="Configuration file."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print the planned command without starting the agent."),

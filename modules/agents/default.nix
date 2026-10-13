@@ -1,4 +1,4 @@
-{ academicResearchSkills, academicResearchSkillsCodex, config, gptImage2PptSkills, lib, machinePlatform, ohMyPiPackage, piPackage, pptMaster, ... }:
+{ academicResearchSkills, academicResearchSkillsCodex, config, emilSkills, gptImage2PptSkills, lib, machinePlatform, pptMaster, vercelAgentSkills, ... }:
 
 {
   imports = [
@@ -7,6 +7,7 @@
     ./codex.nix
     ./generic.nix
     ./pi.nix
+    ./pi-extensions.nix
     ./skills.nix
     ./tools.nix
   ] ++ lib.optionals (machinePlatform == "linux") [ ./linux.nix ];
@@ -23,7 +24,7 @@
 
     skills = {
       catalog = import ./skills/catalog.nix {
-        inherit academicResearchSkills academicResearchSkillsCodex gptImage2PptSkills pptMaster;
+        inherit academicResearchSkills academicResearchSkillsCodex emilSkills gptImage2PptSkills pptMaster vercelAgentSkills;
       };
       active = [
         "academic-research-suite"
@@ -33,6 +34,13 @@
         "deep-research"
         "ppt-master"
         "gpt-image2-ppt-skills"
+        "emil-design-eng"
+        "animate"
+        "pick-ui-library"
+        "animation-performance"
+        "break-ui"
+        "vercel-react-best-practices"
+        "vercel-composition-patterns"
       ];
     };
   };
@@ -84,19 +92,12 @@
     aliases = lib.mkDefault [ "ccli" ];
   };
 
-  # Pi is the upstream extensible harness. OMP is its enhanced fork and is
-  # installed alongside it as a separate command so either runtime can be
-  # selected without replacing Pi's own application state.
+  # Pi is the upstream extensible harness.
   envy.agents.pi = {
     adapter = lib.mkDefault "pi";
-    endpoint = lib.mkDefault "xikai-openai";
-    credential = lib.mkDefault "stepfun";
-    model = lib.mkDefault "gpt-6.1-sol";
-  };
-
-  envy.agents.omp = {
-    adapter = lib.mkDefault "oh-my-pi";
-    endpoint = lib.mkDefault "xikai-openai";
+    # xikai is a Darwin machine-owned endpoint; the portable default must use
+    # the shared StepFun endpoint so Linux targets remain configured.
+    endpoint = lib.mkDefault "stepfun-openai";
     credential = lib.mkDefault "stepfun";
     model = lib.mkDefault "gpt-6.1-sol";
   };

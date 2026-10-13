@@ -5,9 +5,10 @@ import json
 import math
 import re
 import sqlite3
+import subprocess
 import sys
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,8 @@ from envy.process import run_process
 from envy.search.index import RegistryIndex
 from envy.search.model import SearchResult
 from envy.search.providers import resolve_exact
+from envy.sources.catalog import legacy_source_id, source_for
+from envy.sources.completion import complete_add_source_ids, complete_search_source_ids
 from envy.secure_io import atomic_write_text
 from envy.utils import current_machine_id, machine_config_file, platform_name
 
@@ -92,8 +95,12 @@ LINUX_GROUPS = (
         "Native system packages", "native", "system", "package",
     ),
     SelectionGroup(
+        "native.system.repository", "envy.linux.software.native.repositories",
+        "Native repositories", "native", "system", "repository",
+    ),
+    SelectionGroup(
         "url.system.artifact", "envy.linux.software.url.artifacts",
-        "System artifacts", "url", "system", "artifact", False,
+        "System artifacts", "url", "system", "artifact", True,
     ),
 )
 
@@ -164,6 +171,8 @@ class SoftwareItem:
     locked: bool
     stale: bool
     changed: bool
+    source_id: str | None = None
+    resolved_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -175,12 +184,16 @@ class ManagedInclude:
     ref: str | None = None
     parameters: dict[str, Any] | None = None
 
+    source_id: str | None = None
+
     def to_selection(self) -> dict[str, Any]:
         selection: dict[str, Any] = {"id": self.id, "name": self.name}
         if self.version is not None:
             selection["version"] = self.version
         if self.ref is not None:
             selection["ref"] = self.ref
+        if self.source_id is not None:
+            selection["sourceId"] = self.source_id
         if self.parameters:
             selection["parameters"] = self.parameters
         return selection
@@ -200,6 +213,8 @@ class SoftwarePlan:
     expected_effective: bool
     clean: bool
     blocked: str | None = None
+    prerequisites: tuple[dict[str, Any], ...] = ()
+    source_id: str | None = None
 
     @property
     def include_added(self) -> tuple[str, ...]:
@@ -256,6 +271,8 @@ class SoftwarePlan:
             "clean": self.clean,
             "changed": self.changed,
             "blocked": self.blocked,
+            "prerequisites": list(self.prerequisites),
+            "sourceId": self.source_id,
         }
 
 
@@ -279,6 +296,10 @@ class AuditFinding:
 
 class SoftwarePolicyError(ValueError):
     """Raised when managed software policy cannot be safely handled."""
+
+    def __init__(self, message: str, code: str = "invalid-policy"):
+        super().__init__(message)
+        self.code = code
 
 
 class ConcurrentMachineEdit(SoftwarePolicyError):
@@ -367,6 +388,7 @@ def normalize_managed_includes(
                 version=version,
                 ref=ref,
                 parameters=parameters if isinstance(parameters, dict) else None,
+                source_id=raw.get("sourceId") or raw.get("source_id"),
             )
         else:
             raise SoftwarePolicyError("managed software entries must be objects")
@@ -425,7 +447,7 @@ def render_managed_policy(
                         raise SoftwarePolicyError(
                             f"managed Nix package has no canonical reference: {item.id}"
                         )
-                    metadata = {"id": item.id, "ref": item.ref}
+                    metadata = {"id": item.id, "ref": item.ref, "sourceId": item.source_id}
                     payload = json.dumps(
                         metadata, ensure_ascii=False, separators=(",", ":"), sort_keys=True
                     )
@@ -489,6 +511,8 @@ def _update_managed_policy_source(
         updated = text
     if any(item.group.startswith("nix.") for item in normalized_includes):
         updated = _ensure_module_argument(updated, "pkgs")
+    if any((item.parameters or {}).get("input") for item in normalized_includes):
+        updated = _ensure_module_argument(updated, "softwareSourcePackages")
     return updated if updated.endswith("\n") else updated + "\n"
 
 
@@ -578,6 +602,13 @@ def write_and_validate_software_policy(
             if detail:
                 message = f"{message}: {detail}"
             raise SoftwarePolicyError(message)
+        selected_repositories = {
+            item.get("sourceId") or "native:" + item["id"]
+            for item in manifest_software_groups(manifest).get("native.system.repository", {}).get("selection", {}).get("effective", [])
+        }
+        for item in manifest_software_groups(manifest).get("native.system.package", {}).get("selection", {}).get("effective", []):
+            if item.get("sourceId") not in (None, "native:system") and item["sourceId"] not in selected_repositories:
+                raise SoftwarePolicyError("native software source prerequisite is not effective")
         _, effective, _ = _evaluated_item_state(manifest, group_key, item_id)
         if effective != expected_effective:
             expectation = "effective" if expected_effective else "absent from effective"
@@ -646,6 +677,7 @@ def build_software_items(
                 id=item_id,
                 name=name,
                 version=_optional_string(entry.get("version")),
+                resolved_version=_optional_string(entry.get("resolvedVersion")),
                 ref=_optional_string(entry.get("ref")),
                 included=included,
                 checked=included and item_id not in predicted_excluded,
@@ -653,6 +685,7 @@ def build_software_items(
                 locked=locked,
                 stale=not included and item_id in predicted_excluded,
                 changed=(item_id in current_set) != (item_id in original_set),
+                source_id=entry.get("sourceId") or legacy_source_id(group.ecosystem, entry.get("ref"), group.kind),
             ))
         result[group.key] = items
     return result
@@ -726,6 +759,8 @@ def _reference_groups(
     if ":" not in item_value:
         return []
     ecosystem, reference = item_value.split(":", 1)
+    if ecosystem == "flake":
+        ecosystem = "nix"
     matches = [group for group in groups if group.ecosystem == ecosystem]
     if ecosystem == "homebrew" and "/" in reference:
         kind = reference.split("/", 1)[0]
@@ -974,19 +1009,35 @@ def _parse_nix_includes(value: str, group: SelectionGroup) -> list[ManagedInclud
             index += 1
         if index >= len(lines):
             raise SoftwarePolicyError("managed Nix package expression is missing")
-        attr_path = _parse_nix_package(lines[index].strip())
+        expression = lines[index].strip()
+        attr_path = _parse_nix_package(expression)
+        source_input = None
+        if expression.startswith("softwareSourcePackages."):
+            source_input, *attr_path = attr_path
         if not isinstance(metadata, dict):
             raise SoftwarePolicyError("managed Nix package metadata must be an object")
         item_id = metadata.get("id")
         ref = metadata.get("ref")
         if not isinstance(item_id, str) or not isinstance(ref, str):
             raise SoftwarePolicyError("managed Nix package metadata requires id and ref")
+        if source_input:
+            if ref != f"flake:{source_input}#{'.'.join(attr_path)}" or metadata.get("sourceId") not in (None, "nix:" + source_input):
+                raise SoftwarePolicyError("Nix source metadata conflicts with package expression")
+        elif ref.startswith("nix:"):
+            declared = ref[4:].split(".")
+            if declared[:1] in (["legacyPackages"], ["packages"]):
+                declared = declared[2:]
+            if declared != attr_path:
+                raise SoftwarePolicyError("Nix reference conflicts with package expression")
+        else:
+            raise SoftwarePolicyError("managed Nix expression has no matching source reference")
         includes.append(ManagedInclude(
             group=group.key,
             id=item_id,
             name=item_id,
             ref=ref,
-            parameters={"attrPath": attr_path},
+            parameters={"attrPath": attr_path, **({"input": source_input} if source_input else {})},
+            source_id=metadata.get("sourceId"),
         ))
         index += 1
     return normalize_managed_includes(includes, (group,))
@@ -1112,11 +1163,16 @@ def _render_nix_package(item: ManagedInclude) -> str:
         isinstance(part, str) and part for part in attr_path
     ):
         raise SoftwarePolicyError(f"managed Nix package has no attr path: {item.id}")
-    return "pkgs" + "".join(f".{json.dumps(part, ensure_ascii=False)}" for part in attr_path)
+    prefix = "pkgs"
+    if parameters.get("input"):
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", parameters["input"]):
+            raise SoftwarePolicyError("invalid Nix source input")
+        prefix = "softwareSourcePackages." + json.dumps(parameters["input"])
+    return prefix + "".join(f".{json.dumps(part, ensure_ascii=False)}" for part in attr_path)
 
 
 def _parse_nix_package(value: str) -> list[str]:
-    match = re.fullmatch(r'pkgs((?:\."(?:\\.|[^"\\])*")+)', value)
+    match = re.fullmatch(r'(?:pkgs|softwareSourcePackages)((?:\."(?:\\.|[^"\\])*")+)', value)
     if match is None:
         raise SoftwarePolicyError("unsupported managed Nix package expression")
     try:
@@ -1156,13 +1212,14 @@ def _ordered_unique(values: list[str]) -> list[str]:
     return list(dict.fromkeys(values))
 
 
-def _completion_policy() -> tuple[
+def _completion_policy(manifest=None) -> tuple[
     tuple[SelectionGroup, ...],
     dict[str, list[SoftwareItem]],
 ]:
     """Load completion candidates without allowing evaluation errors to escape."""
     try:
-        manifest = machine_manifest(write_cache=False)
+        if manifest is None:
+            manifest = machine_manifest(write_cache=False)
         if not manifest_software_groups(manifest):
             return (), {}
         groups = groups_for_manifest(manifest, include_empty=True)
@@ -1314,8 +1371,7 @@ def _complete_smart_targets(incomplete: str, *, action: str) -> list[tuple[str, 
 
 
 def complete_add_targets(ctx, incomplete: str) -> list[tuple[str, str]]:
-    del ctx
-    return _complete_smart_targets(incomplete, action="add")
+    return _complete_add(ctx, incomplete, smart=True)
 
 
 def complete_remove_targets(ctx, incomplete: str) -> list[tuple[str, str]]:
@@ -1324,19 +1380,57 @@ def complete_remove_targets(ctx, incomplete: str) -> list[tuple[str, str]]:
 
 
 def complete_add_items(ctx, incomplete: str) -> list[tuple[str, str]]:
-    group_key = None
-    if ctx is not None:
-        group_key = ctx.params.get("group") or ctx.params.get("group_or_item")
-    if not isinstance(group_key, str):
-        return []
-    groups, all_items_by_group = _completion_policy()
+    return _complete_add(ctx, incomplete, smart=False)
+
+
+def _complete_add(ctx, incomplete: str, *, smart: bool) -> list[tuple[str, str]]:
+    params = getattr(ctx, "params", {}) or {}
+    group_key = params.get("group") or (None if smart else params.get("group_or_item"))
     try:
-        group = require_group(group_key, groups)
-    except typer.BadParameter:
+        manifest = machine_manifest(write_cache=False)
+        if not manifest:
+            return []
+        groups, all_items_by_group = _completion_policy(manifest)
+        if isinstance(group_key, str):
+            groups = (require_group(group_key, groups),)
+        elif not smart:
+            return []
+    except (OSError, RuntimeError, TypeError, ValueError, subprocess.SubprocessError, typer.BadParameter):
         return []
+
+    source_id = params.get("source_id")
+    source_id = source_id if isinstance(source_id, str) else None
+    if source_id:
+        groups = tuple(group for group in groups if group.ecosystem == source_id.split(":", 1)[0])
+    index = RegistryIndex()
+    sources = {}
+    if index.path.exists() and manifest.get("schemaVersion") == 3:
+        try:
+            from envy.sources.catalog import catalog
+            # These observations read local package-manager state and lock data;
+            # they never query a registry or refresh package metadata.
+            sources = catalog(manifest)
+        except (OSError, RuntimeError, TypeError, ValueError, subprocess.SubprocessError):
+            pass
+    candidates = []
+    if smart and group_key is None:
+        candidates.extend((group.key, group.label) for group in groups
+                          if group.key.startswith(incomplete) and group.editable_include)
+    for group in groups:
+        candidates.extend(_complete_add_in_group(
+            group, all_items_by_group.get(group.key, []), incomplete,
+            index=index, manifest=manifest, sources=sources, source_id=source_id,
+            canonical=smart and group_key is None,
+        ))
+    return list(dict(candidates).items())
+
+
+def _complete_add_in_group(group, all_items, incomplete, *, index, manifest, sources,
+                           source_id, canonical):
     items = [
-        item for item in all_items_by_group[group.key]
+        item for item in all_items
         if not item.checked and not item.locked
+        and (not source_id or (item.source_id or legacy_source_id(group.ecosystem, item.ref, group.kind)) == source_id)
     ]
     needle = incomplete.casefold()
     candidates = [
@@ -1348,16 +1442,25 @@ def complete_add_items(ctx, incomplete: str) -> list[tuple[str, str]]:
             or (item.ref or "").casefold().startswith(needle)
         )
     ]
-    if group.ecosystem not in {"homebrew", "npm", "pypi", "native"}:
+    if not group.editable_include:
         return candidates
 
     known = {
         value.casefold()
-        for item in all_items_by_group[group.key]
+        for item in all_items
         for value in (item.id, item.name, item.ref)
         if value
     }
-    for indexed in RegistryIndex().suggest(group.ecosystem, group.kind, incomplete):
+    if manifest.get("schemaVersion") == 3:
+        indexed_results = [indexed for source in sources.values()
+                           if source.ecosystem == group.ecosystem
+                           and (not source_id or source.id == source_id)
+                           and source.capabilities.get("managedInclude")
+                           for indexed in index.suggest(group.ecosystem, group.kind, incomplete,
+                               source_id=source.id, fingerprint=source.fingerprint)]
+    else:
+        indexed_results = index.suggest(group.ecosystem, group.kind, incomplete, source_id=source_id)
+    for indexed in indexed_results:
         result = indexed.result
         identity = {value.casefold() for value in (result.name, result.ref) if value}
         if known & identity:
@@ -1367,7 +1470,12 @@ def complete_add_items(ctx, incomplete: str) -> list[tuple[str, str]]:
             details.append(f"v{result.version}")
         if result.ref:
             details.append(result.ref)
-        candidates.append((result.name, "; ".join(details)))
+        if result.source_id:
+            details.append(result.source_id)
+        value = result.ref if (canonical or group.ecosystem == "nix") and result.ref else result.name
+        if group.ecosystem == "url":
+            value = result.source_id or result.name
+        candidates.append((value, "; ".join(details)))
         known.update(identity)
     return candidates
 
@@ -1558,32 +1666,28 @@ def _managed_source_counts(
 
 
 def _nix_request(ref: str, manifest: dict[str, Any]) -> ManagedInclude:
-    attr = ref.removeprefix("nix:")
-    if not attr or any(not part for part in attr.split(".")):
-        raise SoftwarePolicyError(f"invalid Nix canonical reference: {ref}")
-    system = str(manifest.get("system") or "")
-    attr_path = attr.split(".")
-    for prefix in (["legacyPackages", system], ["packages", system]):
-        if system and attr_path[:2] == prefix:
-            attr_path = attr_path[2:]
-            break
-    result = run_process(
-        ["nix", "eval", "--raw", f"nixpkgs#{attr}.pname"],
-        capture=True,
-        check=False,
-        timeout=30,
-    )
-    if result.returncode != 0 or not (result.stdout or "").strip():
-        detail = (result.stderr or "cannot resolve package pname").strip().splitlines()[-1]
-        raise SoftwarePolicyError(f"cannot resolve {ref}: {detail[:300]}")
-    name = (result.stdout or "").strip()
-    return ManagedInclude(
-        group="",
-        id=name,
-        name=name,
-        ref=ref,
-        parameters={"attrPath": attr_path},
-    )
+    from envy.sources.adapters import resolve_nix
+    from envy.sources.catalog import source_for
+    from envy.sources.model import SourceError
+    if ref.startswith("flake:") and "#" in ref:
+        input_name, attr = ref[6:].split("#", 1)
+        source_id = "nix:" + input_name
+    elif ref.startswith("nix:"):
+        source_id, input_name, attr = "nix:nixpkgs", "nixpkgs", ref[4:]
+    else:
+        raise SoftwarePolicyError("Nix include requires nix:<attr> or flake:<input>#<attr>")
+    try:
+        source = source_for(source_id, manifest)
+        outcome = resolve_nix(source, manifest, ref)
+    except SourceError as exc:
+        raise SoftwarePolicyError(str(exc)) from exc
+    if outcome.result is None:
+        raise SoftwarePolicyError(outcome.error or "locked Nix package cannot be resolved")
+    result = outcome.result
+    attr = result.ref.split("#", 1)[1] if "#" in result.ref else result.ref[4:]
+    return ManagedInclude("", result.name, result.name, ref=result.ref,
+        parameters={"attrPath": attr.split("."), **({"input": input_name} if input_name != "nixpkgs" else {})},
+        source_id=source.id)
 
 
 def _include_for_spec(
@@ -1597,9 +1701,17 @@ def _include_for_spec(
     ref = explicit_ref or (value if ":" in value else None)
     if group.ecosystem == "nix":
         ref = ref or f"nix:{value}"
-        if not ref.startswith("nix:"):
-            raise SoftwarePolicyError(f"{group.key} requires a nix: canonical reference")
-        request = _nix_request(ref, manifest)
+        if not ref.startswith(("nix:", "flake:")):
+            raise SoftwarePolicyError(f"{group.key} requires a nix: or flake: canonical reference")
+        if resolved is not None and resolved.ecosystem == "nix" and resolved.kind == "package" and resolved.ref:
+            canonical = resolved.ref
+            source_input = canonical[6:].split("#", 1)[0] if canonical.startswith("flake:") else "nixpkgs"
+            attr = canonical.split("#", 1)[1] if canonical.startswith("flake:") else canonical[4:]
+            request = ManagedInclude("", resolved.name, resolved.name, ref=canonical,
+                                     parameters={"attrPath": attr.split("."), **({"input": source_input} if source_input != "nixpkgs" else {})},
+                                     source_id=resolved.source_id)
+        else:
+            request = _nix_request(ref, manifest)
         if explicit_ref is not None and value != request.id:
             raise SoftwarePolicyError(
                 f"requested stable ID {value!r} does not match resolved Nix package {request.id!r}"
@@ -1611,7 +1723,15 @@ def _include_for_spec(
             version=request.version,
             ref=request.ref,
             parameters=request.parameters,
+            source_id=request.source_id,
         )
+
+    if group.ecosystem == "url":
+        if resolved is None or resolved.source_id is None:
+            raise SoftwarePolicyError("artifact must resolve from a verified artifact source")
+        source = source_for(resolved.source_id, manifest)
+        return ManagedInclude(group.key, source.parameters["packageName"], source.parameters["packageName"],
+                              version=source.parameters.get("version"), ref=source.parameters["url"], parameters=source.parameters, source_id=source.id)
 
     expected_prefix: str
     if group.ecosystem == "homebrew":
@@ -1673,9 +1793,15 @@ def _include_for_spec(
         group=group.key,
         id=item_id,
         name=name,
-        version=resolved.version if resolved is not None else None,
+        version=None,
         ref=resolved.ref if resolved is not None else ref,
-        parameters={},
+        parameters=(
+            {"registry": source_for(resolved.source_id, manifest).parameters["registry"]}
+            if resolved and resolved.source_id and group.ecosystem == "npm" else
+            {"index": source_for(resolved.source_id, manifest).parameters["index"]}
+            if resolved and resolved.source_id and group.ecosystem == "pypi" else {}
+        ),
+        source_id=resolved.source_id if resolved else None,
     )
 
 
@@ -1736,6 +1862,10 @@ def build_desired_plan(
     ]
 
     blocked = None
+    if action == "add" and request is not None:
+        for candidate in _software_entries(manifest_software_groups(manifest).get(group.key, {}).get("selection", {}).get("include")):
+            if candidate["id"] == item_id and candidate.get("ref") and candidate["ref"] != request.ref:
+                raise SoftwarePolicyError("stable software ID is already bound to a different reference")
     if action == "add":
         if external_exclude[item_id] > 0:
             blocked = "an external or hand-written exclusion still masks this stable ID"
@@ -1777,6 +1907,14 @@ def build_desired_plan(
             elif not needs_managed_exclude:
                 exclusions_after = [item for item in exclusions_after if item != item_id]
 
+    prerequisites = []
+    source_id = request.source_id if request else (resolved.source_id if resolved else None)
+    if action == "add" and source_id and group.kind != "repository":
+        from envy.sources.policy import prerequisite
+        dependency = prerequisite(source_id, manifest, includes_after, exclusions)
+        if dependency:
+            includes_after.append(dependency)
+            prerequisites.append({"sourceId": source_id, "group": dependency.group, "item": dependency.id, "action": "select"})
     includes_after = normalize_managed_includes(
         includes_after, active_groups
     )
@@ -1802,6 +1940,8 @@ def build_desired_plan(
         expected_effective=expected_effective,
         clean=clean,
         blocked=blocked,
+        prerequisites=tuple(prerequisites),
+        source_id=source_id,
     )
 
 
@@ -1841,6 +1981,7 @@ def _emit_mutation_result(
     result: str,
     machine: str | None = None,
     message: str | None = None,
+    command: str | None = None,
 ) -> None:
     data: dict[str, Any] = {
         "result": result,
@@ -1850,7 +1991,7 @@ def _emit_mutation_result(
         data["machine"] = machine
     if message is not None:
         data["message"] = message
-    emit(f"software.{plan.action}", data=data)
+    emit(command or f"software.{plan.action}", data=data)
 
 
 def _resolve_new_include(
@@ -1865,6 +2006,7 @@ def _resolve_new_include(
     offline: bool,
     refresh: bool,
     quiet: bool = False,
+    source_id: str | None = None,
 ) -> SearchResult | None:
     """Verify a genuinely new registry include before the planner can write it."""
     if action != "add":
@@ -1879,23 +2021,55 @@ def _resolve_new_include(
         items, managed.id if managed is not None else item_value
     )
     if managed is not None or existing is not None:
+        declared_source = managed.source_id if managed else existing.source_id
+        if source_id and declared_source and source_id != declared_source:
+            raise SoftwarePolicyError("existing software selection is bound to another source")
         return None
     if not group.editable_include:
         return None
-    # Nix already performs an exact pname evaluation in _nix_request. It does
-    # not rely on registry search output and remains usable without this index.
-    if group.ecosystem == "nix":
-        return None
-    if group.ecosystem not in {"homebrew", "npm", "pypi", "native"}:
+    if group.ecosystem not in {"nix", "homebrew", "npm", "pypi", "native", "url"}:
         raise SoftwarePolicyError(
             f"software group has no exact registry resolver: {group.key}"
         )
 
     requested = explicit_ref or item_value
+    from envy.sources.catalog import catalog, legacy_source_id
+    from envy.sources.model import SourceError
+    sources = catalog(manifest)
+    source_id = source_id or (requested if group.kind == "repository" and group.ecosystem == "native" and requested.startswith("native:") else None)
+    if source_id is None and group.ecosystem in ("npm", "pypi"):
+        candidates = [s for s in sources.values() if s.ecosystem == group.ecosystem and s.ready]
+        if len(candidates) > 1:
+            raise SoftwarePolicyError("multiple registry sources are available; select --source-id", "ambiguous-source")
+    if group.ecosystem == "url":
+        source_id = source_id or requested
+    else:
+        source_id = source_id or legacy_source_id(group.ecosystem, requested, group.kind)
+    bound_source = sources.get(source_id)
+    if source_id and bound_source is None:
+        raise SoftwarePolicyError(f"unknown source: {source_id}")
+    if bound_source and not bound_source.capabilities.get("configure" if group.kind == "repository" and group.ecosystem == "native" else "exactResolve"):
+        from envy.sources.model import SourceError
+        raise SourceError("source does not support exact package resolution", "unsupported")
+    if bound_source and bound_source.ecosystem != group.ecosystem:
+        raise SoftwarePolicyError("source ecosystem does not match software group")
+    from envy.sources.model import fingerprint
+    scope = {"source_id": source_id, "fingerprint": bound_source.fingerprint if bound_source else (
+        fingerprint({s.id: s.fingerprint for s in sources.values() if s.ecosystem == group.ecosystem})
+        if manifest.get("schemaVersion") == 3 else ""
+    )}
     index = RegistryIndex()
     cached = None if refresh else index.lookup(
-        group.ecosystem, group.kind, requested, allow_stale=offline,
+        group.ecosystem, group.kind, requested, allow_stale=offline, **scope,
     )
+    if bound_source is None and group.ecosystem == "homebrew" and not refresh and manifest.get("schemaVersion") == 3:
+        candidates = [index.lookup(group.ecosystem, group.kind, requested, allow_stale=offline,
+                                  source_id=s.id, fingerprint=s.fingerprint)
+                      for s in sources.values() if s.type == "tap" and (s.ready or s.selected)]
+        candidates = [c for c in candidates if c is not None]
+        if len(candidates) > 1:
+            raise SoftwarePolicyError("multiple cached taps contain this name; select --source-id", "ambiguous-source")
+        cached = candidates[0] if candidates else None
     if cached is not None:
         state = "stale index" if cached.stale else "registry index"
         if not quiet:
@@ -1907,11 +2081,11 @@ def _resolve_new_include(
         return cached.result
     if offline:
         raise SoftwarePolicyError(
-            f"offline registry index miss for {group.key}: {requested}"
+            f"offline registry index miss for {group.key}: {requested}", "offline-index-miss"
         )
-    if not refresh and index.recently_missing(group.ecosystem, group.kind, requested):
+    if not refresh and index.recently_missing(group.ecosystem, group.kind, requested, **scope):
         raise SoftwarePolicyError(
-            f"software was not found during a recent exact lookup: {requested}"
+            f"software was not found during a recent exact lookup: {requested}", "package-not-found"
         )
 
     if not quiet:
@@ -1919,21 +2093,30 @@ def _resolve_new_include(
             "software", "resolving exact registry identity",
             provider=group.ecosystem, kind=group.kind, item=requested,
         )
-    outcome = resolve_exact(group.ecosystem, group.kind, requested)
+    if bound_source:
+        from envy.sources.adapters import resolve
+        outcome = resolve(bound_source, manifest, group.kind, requested)
+    else:
+        outcome = resolve_exact(group.ecosystem, group.kind, requested)
     if outcome.status == "not_found":
         try:
-            index.put_miss(group.ecosystem, group.kind, requested)
+            index.put_miss(group.ecosystem, group.kind, requested, **scope)
         except (OSError, sqlite3.Error):
             pass
         detail = f": {outcome.error}" if outcome.error else ""
         raise SoftwarePolicyError(
-            f"software does not exist in {group.ecosystem}.{group.kind}: {requested}{detail}"
+            f"software does not exist in {group.ecosystem}.{group.kind}: {requested}{detail}", "package-not-found"
         )
     if outcome.status == "unavailable" or outcome.result is None:
         raise SoftwarePolicyError(
             f"cannot verify software identity with {group.ecosystem}: "
-            f"{outcome.error or 'registry unavailable'}"
+            f"{outcome.error or 'registry unavailable'}", "source-unavailable"
         )
+    if outcome.result.source_id in sources:
+        from envy.sources.adapters import bind
+        bind(outcome.result, sources[outcome.result.source_id])
+    elif manifest.get("schemaVersion") == 3:
+        raise SoftwarePolicyError("provider did not identify a registered software source", "unverified-source")
     try:
         index.put_results([outcome.result])
     except (OSError, sqlite3.Error):
@@ -1959,8 +2142,10 @@ def _apply_desired_state(
     offline: bool = False,
     refresh: bool = False,
     json_output: bool = False,
+    source_id: str | None = None,
+    command_prefix: str = "software",
 ) -> None:
-    command = f"software.{action}"
+    command = f"{command_prefix}.{action}"
     try:
         manifest = _manifest_or_exit()
         groups = groups_for_manifest(manifest, include_empty=True)
@@ -1987,7 +2172,12 @@ def _apply_desired_state(
             offline=offline,
             refresh=refresh,
             quiet=json_output,
+            source_id=source_id,
         )
+        if source_id and group.ecosystem == "nix":
+            wanted = "nix:" + ((explicit_ref or item_value)[6:].split("#", 1)[0]) if (explicit_ref or item_value).startswith("flake:") else "nix:nixpkgs"
+            if wanted != source_id:
+                raise SoftwarePolicyError("Nix reference conflicts with --source-id")
         plan = build_desired_plan(
             action=action,
             group=group,
@@ -1999,9 +2189,11 @@ def _apply_desired_state(
             explicit_ref=explicit_ref,
             resolved=resolved,
         )
-    except SoftwarePolicyError as exc:
+        if source_id:
+            plan = replace(plan, source_id=source_id)
+    except (SoftwarePolicyError, ValueError) as exc:
         if json_output:
-            emit_error(command, str(exc), code="invalid-policy")
+            emit_error(command, str(exc), code=getattr(exc, "code", "invalid-policy"))
         else:
             log.error("software", str(exc))
         raise typer.Exit(code=1) from exc
@@ -2014,13 +2206,13 @@ def _apply_desired_state(
         raise typer.Exit(code=1)
     if dry_run:
         if json_output:
-            _emit_mutation_result(plan, result="dry-run")
+            _emit_mutation_result(plan, result="dry-run", command=command)
         else:
             log.info("software", "dry run; no files changed")
         return
     if not plan.changed:
         if json_output:
-            _emit_mutation_result(plan, result="already-satisfied")
+            _emit_mutation_result(plan, result="already-satisfied", command=command)
         else:
             log.ok("software", f"already satisfies {action} intent", group=group.key, item=plan.item_id)
         return
@@ -2054,7 +2246,7 @@ def _apply_desired_state(
         raise typer.Exit(code=1) from exc
     machine = evaluated.get("id", current_machine_id())
     if json_output:
-        _emit_mutation_result(plan, result="applied", machine=machine)
+        _emit_mutation_result(plan, result="applied", machine=machine, command=command)
     else:
         log.ok(
             "software",
@@ -2416,6 +2608,8 @@ def cmd_add(
         None, "--group", "-g", help="Select a canonical group without an interactive chooser",
         autocompletion=complete_add_groups,
     ),
+    source_id: str | None = typer.Option(None, "--source-id", help="Require a concrete software source",
+                                       autocompletion=complete_add_source_ids),
     clean: bool = typer.Option(False, "--clean", help="Remove redundant envY-managed state for this item"),
     ref: str | None = typer.Option(None, "--ref", help="Canonical registry reference when item is a custom stable ID"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Apply the displayed plan without confirmation"),
@@ -2444,7 +2638,7 @@ def cmd_add(
     _apply_desired_state(
         selected_group, selected_item, action="add", clean=clean, yes=yes,
         dry_run=dry_run, explicit_ref=ref, offline=offline, refresh=refresh,
-        json_output=json_output,
+        json_output=json_output, source_id=source_id,
     )
 
 
@@ -2496,6 +2690,8 @@ def cmd_search(
         None, "--source", "-s", help="Restrict search providers",
         autocompletion=complete_search_sources,
     ),
+    source_id: list[str] | None = typer.Option(None, "--source-id", help="Filter concrete source identities",
+                                             autocompletion=complete_search_source_ids),
     limit: int = typer.Option(10, "--limit", "-n", min=1, max=100),
     exact: bool = typer.Option(False, "--exact", help="Show exact name matches only"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
@@ -2506,7 +2702,7 @@ def cmd_search(
 
     search_and_render(
         query, sources=source, limit=limit, exact=exact,
-        json_output=json_output, refresh=refresh,
+        json_output=json_output, refresh=refresh, source_ids=source_id,
     )
 
 
@@ -2686,6 +2882,9 @@ def _print_policy(*, details: bool, json_output: bool = False) -> None:
                     "name": item.name,
                     "version": item.version,
                     "ref": item.ref,
+                    "sourceId": item.source_id,
+                    "resolvedVersion": item.resolved_version,
+                    "versionConstraintApplied": not (item.version and group.ecosystem == "native"),
                     "included": item.included,
                     "effective": item.checked,
                     "machineExclude": item.managed,
@@ -2719,6 +2918,10 @@ def _print_policy(*, details: bool, json_output: bool = False) -> None:
                 source = "stale exclusion"
             row = [group.label, state, item.name]
             if details:
-                row.extend([item.version or "", item.ref or ""])
+                row.extend([item.version or item.resolved_version or "", item.ref or ""])
             table.add_row(*row, source)
     log.console.print(table)
+
+
+from envy.sources.cli import app as source_app
+app.add_typer(source_app, name="source")

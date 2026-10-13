@@ -104,7 +104,7 @@ def complete_agent_paths(ctx, incomplete):
         if agent.get("adapter") == "pi":
             fields.append("api")
         if agent.get("adapter") == "pi":
-            fields.append("more_thinking")
+            fields.append("moreThinking")
         for field in fields:
             paths[f"envy.agents.{name}.{field}"] = "agent setting"
     for group, fields in (("endpoints", ("baseUrl", "protocol")), ("credentials", ("kind", "secretPath"))):
@@ -124,7 +124,7 @@ def complete_agent_values(ctx, incomplete):
     if namespace == "agents":
         from envy.agent import is_obsolete_agent
 
-        if is_obsolete_agent(name) or field not in {"adapter", "api", "endpoint", "credential", "more_thinking"}:
+        if is_obsolete_agent(name) or field not in {"adapter", "api", "endpoint", "credential", "moreThinking"}:
             return []
         metadata = _metadata()
         if name in metadata["obsolete_agents"]:
@@ -136,7 +136,7 @@ def complete_agent_values(ctx, incomplete):
             return _matches(metadata["endpoints"], incomplete, "configured endpoint")
         if field == "credential":
             return _matches(metadata["credentials"], incomplete, "credential reference")
-        if field == "more_thinking":
+        if field == "moreThinking":
             return _matches(("true", "false"), incomplete, path)
     elif namespace == "llm.endpoints" and field == "protocol":
         return _matches(_PROTOCOLS, incomplete, path)

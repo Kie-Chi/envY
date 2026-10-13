@@ -15,6 +15,7 @@ from rich.table import Table
 from envy import log
 from envy.evaluation import invalidate_machine_manifest, machine_manifest, manifest_settings
 from envy.jsonio import emit, emit_error
+from envy.legacy import SOFTWARE_OPTION_ALIASES
 from envy.schemas.config import (
     FieldDef,
     LEGACY_CONFIG_PATHS,
@@ -62,14 +63,6 @@ MANAGED_START = "  # BEGIN ENVY MANAGED CONFIG"
 MANAGED_END = "  # END ENVY MANAGED CONFIG"
 MIRROR_MANAGED_START = "  # BEGIN ENVY MANAGED MIRROR OVERRIDES"
 MIRROR_MANAGED_END = "  # END ENVY MANAGED MIRROR OVERRIDES"
-LEGACY_SOFTWARE_OPTIONS = {
-    "envy.packages.home": "envy.software.nix.packages",
-    "envy.darwin.packages.system": "envy.darwin.software.nix.systemPackages",
-    "envy.darwin.packages.fonts": "envy.darwin.software.nix.fonts",
-    "envy.darwin.homebrew.brews": "envy.darwin.software.homebrew.formulae",
-    "envy.darwin.homebrew.casks": "envy.darwin.software.homebrew.casks",
-    "envy.darwin.homebrew.taps": "envy.darwin.software.homebrew.repositories",
-}
 
 
 @dataclass
@@ -693,15 +686,15 @@ def refine_software_policy(*, write: bool = True, strict: bool = False) -> Refin
     report = RefineReport()
     path = machine_config_file()
     text = path.read_text()
-    legacy_paths = [old for old in LEGACY_SOFTWARE_OPTIONS if old in text]
+    legacy_paths = [old for old in SOFTWARE_OPTION_ALIASES if old in text]
     if legacy_paths and write:
         for old in legacy_paths:
-            text = text.replace(old, LEGACY_SOFTWARE_OPTIONS[old])
+            text = text.replace(old, SOFTWARE_OPTION_ALIASES[old])
             report.removed.append(old)
-            report.added.append(LEGACY_SOFTWARE_OPTIONS[old])
+            report.added.append(SOFTWARE_OPTION_ALIASES[old])
             log.fix(
                 "software", "migrated option path",
-                old=old, new=LEGACY_SOFTWARE_OPTIONS[old],
+                old=old, new=SOFTWARE_OPTION_ALIASES[old],
             )
         atomic_write_text(path, text)
         invalidate_machine_manifest()

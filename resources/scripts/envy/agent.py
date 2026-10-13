@@ -31,6 +31,14 @@ from envy.agent_completion import (
 from envy.config import _escape_nix_string, machine_config_file, read_secrets_data, set_secret_value
 from envy.evaluation import invalidate_machine_manifest, machine_manifest
 from envy.jsonio import emit, emit_error
+from envy.legacy import (
+    AGENT_FIELD_ALIASES,
+    canonicalize_agent_object,
+    canonicalize_agent_values,
+    is_obsolete_agent,
+    normalize_agent_fields,
+    obsolete_agent_paths,
+)
 from envy.mutation import offer_mutation_commit
 from envy.secure_io import atomic_write_text
 from envy.transaction import FileTransaction
@@ -48,27 +56,6 @@ _SAFE_SECRET_PATH = re.compile(r"^[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*$")
 _KNOWN_ENDPOINTS = {"stepfun-openai", "stepfun-anthropic", "deepseek-openai"}
 _KNOWN_CREDENTIALS = {"stepfun", "deepseek"}
 API_CHOICES = ("openai-completions", "openai-responses")
-OBSOLETE_AGENT_NAMES = frozenset({"omp"})
-OBSOLETE_AGENT_ADAPTERS = frozenset({"oh-my-pi"})
-
-
-def is_obsolete_agent(name: str, adapter: Any = None) -> bool:
-    """Recognize retired instances, including renamed Oh My Pi agents."""
-    return name in OBSOLETE_AGENT_NAMES or (
-        isinstance(adapter, str) and adapter in OBSOLETE_AGENT_ADAPTERS
-    )
-
-
-def obsolete_agent_paths(values: dict[str, Any]) -> list[str]:
-    names = set(OBSOLETE_AGENT_NAMES)
-    names.update(
-        path.split(".")[2]
-        for path, value in values.items()
-        if re.fullmatch(r"envy\.agents\." + _NAME + r"\.adapter", path)
-        and is_obsolete_agent(path.split(".")[2], value)
-    )
-    return sorted(path for path in values if path.startswith("envy.agents.")
-                  and path.split(".")[2] in names)
 
 
 def _block_pattern() -> re.Pattern[str]:
@@ -174,13 +161,13 @@ def _validate_values(values: dict[str, Any]) -> list[str]:
         namespace, name, field = match.groups()
         if namespace == "agents":
             agent_names.add(name)
-            if field not in {"adapter", "api", "endpoint", "credential", "model", "command", "args", "aliases", "skills", "more_thinking"}:
+            if field not in {"adapter", "api", "endpoint", "credential", "model", "command", "args", "aliases", "skills", "moreThinking", *AGENT_FIELD_ALIASES}:
                 errors.append(path)
             elif field in {"args", "aliases", "skills"} and (
                 not isinstance(value, list) or not all(isinstance(item, str) for item in value)
             ):
                 errors.append(path)
-            elif field == "more_thinking" and not isinstance(value, bool):
+            elif field in {"moreThinking", *AGENT_FIELD_ALIASES} and not isinstance(value, bool):
                 errors.append(path)
             elif field == "api" and value not in API_CHOICES:
                 errors.append(path)
@@ -262,11 +249,19 @@ def refine_managed(
         result["added"] = sorted(set(migrated) - set(values))
         values = migrated | values
 
-    result["removed"] = obsolete_agent_paths(values)
-    for obsolete in result["removed"]:
-        values.pop(obsolete)
+    values, renamed, legacy_removed, rename_errors = normalize_agent_fields(values)
+    result["added"].extend(renamed)
+    result["removed"].extend(legacy_removed)
+    if rename_errors:
+        for field in rename_errors:
+            log.error("agents", "legacy agent field conflicts with moreThinking", field=field)
 
-    invalid = _validate_values(values)
+    obsolete_removed = obsolete_agent_paths(values)
+    result["removed"].extend(obsolete_removed)
+    for obsolete in obsolete_removed:
+        values.pop(obsolete, None)
+
+    invalid = sorted(set(_validate_values(values) + rename_errors))
     if invalid:
         result["errors"].extend(invalid)
         for path in invalid:
@@ -279,14 +274,14 @@ def refine_managed(
                 result["changed"] = True
                 if result["added"]:
                     log.fix("agents", "migrated missing legacy LLM selections", count=len(result["added"]))
-                for obsolete in result["removed"]:
+                for obsolete in obsolete_removed:
                     log.fix("agents", "removed obsolete agent field", field=obsolete)
             else:
                 result["errors"].extend(result["added"])
                 result["errors"].extend(result["removed"])
                 if result["added"]:
                     log.error("agents", "legacy LLM selections need migration")
-                for obsolete in result["removed"]:
+                for obsolete in obsolete_removed:
                     log.error("agents", "obsolete agent field needs cleanup", field=obsolete)
                 log.hint("Run: envy config refine")
         if not result["errors"]:
@@ -318,7 +313,7 @@ def _managed_manifest(values: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
     """Turn the source managed block into the same shape as the Nix manifest."""
     llm: dict[str, Any] = {"credentials": {}, "endpoints": {}}
     agents: dict[str, Any] = {}
-    for path, value in values.items():
+    for path, value in canonicalize_agent_values(values).items():
         if path.startswith("envy.llm."):
             _put_nested(llm, path.split(".")[2:], value)
         elif path.startswith("envy.agents."):
@@ -372,9 +367,9 @@ def config_view(
     for name, item in agents.items():
         if not isinstance(item, dict) or is_obsolete_agent(name, item.get("adapter")):
             continue
-        agent = dict(item)
+        agent = canonicalize_agent_object(item)
         if agent.get("adapter") == "pi":
-            agent.setdefault("more_thinking", False)
+            agent.setdefault("moreThinking", False)
         credential_name = agent.get("credential")
         credential = credentials.get(credential_name, {}) if isinstance(credential_name, str) else {}
         agent["credentialSet"] = bool(credential.get("credentialSet", False))
@@ -421,7 +416,7 @@ def config_view(
                 list(API_CHOICES),
             )
         if agent.get("adapter") == "pi":
-            add_field(f"envy.agents.{name}.more_thinking", agent["more_thinking"], ["true", "false"])
+            add_field(f"envy.agents.{name}.moreThinking", agent["moreThinking"], ["true", "false"])
 
     return {
         "evaluated": evaluated,
@@ -486,6 +481,11 @@ def _validate_path(path: str) -> None:
 
 def _set(path: str, value: Any) -> Path:
     _validate_path(path)
+    legacy_field = next((field for field in AGENT_FIELD_ALIASES if path.endswith("." + field)), None)
+    if legacy_field is not None:
+        raise typer.BadParameter(
+            f"{path} was renamed to {path[:-len(legacy_field)]}{AGENT_FIELD_ALIASES[legacy_field]}; run envy config refine first"
+        )
     if path.startswith("envy.agents."):
         field = path.rsplit(".", 1)[-1]
         if field in {"args", "aliases", "skills"}:
@@ -500,7 +500,7 @@ def _set(path: str, value: Any) -> Path:
             value = None
     if path.startswith("envy.agents.") and path.endswith(".api") and value not in API_CHOICES:
         raise typer.BadParameter(f"api must be one of: {', '.join(API_CHOICES)}")
-    if path.startswith("envy.agents.") and path.endswith(".more_thinking"):
+    if path.startswith("envy.agents.") and path.endswith(".moreThinking"):
         if isinstance(value, str) and value in {"true", "false"}:
             value = value == "true"
         if not isinstance(value, bool):
@@ -531,7 +531,7 @@ def _manifest_agents() -> dict[str, Any]:
     for name, agent in agents.items():
         if not isinstance(agent, dict) or is_obsolete_agent(name, agent.get("adapter")):
             continue
-        value = dict(agent)
+        value = canonicalize_agent_object(agent)
         credential_name = value.get("credential")
         secret_path = credentials.get(credential_name, {}).get("secretPath") if isinstance(credentials, dict) else None
         current = secret_data if decrypt_ok and isinstance(secret_data, dict) else {}

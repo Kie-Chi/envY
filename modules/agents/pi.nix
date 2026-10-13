@@ -2,7 +2,7 @@
 
 let
   piConfig = config.envy.agents.pi;
-  selectedPiPackage = if piConfig.more_thinking then
+  selectedPiPackage = if piConfig.moreThinking then
     import ./pi-package.nix { inherit piPackage pkgs; }
     else piPackage;
   providerName = "envy-pi";
@@ -43,7 +43,7 @@ let
           name = agent.model;
           reasoning = true;
           input = [ "text" "image" ];
-        } // lib.optionalAttrs (agent.adapter == "pi" && agent.more_thinking) {
+        } // lib.optionalAttrs (agent.adapter == "pi" && agent.moreThinking) {
           thinkingLevelMap = {
             xhigh = "xhigh";
             max = "max";

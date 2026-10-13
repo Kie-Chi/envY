@@ -45,12 +45,12 @@ class AgentCompletionTests(unittest.TestCase):
     def test_agent_and_config_set_offer_current_and_inherited_scalar_paths(self):
         for group in ("agent", "config"):
             paths = self.complete(group, "set", "path", "envy.agents.")
-            self.assertIn("envy.agents.local-pi.more_thinking", paths)
+            self.assertIn("envy.agents.local-pi.moreThinking", paths)
             self.assertIn("envy.agents.inherited.model", paths)
             self.assertIn("envy.agents.other-pi.api", paths)
             self.assertNotIn("envy.agents.omp.api", paths)
             self.assertNotIn("envy.agents.retired.api", paths)
-            self.assertNotIn("envy.agents.omp.more_thinking", paths)
+            self.assertNotIn("envy.agents.omp.moreThinking", paths)
             self.assertNotIn("envy.agents.local-pi.args", paths)
             self.assertIn("envy.llm.endpoints.custom.protocol", self.complete(group, "set", "path", "envy.llm.endpoints.c"))
             self.assertIn("envy.llm.credentials.shared.kind", self.complete(group, "set", "path", "envy.llm.credentials.s"))
@@ -58,7 +58,7 @@ class AgentCompletionTests(unittest.TestCase):
 
     def test_values_follow_namespace_and_selected_field(self):
         examples = (
-            ("envy.agents.local-pi.more_thinking", "t", ["true"]),
+            ("envy.agents.local-pi.moreThinking", "t", ["true"]),
             ("envy.agents.other-pi.api", "openai-r", ["openai-responses"]),
             ("envy.agents.omp.api", "", []),
             ("envy.agents.retired.api", "", []),
@@ -95,9 +95,9 @@ class AgentCompletionTests(unittest.TestCase):
     def test_failed_evaluation_uses_managed_metadata_and_static_choices(self):
         self.manifest.side_effect = OSError("Nix unavailable")
         self.assertEqual(self.complete("agent", "show", "name", ""), ["local-pi"])
-        self.assertIn("envy.agents.local-pi.more_thinking", self.complete("agent", "set", "path", "envy.agents.local-pi."))
+        self.assertIn("envy.agents.local-pi.moreThinking", self.complete("agent", "set", "path", "envy.agents.local-pi."))
         self.assertEqual(self.complete("agent", "add", "endpoint", ""), ["custom"])
-        self.assertEqual(self.complete("agent", "set", "value", "f", path="envy.agents.new.more_thinking"), ["false"])
+        self.assertEqual(self.complete("agent", "set", "value", "f", path="envy.agents.new.moreThinking"), ["false"])
 
     def test_static_completion_does_not_evaluate_and_missing_machine_is_safe(self):
         self.manifest.side_effect = AssertionError("static completion should not evaluate")
@@ -109,8 +109,8 @@ class AgentCompletionTests(unittest.TestCase):
             self.assertEqual(self.complete("agent", "rm", "name", ""), [])
 
     def test_real_bash_and_zsh_protocols_complete_without_executing_set(self):
-        for shell, args in (("bash", "envy agent set envy.agents.local-pi.more_thinking t"),
-                            ("zsh", "envy config set envy.agents.local-pi.more_thinking t")):
+        for shell, args in (("bash", "envy agent set envy.agents.local-pi.moreThinking t"),
+                            ("zsh", "envy config set envy.agents.local-pi.moreThinking t")):
             environment = {"_ENVY_COMPLETE": f"complete_{shell}", "COMP_WORDS": args,
                            "COMP_CWORD": "4", "_TYPER_COMPLETE_ARGS": args}
             result = CliRunner().invoke(cli, [], prog_name="envy", env=environment)

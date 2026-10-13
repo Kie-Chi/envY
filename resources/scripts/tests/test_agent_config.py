@@ -148,8 +148,8 @@ class AgentConfigTests(unittest.TestCase):
                     self.assertIn("OMP is retired", result.output)
                     self.assertEqual(path.read_bytes(), before)
 
-    def test_pi_more_thinking_is_boolean_through_both_set_commands(self):
-        key = "envy.agents.pi.more_thinking"
+    def test_pi_moreThinking_is_boolean_through_both_set_commands(self):
+        key = "envy.agents.pi.moreThinking"
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "machine.nix"
             path.write_text("{ ... }: {\n}\n")
@@ -169,7 +169,7 @@ class AgentConfigTests(unittest.TestCase):
                             result = refine_managed(machine_values={}, write=False)
                             self.assertEqual(result["errors"], [])
 
-    def test_pi_more_thinking_rejects_non_boolean_values_before_writing(self):
+    def test_pi_moreThinking_rejects_non_boolean_values_before_writing(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "machine.nix"
             path.write_text("{ ... }: {\n}\n")
@@ -178,21 +178,63 @@ class AgentConfigTests(unittest.TestCase):
                 before = path.read_text()
                 for invalid in ("yes", "1", "", "null", '"true"', 1, None):
                     with self.subTest(value=invalid), self.assertRaises(typer.BadParameter):
-                        _set("envy.agents.pi.more_thinking", invalid)
+                        _set("envy.agents.pi.moreThinking", invalid)
                     self.assertEqual(path.read_text(), before)
 
-    def test_refine_rejects_quoted_pi_more_thinking_boolean(self):
+    def test_refine_migrates_legacy_more_thinking_to_camel_case(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "machine.nix"
+            path.write_text(
+                "{ ... }: {\n"
+                + agent._render({
+                    "envy.agents.pi.adapter": "pi",
+                    "envy.agents.pi.more_thinking": True,
+                })
+                + "\n}\n"
+            )
+            with patch("envy.agent.machine_config_file", return_value=path):
+                result = refine_managed(machine_values={}, write=True)
+                self.assertEqual(result["errors"], [])
+                self.assertIn("envy.agents.pi.more_thinking", result["removed"])
+                self.assertIn("envy.agents.pi.moreThinking", result["added"])
+                values = _read_values(path)
+                self.assertNotIn("envy.agents.pi.more_thinking", values)
+                self.assertIs(values["envy.agents.pi.moreThinking"], True)
+                self.assertNotIn("more_thinking", path.read_text())
+
+    def test_refine_rejects_conflicting_legacy_and_current_thinking_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "machine.nix"
+            path.write_text(
+                "{ ... }: {\n"
+                + agent._render({
+                    "envy.agents.pi.adapter": "pi",
+                    "envy.agents.pi.more_thinking": True,
+                    "envy.agents.pi.moreThinking": False,
+                })
+                + "\n}\n"
+            )
+            before = path.read_bytes()
+            with patch("envy.agent.machine_config_file", return_value=path):
+                result = refine_managed(machine_values={}, write=True)
+                self.assertEqual(
+                    result["errors"],
+                    ["envy.agents.pi.moreThinking", "envy.agents.pi.more_thinking"],
+                )
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_refine_rejects_quoted_pi_moreThinking_boolean(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "machine.nix"
             path.write_text("{ ... }: {\n}\n")
             with patch("envy.agent.machine_config_file", return_value=path):
                 _write_values({
                     "envy.agents.pi.adapter": "pi",
-                    "envy.agents.pi.more_thinking": "true",
+                    "envy.agents.pi.moreThinking": "true",
                 })
                 before = path.read_text()
                 result = refine_managed(machine_values={}, write=True)
-                self.assertEqual(result["errors"], ["envy.agents.pi.more_thinking"])
+                self.assertEqual(result["errors"], ["envy.agents.pi.moreThinking"])
                 self.assertEqual(path.read_text(), before)
 
     def test_config_api_edit_is_validated_and_survives_refine(self):

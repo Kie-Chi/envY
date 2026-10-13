@@ -157,7 +157,7 @@ regenerate its model file; manually editing a generated file is not persistent.
 Pi can opt in to additional thinking levels for endpoints that support them:
 
 ```nix
-envy.agents.pi.more_thinking = true;
+envy.agents.pi.moreThinking = true;
 ```
 
 This machine option defaults to `false`. When enabled, envY builds the locked
@@ -169,8 +169,8 @@ The option makes these levels available without changing the startup level.
 It does not add these capabilities to a model or gateway that lacks them.
 
 `envy config show --json` exposes the boolean for Pi, including its default.
-Use `envy config set envy.agents.pi.more_thinking true --json --yes` (or
-`envy agent set envy.agents.pi.more_thinking true --json --yes`), then
+Use `envy config set envy.agents.pi.moreThinking true --json --yes` (or
+`envy agent set envy.agents.pi.moreThinking true --json --yes`), then
 `envy apply` and restart Pi. Disabling it restores the upstream Pi package
 and omits the extra model mappings. Keep any saved startup thinking level
 within the upstream version's supported levels when disabling the patch.
@@ -205,6 +205,13 @@ is `oh-my-pi`, then run `envy apply` to update the installed environment.
 Shared endpoint and credential definitions are preserved because other agents
 may use them. The migration also preserves application-owned auth, history,
 and other state in `~/.omp`; it does not delete that directory.
+
+Legacy configuration rules are kept in `resources/scripts/envy/legacy.py`.
+Runtime modules expose only the current schema; `envy config refine` is the
+single migration boundary. For example, it rewrites the old
+`envy.agents.<name>.more_thinking` assignment to
+`envy.agents.<name>.moreThinking`, and reports a conflict if both spellings
+have different values.
 
 ## Shared agent configuration
 

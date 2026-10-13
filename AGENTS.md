@@ -36,6 +36,7 @@ Cross-platform Nix configuration for Darwin (aarch64-darwin) and Linux (x86_64-l
 | `install.sh` | Repository-independent bootstrap: clone/reuse a checkout, then hand off to setup with an interactive terminal. |
 | `setup.py` | Python rich + prompt_toolkit sequential CLI for initial setup and config editing. Reuses `envy.config` schema/read-write helpers, manages machine software exclusions, shows a change summary, then saves, encrypts, and offers one scoped Git commit for the selected machine and changed sops files. |
 | `resources/scripts/envy/config.py` | Machine managed-block and secret validation/read-write engine used by setup and `envy config`. |
+| `resources/scripts/envy/legacy.py` | Central registry and helpers for legacy config paths, field aliases, and retired agent/software migrations consumed by `envy config refine`. |
 | `resources/scripts/envy/evaluation.py` | Shared reader for the evaluated machine manifest, with process-local and Git-fingerprinted persistent caches used by config views, setup, software policy, and doctor. |
 | `resources/scripts/envy/{process,secure_io,transaction}.py` | Shared command boundary, atomic/private file I/O, and multi-file rollback primitives. |
 | `resources/scripts/envy/jsonio.py` | Stable JSON envelope used by non-interactive frontends and future TUI clients. |

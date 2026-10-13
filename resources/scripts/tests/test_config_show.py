@@ -136,13 +136,13 @@ class ConfigShowTests(unittest.TestCase):
         self.assertEqual(payload["agents"]["codex"]["credentialSet"], True)
         self.assertNotIn('"secret"', output.getvalue())
 
-    def test_pi_more_thinking_exposes_boolean_choices_only_for_pi(self):
+    def test_pi_moreThinking_exposes_boolean_choices_only_for_pi(self):
         agents = {
-            "pi": {"adapter": "pi", "more_thinking": True},
+            "pi": {"adapter": "pi", "moreThinking": True},
             "custom-pi": {"adapter": "pi"},
-            "omp": {"adapter": "oh-my-pi", "more_thinking": False},
+            "omp": {"adapter": "oh-my-pi", "moreThinking": False},
             "renamed": {"adapter": "oh-my-pi"},
-            "codex": {"adapter": "codex", "more_thinking": False},
+            "codex": {"adapter": "codex", "moreThinking": False},
         }
         values = {
             f"envy.agents.{name}.{field}": value
@@ -164,13 +164,13 @@ class ConfigShowTests(unittest.TestCase):
                 payload = json.loads(output.getvalue())
                 fields = {entry["path"]: entry for entry in payload["fields"]}
                 for name in ("pi", "custom-pi"):
-                    key = f"envy.agents.{name}.more_thinking"
+                    key = f"envy.agents.{name}.moreThinking"
                     expected = name == "pi"
                     self.assertEqual(fields[key]["choices"], ["true", "false"])
                     self.assertEqual(payload["values"][key], str(expected).lower())
-                    self.assertIs(payload["agents"][name]["more_thinking"], expected)
+                    self.assertIs(payload["agents"][name]["moreThinking"], expected)
                 for name in ("omp", "codex"):
-                    key = f"envy.agents.{name}.more_thinking"
+                    key = f"envy.agents.{name}.moreThinking"
                     self.assertNotIn(key, fields)
                     self.assertNotIn(key, payload["values"])
                 for name in ("omp", "renamed"):

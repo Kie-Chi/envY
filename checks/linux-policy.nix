@@ -18,6 +18,9 @@ let
         academicResearchSkillsCodex = inputs.academic-research-skills-codex;
         pptMaster = inputs.ppt-master;
         gptImage2PptSkills = inputs.gpt-image2-ppt-skills;
+        emilSkills = inputs.emil-skills;
+        vercelAgentSkills = inputs.vercel-agent-skills;
+        piSource = inputs.pi.outPath;
         piPackage = inputs.pi.packages.${system}.default;
         ohMyPiPackage = inputs.oh-my-pi.packages.${system}.default;
         softwareSourceBindings = import ../modules/software/nix-sources.nix;

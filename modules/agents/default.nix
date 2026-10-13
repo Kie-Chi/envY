@@ -1,4 +1,4 @@
-{ academicResearchSkills, academicResearchSkillsCodex, config, gptImage2PptSkills, lib, machinePlatform, ohMyPiPackage, piPackage, pptMaster, ... }:
+{ academicResearchSkills, academicResearchSkillsCodex, config, emilSkills, gptImage2PptSkills, lib, machinePlatform, ohMyPiPackage, piPackage, pptMaster, vercelAgentSkills, ... }:
 
 {
   imports = [
@@ -7,6 +7,7 @@
     ./codex.nix
     ./generic.nix
     ./pi.nix
+    ./pi-extensions.nix
     ./skills.nix
     ./tools.nix
   ] ++ lib.optionals (machinePlatform == "linux") [ ./linux.nix ];
@@ -23,7 +24,7 @@
 
     skills = {
       catalog = import ./skills/catalog.nix {
-        inherit academicResearchSkills academicResearchSkillsCodex gptImage2PptSkills pptMaster;
+        inherit academicResearchSkills academicResearchSkillsCodex emilSkills gptImage2PptSkills pptMaster vercelAgentSkills;
       };
       active = [
         "academic-research-suite"
@@ -33,6 +34,13 @@
         "deep-research"
         "ppt-master"
         "gpt-image2-ppt-skills"
+        "emil-design-eng"
+        "animate"
+        "pick-ui-library"
+        "animation-performance"
+        "break-ui"
+        "vercel-react-best-practices"
+        "vercel-composition-patterns"
       ];
     };
   };

@@ -14,6 +14,8 @@ modules/agents/
 ├── linux/rtk.nix        # Linux-only RTK package
 ├── claude.nix           # Claude package, wrapper defaults, and ccli alias
 ├── generic.nix           # OpenAI-compatible and StepGo adapters
+├── pi.nix              # Pi/OMP wrappers and provider metadata
+├── pi-extensions.nix   # selected extensions from the locked upstream Pi source
 ├── skills.nix           # skill catalog/selection Home Manager module
 └── skills/
     ├── catalog.nix      # skill registry and target agents
@@ -29,7 +31,7 @@ modules/agents/
 
 There are two distinct selection stages:
 
-1. `agents.skills.active` controls which catalog entries are linked into `~/.codex/skills` and/or `~/.claude/skills` during Home Manager activation.
+1. `agents.skills.active` controls which catalog entries are linked into the selected agents' skill directories during Home Manager activation: `~/.codex/skills`, `~/.claude/skills`, `~/.stepgo/skills`, `~/.pi/agent/skills`, and `~/.omp/agent/skills`. Each catalog entry declares its supported targets.
 2. For a discovered skill, the agent sees its `name` and `description` metadata first. It reads the `SKILL.md` body only when the task triggers that skill, then reads referenced resources as needed.
 
 This keeps agent capabilities declarative while preserving progressive, task-driven context loading. Changing the physically discoverable set requires a rebuild; ordinary task-level loading does not.
@@ -76,6 +78,13 @@ The image skill expects `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and usually
 `GPT_IMAGE_MODEL_NAME=gpt-image-2` at runtime. The Xikai endpoint is wired into
 the agent wrappers, but whether it exposes the image generation API must be
 verified by an actual image request before relying on that feature.
+
+The shared selection also includes seven frontend skills from
+`emilkowalski/skills` and `vercel-labs/agent-skills`. Their complete directories
+are pinned through the `emil-skills` and `vercel-agent-skills` non-flake inputs
+and linked for Codex, Claude Code, Pi, and OMP. See
+[the skill and Pi extension selection guide](agent-skills.md) for the research,
+selected capabilities, commands, and update procedure.
 
 ## Provider boundary
 
@@ -181,6 +190,14 @@ user's `~/.omp` directory. The `pi-extensions` repository was reviewed as a
 candidate, but command-auditing extensions such as `toolwatch` are intentionally
 not installed declaratively until their policy is selected explicitly.
 
+Upstream Pi additionally loads the official questionnaire, todo, tools, and
+handoff extensions from the same locked source as its executable.
+`pi-extensions.nix` owns four `envy-*.ts` links under
+`~/.pi/agent/extensions/`; Pi keeps ownership of settings, installed package
+state, and session data. These extensions target Pi's API and are not linked
+into OMP. `/handoff <goal>` makes a request to the current model to generate a
+draft for a new session; the user reviews and submits it.
+
 ## Shared agent configuration
 
 The adapter modules use Home Manager's internal `config.agents.*` options for
@@ -214,7 +231,8 @@ through the repository's `darwin.nix` composition root and contributes only
 Darwin Homebrew distribution policy. `flake.nix` does not import either feature
 implementation directly.
 
-The current shared configuration is intentionally explicit:
+Skill selection is explicit in `modules/agents/default.nix`; for example, the
+research subset is:
 
 ```nix
 agents = {

@@ -96,6 +96,22 @@
         "type": "github"
       }
     },
+    "emil-skills": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1791727112,
+        "narHash": "sha256-4/xWVt4HqB1nwqdLMFC3No07vkEWqRcQDtqNY8FHwh8=",
+        "owner": "emilkowalski",
+        "repo": "skills",
+        "rev": "2d228630ba1446365f614a108cb8252f1feda202",
+        "type": "github"
+      },
+      "original": {
+        "owner": "emilkowalski",
+        "repo": "skills",
+        "type": "github"
+      }
+    },
     "flake-parts": {
       "inputs": {
         "nixpkgs-lib": [
@@ -370,6 +386,7 @@
         "academic-research-skills": "academic-research-skills",
         "academic-research-skills-codex": "academic-research-skills-codex",
         "darwin": "darwin",
+        "emil-skills": "emil-skills",
         "gpt-image2-ppt-skills": "gpt-image2-ppt-skills",
         "home-manager": "home-manager",
         "nixgl": "nixgl",
@@ -377,7 +394,8 @@
         "oh-my-pi": "oh-my-pi",
         "pi": "pi",
         "ppt-master": "ppt-master",
-        "sops-nix": "sops-nix"
+        "sops-nix": "sops-nix",
+        "vercel-agent-skills": "vercel-agent-skills"
       }
     },
     "rust-overlay": {
@@ -501,6 +519,22 @@
       "original": {
         "owner": "numtide",
         "repo": "treefmt-nix",
+        "type": "github"
+      }
+    },
+    "vercel-agent-skills": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1787924167,
+        "narHash": "sha256-tTSJf53OQltUfxTH4hdqcnw5ywCjCZP8/JqQ593cyB8=",
+        "owner": "vercel-labs",
+        "repo": "agent-skills",
+        "rev": "063bee94c3f4df8453406c830b0a7df0f2860278",
+        "type": "github"
+      },
+      "original": {
+        "owner": "vercel-labs",
+        "repo": "agent-skills",
         "type": "github"
       }
     }

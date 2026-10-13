@@ -29,6 +29,14 @@
       url = "tarball+https://api.github.com/repos/JuneYaooo/gpt-image2-ppt-skills/tarball/main";
       flake = false;
     };
+    emil-skills = {
+      url = "github:emilkowalski/skills";
+      flake = false;
+    };
+    vercel-agent-skills = {
+      url = "github:vercel-labs/agent-skills";
+      flake = false;
+    };
     pi = {
       # Use the GitHub fetcher so flake.lock records an immutable commit rev.
       # The API tarball endpoint for a branch can be re-packed in place and
@@ -96,6 +104,9 @@
         academicResearchSkillsCodex = inputs.academic-research-skills-codex;
         pptMaster = inputs.ppt-master;
         gptImage2PptSkills = inputs.gpt-image2-ppt-skills;
+        emilSkills = inputs.emil-skills;
+        vercelAgentSkills = inputs.vercel-agent-skills;
+        piSource = inputs.pi.outPath;
         piPackage = inputs.pi.packages.${system}.default;
         ohMyPiPackage = inputs.oh-my-pi.packages.${system}.default;
       };

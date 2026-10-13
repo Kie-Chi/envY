@@ -1,4 +1,4 @@
-{ academicResearchSkills, academicResearchSkillsCodex, gptImage2PptSkills, pptMaster }:
+{ academicResearchSkills, academicResearchSkillsCodex, emilSkills, gptImage2PptSkills, pptMaster, vercelAgentSkills }:
 
 {
   # Codex uses the upstream native adapter as one router skill. The internal
@@ -36,6 +36,46 @@
 
   gpt-image2-ppt-skills = {
     source = gptImage2PptSkills;
+    targets = [ "codex" "claude" "claude-code" "pi" "omp" ];
+  };
+
+  # Keep the complete upstream directories: animate and break-ui load their
+  # companion recipe/catalog documents only when the task needs them.
+  emil-design-eng = {
+    source = emilSkills + "/skills/emil-design-eng";
+    targets = [ "codex" "claude" "claude-code" "pi" "omp" ];
+  };
+
+  animate = {
+    source = emilSkills + "/skills/animate";
+    targets = [ "codex" "claude" "claude-code" "pi" "omp" ];
+  };
+
+  # animate delegates component selection here. Preserve upstream's explicit
+  # invocation metadata while making the companion workflow available.
+  pick-ui-library = {
+    source = emilSkills + "/skills/pick-ui-library";
+    targets = [ "codex" "claude" "claude-code" "pi" "omp" ];
+  };
+
+  animation-performance = {
+    source = emilSkills + "/skills/animation-performance";
+    targets = [ "codex" "claude" "claude-code" "pi" "omp" ];
+  };
+
+  break-ui = {
+    source = emilSkills + "/skills/break-ui";
+    targets = [ "codex" "claude" "claude-code" "pi" "omp" ];
+  };
+
+  # Registry IDs match SKILL.md names rather than upstream directory names.
+  vercel-react-best-practices = {
+    source = vercelAgentSkills + "/skills/react-best-practices";
+    targets = [ "codex" "claude" "claude-code" "pi" "omp" ];
+  };
+
+  vercel-composition-patterns = {
+    source = vercelAgentSkills + "/skills/composition-patterns";
     targets = [ "codex" "claude" "claude-code" "pi" "omp" ];
   };
 }

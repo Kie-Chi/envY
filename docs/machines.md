@@ -351,7 +351,7 @@ Push impact 分类：
 
 `--machine-only` 可以包含多个平台的多个 host；`--self` 只允许当前平台与当前 machine 文件。守卫同时检查 worktree 与 outgoing commits，并在 `git add` 前拒绝越界路径。
 
-`envy push` 会先 fetch 目标 remotes。任一远端领先时，在创建 commit 前停止。`envy sync` 只接受线性兼容历史并 fast-forward，不自动创建 merge commit。
+`envy push` 会先 fetch 目标 remotes。任一远端领先时，在创建 commit 前停止。`envy sync` 会选择彼此线性兼容的最新远端；如果本地与远端已经分叉，会先尝试 `git merge --no-edit`。自动 merge 发生冲突时会保留 Git 的冲突现场并停止，提示使用 `git status`、`git add <path>`、`git commit` 完成处理，或使用 `git merge --abort` 放弃本次 merge；远端之间互相分叉时仍要求手动选择历史。
 
 Push 在 staging 前验证 worktree、index 与 `HEAD` 都保留加密的
 `secrets/secrets.yaml`，并逐个检查所有 outgoing commits 中对应 Git object。任何

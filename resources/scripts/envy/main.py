@@ -62,7 +62,7 @@ def complete_journal_operations(ctx, incomplete):
     operations = [
         ("apply", "Apply the configuration"),
         ("bootstrap", "Bootstrap the configuration"),
-        ("sync", "Fast-forward and apply"),
+        ("sync", "Synchronize, merge if needed, and apply"),
         ("push", "Commit and push changes"),
         ("update-inputs", "Update flake inputs"),
         ("update-brew", "Update Homebrew metadata"),
@@ -152,13 +152,13 @@ def cmd_sync(
         autocompletion=complete_git_remotes,
     ),
     branch: str = typer.Option(
-        "master", "--branch", "-b", help="Shared cross-platform branch to fast-forward",
+        "master", "--branch", "-b", help="Shared cross-platform branch to synchronize",
         autocompletion=complete_git_branches,
     ),
     no_apply: bool = typer.Option(False, "--no-apply", help="Synchronize Git without applying"),
     build_only: bool = typer.Option(False, "--build-only", help="Build the selected machine without applying"),
 ):
-    """Fast-forward the shared branch and apply the selected machine."""
+    """Synchronize the shared branch, merge compatible remote history, and apply."""
     git_workflow.sync(
         remote=remote, branch=branch, no_apply=no_apply, build_only=build_only,
     )

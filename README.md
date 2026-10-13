@@ -88,7 +88,7 @@ envy host select <machine-id>
 |---|---|
 | `envy status` | 用一个一致快照展示当前 machine、Git、generation、software、Doctor 摘要与推荐下一步；`--json` 供 TUI 使用 |
 | `envy apply` | Refine 并应用当前平台的 machine target |
-| `envy sync` | 从远端快进共享 `master`，成功后应用当前机器 |
+| `envy sync` | 同步共享 `master`；本地与远端分叉时先尝试自动 merge，成功后应用当前机器 |
 | `envy sync --no-apply` | 仅同步，不应用 |
 | `envy sync --build-only` | 同步后只构建当前平台 target |
 | `envy push "<message>"` | 分析 worktree 与 outgoing commits，确认影响范围后提交并 push |

@@ -133,8 +133,8 @@ Hybrid approach (in `setup.py`):
 | `envy history` / `envy history diff <a> <b>` | Inspect generations or compare two generation closures |
 | `envy tui` | Launch the Rust/Ratatui frontend; it owns presentation only and calls envY through JSON |
 | `envy update` / `envy update inputs [name]` | Update inputs transactionally and validate every machine before retaining `flake.lock` |
-| `envy sync --no-apply` | Fast-forward the shared `master` branch without applying |
-| `envy sync --build-only` | Fast-forward and build only the selected machine |
+| `envy sync --no-apply` | Synchronize the shared `master` branch, auto-merging local divergence when possible, without applying |
+| `envy sync --build-only` | Synchronize, auto-merge compatible local divergence, and build only the selected machine |
 | `envy push` | Classify worktree plus outgoing commits, confirm shared impact, and push only after remote-ahead checks |
 | `envy push --machine-only` / `--self` | Restrict a push to machine files or to the selected machine file, respectively |
 | `envy doctor` / `envy dr` | Check platform config, app install/running/state/login hints, and Darwin TCC where applicable |

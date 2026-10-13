@@ -226,8 +226,15 @@ def git_is_ancestor(older: str, newer: str) -> bool:
 
 
 def select_sync_target(remote_refs: list[str]) -> str:
-    target = "HEAD"
-    for remote_ref in remote_refs:
+    """Select the newest compatible remote ref without comparing to local HEAD.
+
+    Local divergence is handled separately by ``sync`` so it can attempt a
+    merge and leave a useful conflict recovery path. Divergence between two
+    remotes still stops automatically: there is no safe way to choose which
+    remote history should win.
+    """
+    target = remote_refs[0]
+    for remote_ref in remote_refs[1:]:
         if git_is_ancestor(remote_ref, target):
             continue
         if git_is_ancestor(target, remote_ref):
@@ -239,6 +246,35 @@ def select_sync_target(remote_refs: list[str]) -> str:
         )
         raise typer.Exit(code=1)
     return target
+
+
+def merge_sync_target(target: str) -> None:
+    """Fast-forward or merge one compatible remote into the local branch."""
+    if git_is_ancestor(target, "HEAD"):
+        log.info("git", "local branch already contains remote history", branch=target)
+        return
+    if git_is_ancestor("HEAD", target):
+        log.step("git", "fast-forwarding shared branch", branch=target)
+        run_checked_git(["merge", "--ff-only", target], "fast-forward")
+        return
+
+    log.step("git", "merging remote history", branch=target)
+    result = run_process(
+        ["git", "merge", "--no-edit", target],
+        cwd=ENVY_ROOT,
+        check=False,
+    )
+    if result.returncode == 0:
+        log.ok("git", "remote history merged", branch=target)
+        return
+
+    log.error("git", "automatic merge failed; manual conflict resolution is required", branch=target)
+    log.hint("Inspect conflicts: git status")
+    log.hint("Resolve each conflict, then stage files: git add <path>")
+    log.hint("Finish the merge: git commit")
+    log.hint("Or discard the attempted merge: git merge --abort")
+    log.hint("After resolving, validate the repository: envy check --all")
+    raise typer.Exit(code=result.returncode or 1)
 
 
 @record_operation(
@@ -283,11 +319,7 @@ def sync(
         raise typer.Exit(code=1)
 
     target = select_sync_target(remote_refs)
-    if target == "HEAD":
-        log.info("git", "local branch already contains every compatible remote")
-    else:
-        log.step("git", "fast-forwarding shared branch", branch=target)
-        run_checked_git(["merge", "--ff-only", target], "fast-forward")
+    merge_sync_target(target)
     if no_apply:
         log.ok("sync", "repository synchronized; apply skipped")
         return

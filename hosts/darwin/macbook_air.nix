@@ -82,7 +82,7 @@
   envy.agents.cc.aliases = [ "ccli" ];
   envy.agents.cc.credential = "hbapi";
   envy.agents.cc.endpoint = "sub2api-anthropic";
-  envy.agents.cc.model = "opus-5";
+  envy.agents.cc.model = "claude-fable-5-1";
   envy.agents.codex.adapter = "codex";
   envy.agents.codex.credential = "xikai";
   envy.agents.codex.endpoint = "xikai-openai";

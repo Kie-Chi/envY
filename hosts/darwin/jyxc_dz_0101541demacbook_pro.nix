@@ -111,7 +111,7 @@
   envy.agents.pi.credential = "mp";
   envy.agents.pi.endpoint = "stepfun-openai";
   envy.agents.pi.model = "gpt-6.1-sol-coding";
-  envy.agents.pi.more_thinking = true;
+  envy.agents.pi.moreThinking = true;
   # END ENVY MANAGED AGENTS
 
 }

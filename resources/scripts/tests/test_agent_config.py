@@ -13,6 +13,66 @@ from envy.agent import _read_values, _render, _set, _write_values, refine_manage
 
 
 class AgentConfigTests(unittest.TestCase):
+    def test_multiline_settings_survive_shared_reader_and_rewrite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "machine.nix"
+            path.write_text(
+                '{ ... }: {\n' + agent.MANAGED_START + '\n'
+                '  envy.agents.pi.adapter = "pi";\n'
+                '  envy.agents.pi.additionalSettings = {\n'
+                '    # braces in comments must not affect parsing: }\n'
+                '    compaction = { keepRecentTokens = 27200; reserveTokens = 27200; };\n'
+                '    defaultTools = [ "+codemode" "second" ];\n'
+                '    label = "a;{b}";\n'
+                '    enabled = true;\n'
+                '  };\n' + agent.MANAGED_END + '\n}\n'
+            )
+            before = path.read_bytes()
+            expected = {
+                "compaction": {"keepRecentTokens": 27200, "reserveTokens": 27200},
+                "defaultTools": ["+codemode", "second"],
+                "label": "a;{b}", "enabled": True,
+            }
+            with patch.object(agent, "machine_config_file", return_value=path):
+                for write in (False, True):
+                    self.assertEqual(refine_managed(machine_values={}, write=write)["errors"], [])
+                    self.assertEqual(path.read_bytes(), before)
+                self.assertEqual(_read_values(path)["envy.agents.pi.additionalSettings"], expected)
+                _set("envy.agents.pi.model", "test")
+                self.assertEqual(_read_values(path)["envy.agents.pi.additionalSettings"], expected)
+
+    def test_parse_errors_visible_without_strict_mode_and_never_print_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "machine.nix"
+            path.write_text(
+                '{ ... }: {\n' + agent.MANAGED_START + '\n'
+                '  envy.agents.pi.additionalSettings = { x = unsupported-secret-marker; };\n'
+                + agent.MANAGED_END + '\n}\n'
+            )
+            before = path.read_bytes()
+            for write in (False, True):
+                with patch.object(config, "machine_config_file", return_value=path), patch.object(
+                    agent, "log"
+                ) as logger:
+                    report = config.refine_agents(write=write, strict=False)
+                    self.assertFalse(report.ok)
+                    diagnostic = str(logger.error.call_args_list)
+                    self.assertIn("envy.agents.pi.additionalSettings", diagnostic)
+                    self.assertIn("line", diagnostic)
+                    self.assertNotIn("unsupported-secret-marker", diagnostic)
+                    self.assertEqual(path.read_bytes(), before)
+
+    def test_config_entries_share_strict_validation(self):
+        for command, write in ((config.cmd_check, False), (config.cmd_doctor, False), (config.cmd_refine, True)):
+            with patch.object(config, "refine_all", return_value=config.RefineReport()) as refine:
+                if write:
+                    command(prune=False)
+                else:
+                    command()
+                self.assertEqual(refine.call_args.kwargs["write"], write)
+                self.assertTrue(refine.call_args.kwargs["strict"])
+                self.assertTrue(refine.call_args.kwargs["include_secrets"])
+
     def test_list_settings_use_valid_nix_lists_through_both_commands(self):
         from envy.main import cli
 

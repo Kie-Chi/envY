@@ -40,6 +40,7 @@ from envy.legacy import (
     obsolete_agent_paths,
 )
 from envy.mutation import offer_mutation_commit
+from envy.nix_literals import LiteralError, LiteralReader
 from envy.secure_io import atomic_write_text
 from envy.transaction import FileTransaction
 from envy.utils import SECRETS_FILE, current_machine_id
@@ -49,9 +50,6 @@ MANAGED_START = "  # BEGIN ENVY MANAGED AGENTS"
 MANAGED_END = "  # END ENVY MANAGED AGENTS"
 _NAME = r"[A-Za-z0-9][A-Za-z0-9_-]*"
 _PATH_RE = re.compile(r"^envy\.(agents|llm\.(?:endpoints|credentials))\." + _NAME + r"(?:\.[A-Za-z0-9_-]+)?$")
-_ASSIGNMENT_RE = re.compile(
-    r"^\s*(envy\.(?:agents|llm\.(?:endpoints|credentials))\.[A-Za-z0-9_.-]+)\s*=\s*(.*?)\s*;\s*$"
-)
 _SAFE_SECRET_PATH = re.compile(r"^[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*$")
 _KNOWN_ENDPOINTS = {"stepfun-openai", "stepfun-anthropic", "deepseek-openai"}
 _KNOWN_CREDENTIALS = {"stepfun", "deepseek"}
@@ -60,38 +58,6 @@ API_CHOICES = ("openai-completions", "openai-responses")
 
 def _block_pattern() -> re.Pattern[str]:
     return re.compile(rf"(?ms)^{re.escape(MANAGED_START)}$.*?^{re.escape(MANAGED_END)}$")
-
-
-def _parse_value(raw: str) -> Any:
-    if raw.startswith("builtins.fromJSON "):
-        encoded = raw[len("builtins.fromJSON "):].replace(r"\${", "${")
-        try:
-            return json.loads(json.loads(encoded))
-        except json.JSONDecodeError:
-            return raw
-    if raw in {"true", "false"}:
-        return raw == "true"
-    if raw == "null":
-        return None
-    if re.fullmatch(r"-?\d+", raw):
-        try:
-            return int(raw)
-        except ValueError:
-            pass
-    if raw.startswith('"') and raw.endswith('"'):
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            return raw[1:-1]
-    if raw.startswith("[") and raw.endswith("]"):
-        values = []
-        for match in re.finditer(r'"(?:\\.|[^"\\])*"', raw):
-            try:
-                values.append(json.loads(match.group(0)))
-            except json.JSONDecodeError:
-                continue
-        return values
-    return raw
 
 
 def _read_values(path: Path | None = None) -> dict[str, Any]:
@@ -116,14 +82,37 @@ def read_managed_values(path: Path | None = None) -> tuple[dict[str, Any], bool,
         return {}, True, ["agent managed block markers are malformed"]
     values: dict[str, Any] = {}
     errors: list[str] = []
-    for line in match.group(0).splitlines():
-        assignment = _ASSIGNMENT_RE.match(line)
-        if assignment:
-            values[assignment.group(1)] = _parse_value(assignment.group(2))
-            continue
-        stripped = line.strip()
-        if stripped.startswith("envy."):
-            errors.append("agent managed block contains a malformed assignment")
+    block = match.group(0)
+    reader = LiteralReader(block)
+    base_line = text.count("\n", 0, match.start()) + 1
+    while True:
+        # peek skips comments but restores position. Keep that position to
+        # locate failures without including any assignment values in output.
+        start = reader.position
+        field = "agent managed block"
+        try:
+            if not reader.peek():
+                break
+            parts = [reader.take()]
+            while reader.peek() == ".":
+                reader.take()
+                parts.append(reader.take())
+            field = ".".join(parts)
+            if not _PATH_RE.fullmatch(field):
+                raise LiteralError("invalid managed field path")
+            reader.expect("=")
+            value = reader.value()
+            reader.expect(";")
+            if field in values:
+                raise LiteralError("duplicate managed assignment")
+            values[field] = value
+        except LiteralError as exc:
+            line = base_line + block.count("\n", 0, reader.position)
+            errors.append(f"{field}: {exc} (line {line})")
+            # Do not attempt recovery inside a nested attrset: doing so could
+            # interpret its members as independent machine assignments.
+            break
+    log.debug("agents", "managed block parsed", path=str(path), fields=len(values), errors=len(errors))
     return values, True, errors
 
 
@@ -235,6 +224,9 @@ def refine_managed(
     values, present, errors = read_managed_values(path)
     result: dict[str, Any] = {"added": [], "removed": [], "warnings": [], "errors": list(errors), "changed": False}
     if errors:
+        for error in errors:
+            log.error("agents", "cannot parse managed agent configuration", path=str(path or machine_config_file()), reason=error)
+        log.hint("Use literal Nix settings or builtins.fromJSON in the managed agent block; no values were changed.")
         return result
     if not present:
         migrated = _migration_values(machine_values)

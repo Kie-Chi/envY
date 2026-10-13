@@ -3,6 +3,7 @@ keys:
   - &macbook_air age100a8gf8lxg20cghenkaw9hjr48a364ngvpvuh962pwv55yzmkucslusvh6
   - &recovery age1kjr29kl3xkh658x9n436ahvtfj322ufjl9s60tw2csyrutqr9v7sft7cer
   - &jyxc_dz_0101541demacbook_pro age1ylzyf40zckj7ftxr6pas4kzev8k4g3mxre6m6g3xh9285ajw7f4q8suefx
+  - &linux_desktop age1u7qkdxe3ly7j7n6g3n9gxkcvrund95fr906j2jxxa52wf2sf5drsl6895c
 
 creation_rules:
   - path_regex: secrets/secrets\.yaml$
@@ -11,3 +12,4 @@ creation_rules:
           - *macbook_air
           - *recovery
           - *jyxc_dz_0101541demacbook_pro
+          - *linux_desktop

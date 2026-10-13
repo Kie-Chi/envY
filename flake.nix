@@ -410,6 +410,7 @@
           (builtins.attrValues homeConfigurations);
       mkPlatformOptionCheck = system:
         assert import ./checks/legacy-linux-compatibility.nix { inherit inputs; };
+        assert import ./checks/agent-skills.nix { inherit inputs; };
         assert platformOptionBoundaries;
         nixpkgs.legacyPackages.${system}.runCommand "envy-platform-option-boundaries" { } ''
           touch $out

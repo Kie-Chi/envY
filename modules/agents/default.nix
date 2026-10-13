@@ -95,7 +95,9 @@
   # Pi is the upstream extensible harness.
   envy.agents.pi = {
     adapter = lib.mkDefault "pi";
-    endpoint = lib.mkDefault "xikai-openai";
+    # xikai is a Darwin machine-owned endpoint; the portable default must use
+    # the shared StepFun endpoint so Linux targets remain configured.
+    endpoint = lib.mkDefault "stepfun-openai";
     credential = lib.mkDefault "stepfun";
     model = lib.mkDefault "gpt-6.1-sol";
   };

@@ -35,6 +35,7 @@ let
   homePolicy = config.home-manager.users.${config.envy.user.name}.envy.software;
   homeLlm = config.home-manager.users.${config.envy.user.name}.envy.llm;
   homeAgents = config.home-manager.users.${config.envy.user.name}.envy.agents;
+  homeSkills = config.home-manager.users.${config.envy.user.name}.agents.skills.effective;
   systemHabits = config.envy.machine.habits;
   homeHabits = config.home-manager.users.${config.envy.user.name}.envy.machine.habits;
 in
@@ -97,7 +98,9 @@ in
         }) homeLlm.credentials;
         endpoints = homeLlm.endpoints;
       };
-      agents = lib.mapAttrs (_: agent: agent // {
+      agents = lib.mapAttrs (name: agent: agent // {
+        configuredSkills = agent.skills;
+        skills = homeSkills.${name};
         credentialConfigured = agent.credential != null
           && builtins.hasAttr agent.credential homeLlm.credentials;
         endpointConfigured = agent.endpoint != null

@@ -54,7 +54,7 @@ in
         skills = mkOption {
           type = types.listOf types.str;
           default = [ ];
-          description = "Skill catalog entries made available to this agent.";
+          description = "Additional skill catalog entries beyond agents.skills.active. Instances of an adapter share their discovery directory.";
         };
       };
     }));

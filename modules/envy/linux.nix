@@ -63,7 +63,9 @@ in
         }) config.envy.llm.credentials;
         endpoints = config.envy.llm.endpoints;
       };
-      agents = lib.mapAttrs (_: agent: agent // {
+      agents = lib.mapAttrs (name: agent: agent // {
+        configuredSkills = agent.skills;
+        skills = config.agents.skills.effective.${name};
         credentialConfigured = agent.credential != null
           && builtins.hasAttr agent.credential config.envy.llm.credentials;
         endpointConfigured = agent.endpoint != null

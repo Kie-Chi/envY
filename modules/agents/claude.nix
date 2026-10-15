@@ -5,6 +5,8 @@ let
   legacyConfig = config.agents.claude;
   packageEnabled = !(builtins.elem "claude" config.envy.software.nix.packages.exclude);
   promptFile = ".config/ccli/prompt";
+  prompts = import ./prompts.nix { inherit lib pkgs; };
+  systemPrompt = prompts.forAdapter "claude-code";
   endpoint = if agentConfig.endpoint == null
     || !(builtins.hasAttr agentConfig.endpoint config.envy.llm.endpoints) then null
     else config.envy.llm.endpoints.${agentConfig.endpoint};
@@ -19,10 +21,12 @@ let
   claudeWithDefaults = pkgs.writeShellApplication {
     name = "claude";
     text = ''
-      system_prompt="''${CCLI_SYSTEM_PROMPT:-}"
+      system_prompt=${lib.escapeShellArg systemPrompt}
       prompt_file="$HOME/${promptFile}"
 
-      if [[ -z "$system_prompt" && -f "$prompt_file" ]]; then
+      if [[ -n "''${CCLI_SYSTEM_PROMPT:-}" ]]; then
+        system_prompt="$CCLI_SYSTEM_PROMPT"
+      elif [[ -f "$prompt_file" ]]; then
         system_prompt=$(<"$prompt_file")
       fi
 
@@ -91,7 +95,7 @@ in
       claude = "local:modules/agents/claude.nix#claudeWithDefaults";
     } // lib.listToAttrs (map (alias: lib.nameValuePair alias "local:modules/agents/claude.nix#${alias}") aliases);
 
-    home.file.${promptFile}.source = ../../files/ccli/prompt;
+    home.file.${promptFile}.text = systemPrompt;
     })
   ];
 }

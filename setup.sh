@@ -13,6 +13,21 @@ export ENVY_ROOT="$BASE_DIR"
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
+        -h|--help)
+            cat <<'EOF'
+Usage: setup.sh [--mirror china|upstream] [--reset-secrets]
+
+Options:
+  --mirror MODE    Select bootstrap mirrors
+  --reset-secrets  Start setup with empty secrets and replace secrets.yaml
+  -h, --help       Show this help
+EOF
+            exit 0
+            ;;
+        --reset-secrets)
+            export ENVY_SETUP_RESET_SECRETS=1
+            shift
+            ;;
         --mirror)
             [ "$#" -ge 2 ] || { echo "[ERROR] --mirror requires a value" >&2; exit 2; }
             mirror="$2"
@@ -54,6 +69,10 @@ load_nix_path() {
 
 # Bootstrap-time mirrors make the first nix develop usable before a machine
 # module has been evaluated and applied.
+# The trust helper below must be the source of bootstrap substituters. Passing
+# them through NIX_CONFIG makes them client overrides, which an untrusted Nix
+# daemon is required to reject even while its config is being reloaded.
+export ENVY_SETUP_BOOTSTRAP=1
 # shellcheck source=resources/scripts/mirror-env.sh
 . "$MIRROR_ENV_SCRIPT"
 
@@ -89,7 +108,7 @@ if [ "$(uname -s)" = "Linux" ] || [ "$(uname -s)" = "Darwin" ]; then
         echo "[ERROR] Nix trust helper is missing: $NIX_TRUST_SCRIPT" >&2
         exit 1
     }
-    bash "$NIX_TRUST_SCRIPT" repair --mode "$ENVY_MIRROR" --user "$(id -un)"
+    bash "$NIX_TRUST_SCRIPT" repair --mode "$ENVY_MIRROR" --user "$(id -un)" --reload
 fi
 
 # ==========================================

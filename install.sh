@@ -11,7 +11,10 @@ target="${ENVY_ROOT:-${ENVY_DOTFILES:-${DOTFILES_DIR:-${HOME:?HOME is not set}/.
 mirror="${ENVY_MIRROR:-china}"
 git_mirror_url="${ENVY_GIT_MIRROR_URL:-https://gh-proxy.com/}"
 run_setup=1
+force=0
+reset_secrets=0
 temporary_dir=""
+backup_target=""
 
 usage() {
     cat <<'EOF'
@@ -25,6 +28,8 @@ Options:
   --target PATH    Checkout path (default: $HOME/.envy)
   --mirror MODE    Bootstrap mirror: china or upstream (default: china)
   --no-setup       Clone only; do not run setup.sh
+  -f, --force      Re-download and replace the target checkout
+  --reset-secrets  Start setup with empty secrets and replace secrets.yaml
   -h, --help       Show this help
 
 Environment equivalents:
@@ -42,6 +47,9 @@ fail() {
 
 # shellcheck disable=SC2329  # Invoked indirectly by trap.
 cleanup() {
+    if [ -n "$backup_target" ] && [ -e "$backup_target" ] && [ ! -e "$target" ]; then
+        mv "$backup_target" "$target" || true
+    fi
     if [ -n "$temporary_dir" ] && [ -d "$temporary_dir" ]; then
         rm -rf "$temporary_dir"
     fi
@@ -72,6 +80,14 @@ while [ "$#" -gt 0 ]; do
             ;;
         --no-setup)
             run_setup=0
+            shift
+            ;;
+        -f|--force)
+            force=1
+            shift
+            ;;
+        --reset-secrets)
+            reset_secrets=1
             shift
             ;;
         -h|--help)
@@ -147,19 +163,40 @@ clone_repository() {
     return 1
 }
 
-if [ -d "$target/.git" ]; then
+parent_dir="$(dirname "$target")"
+mkdir -p "$parent_dir"
+
+if [ -d "$target/.git" ] && [ "$force" -eq 0 ]; then
     printf 'Using existing checkout: %s\n' "$target"
-elif [ -e "$target" ]; then
+elif [ -e "$target" ] && [ "$force" -eq 0 ]; then
     fail "target exists but is not a Git checkout: $target"
 else
-    parent_dir="$(dirname "$target")"
-    mkdir -p "$parent_dir"
-    temporary_dir="$(mktemp -d "${TMPDIR:-/tmp}/envy-bootstrap.XXXXXX")"
+    # Keep the temporary clone beside the target so replacement is a same-file
+    # system rename. A failed clone therefore leaves the existing checkout
+    # untouched, and a successful clone can be swapped in without a reboot.
+    temporary_dir="$(mktemp -d "$parent_dir/.envy-bootstrap.XXXXXX")"
     trap cleanup EXIT HUP INT TERM
 
     clone_repository || fail "unable to clone repository; set ENVY_REPOSITORY_URL to a reachable trusted Git remote"
-    [ ! -e "$target" ] || fail "target appeared while cloning: $target"
-    mv "$temporary_dir/repository" "$target"
+    [ -f "$temporary_dir/repository/setup.sh" ] \
+        || fail "setup.sh is missing from the cloned repository"
+
+    if [ -e "$target" ]; then
+        printf 'Replacing existing checkout: %s\n' "$target"
+        backup_target="$temporary_dir/previous-target"
+        mv "$target" "$backup_target" \
+            || fail "unable to move the existing target out of the way: $target"
+    fi
+    if ! mv "$temporary_dir/repository" "$target"; then
+        if [ -n "$backup_target" ] && [ -e "$backup_target" ]; then
+            mv "$backup_target" "$target" || true
+        fi
+        fail "unable to install the cloned repository at: $target"
+    fi
+    if [ -n "$backup_target" ] && [ -e "$backup_target" ]; then
+        rm -rf "$backup_target"
+    fi
+    backup_target=""
     rmdir "$temporary_dir"
     temporary_dir=""
     trap - EXIT HUP INT TERM
@@ -174,6 +211,9 @@ fi
 
 export ENVY_ROOT="$target"
 export ENVY_MIRROR="$mirror"
+if [ "$reset_secrets" -eq 1 ]; then
+    export ENVY_SETUP_RESET_SECRETS=1
+fi
 if [ -t 0 ]; then
     exec "$BASH" "$target/setup.sh"
 fi

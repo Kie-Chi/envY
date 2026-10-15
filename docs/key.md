@@ -72,6 +72,14 @@ envy key im -g -l new_macbook
 envy setup   # 重新填写所有秘密值
 ```
 
+如果不需要恢复旧设备的秘密值，可以直接跳过旧 age key：
+
+```bash
+bash setup.sh --reset-secrets
+```
+
+setup 会让 secret 字段从空值开始，并在保存时整体替换 `secrets/secrets.yaml`；旧密文不会被合并。
+
 导入后 `envy key import` 会自动将新密钥加入 `.sops.yaml` 并运行 `sops updatekeys`，使新设备能解密已有秘密。
 
 也可以通过 `envy setup` 交互式完成——如果解密失败，它会自动进入密钥导入流程。

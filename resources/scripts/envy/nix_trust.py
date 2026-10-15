@@ -62,6 +62,7 @@ def run_nix_trust(
         selected.mode,
         "--user",
         selected.user,
+        *( ["--reload"] if action == "repair" else []),
         *quiet_args,
     ]
     if action == "repair":

@@ -54,6 +54,18 @@ class SetupUiTests(unittest.TestCase):
             self.assertFalse(setup.prompt_yes_no("Continue?"))
         self.assertEqual(prompt.call_count, 2)
 
+    def test_yes_no_prompt_handles_invalid_terminal(self):
+        setup = _load_setup_module()
+        with patch.object(setup, "pt_prompt", side_effect=OSError(22, "Invalid argument")):
+            self.assertFalse(setup.prompt_yes_no("Continue?"))
+
+    def test_decrypt_failure_can_start_with_empty_secrets(self):
+        setup = _load_setup_module()
+        with patch.object(setup, "prompt_yes_no", return_value=False):
+            values, replace = setup.handle_decrypt_failure()
+        self.assertEqual(values, {})
+        self.assertTrue(replace)
+
     def test_changes_summary_never_prints_secret_values(self):
         setup = _load_setup_module()
         secret = setup.SECRET_FIELDS[0]

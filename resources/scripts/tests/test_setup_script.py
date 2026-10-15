@@ -39,6 +39,20 @@ class SetupScriptTests(unittest.TestCase):
                 command.write_text(f"#!{shutil.which('bash')}\nset -eu\n" + body)
                 command.chmod(0o755)
             capture = root / "captured-config"
+            systemctl = bin_dir / "systemctl"
+            systemctl.write_text(
+                f"#!{shutil.which('bash')}\n"
+                'if [ "$1" = is-active ]; then exit 0; fi\n'
+                'exit 0\n'
+            )
+            systemctl.chmod(0o755)
+            launchctl = bin_dir / "launchctl"
+            launchctl.write_text(
+                f"#!{shutil.which('bash')}\n"
+                'if [ "$1" = print ]; then exit 0; fi\n'
+                'exit 0\n'
+            )
+            launchctl.chmod(0o755)
             existing_config = "experimental-features = ca-derivations\nmax-jobs = 2"
             for platform in ("Darwin", "Linux"):
                 for mirror in ("china", "upstream"):
@@ -53,8 +67,8 @@ class SetupScriptTests(unittest.TestCase):
                                 "ENVY_TEST_CAPTURE": str(capture),
                                 "ENVY_NIX_SYSTEM_CONFIG": str(root / "nix.conf"),
                                 "ENVY_NIX_CUSTOM_CONFIG": str(root / "nix.custom.conf"),
-                                "ENVY_NIX_TRUST_SYSTEMCTL": "envy-test-no-systemctl",
-                                "ENVY_NIX_TRUST_LAUNCHCTL": "envy-test-no-launchctl",
+                                "ENVY_NIX_TRUST_SYSTEMCTL": str(systemctl),
+                                "ENVY_NIX_TRUST_LAUNCHCTL": str(launchctl),
                                 "NIX_CONFIG": existing_config,
                             })
                             result = subprocess.run(
@@ -72,7 +86,10 @@ class SetupScriptTests(unittest.TestCase):
                                 "extra-experimental-features = nix-command flakes",
                                 config.splitlines(),
                             )
-                            self.assertEqual("mirrors.ustc.edu.cn" in config, mirror == "china")
+                            # setup runtime receives only feature toggles. The
+                            # daemon trust helper owns cache endpoints so they
+                            # are not sent as untrusted client overrides.
+                            self.assertNotIn("mirrors.ustc.edu.cn", config)
                             daemon_config = (root / "nix.custom.conf").read_text()
                             self.assertIn("extra-trusted-substituters =", daemon_config)
                             self.assertIn("extra-trusted-public-keys =", daemon_config)

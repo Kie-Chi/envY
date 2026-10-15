@@ -23,12 +23,22 @@ if [ "${ENVY_MIRROR_ENV_APPLIED:-}" != "$envy_mirror_mode" ]; then
     # and setup's child processes need them before the first flake evaluation.
     # Use extra- to preserve any experimental features already configured.
     envy_nix_config='extra-experimental-features = nix-command flakes
-extra-substituters = https://cache.thalheim.io
 fallback = true
 connect-timeout = 5'
-    if [ "$envy_mirror_mode" = "china" ]; then
-        envy_nix_config="substituters = https://mirrors.ustc.edu.cn/nix-channels/store https://cache.nixos.org/
+    # setup.sh sets ENVY_SETUP_BOOTSTRAP while it repairs the daemon trust
+    # block. Keep the first nix run on the daemon's own trusted substituters;
+    # passing these URLs through NIX_CONFIG would be an untrusted client
+    # override during daemon reload. Normal shells and post-apply commands
+    # retain the temporary endpoint selection below.
+    if [ "${ENVY_SETUP_BOOTSTRAP:-0}" != "1" ]; then
+        envy_nix_config="extra-substituters = https://cache.thalheim.io
 $envy_nix_config"
+        if [ "$envy_mirror_mode" = "china" ]; then
+            envy_nix_config="substituters = https://mirrors.ustc.edu.cn/nix-channels/store https://cache.nixos.org/
+$envy_nix_config"
+        fi
+    fi
+    if [ "$envy_mirror_mode" = "china" ]; then
         export npm_config_registry="https://registry.npmmirror.com"
         export PIP_INDEX_URL="https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
         export UV_DEFAULT_INDEX="$PIP_INDEX_URL"

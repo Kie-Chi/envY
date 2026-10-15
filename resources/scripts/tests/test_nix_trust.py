@@ -15,6 +15,8 @@ BEGIN = "# BEGIN ENVY MANAGED NIX MIRROR"
 END = "# END ENVY MANAGED NIX MIRROR"
 THALHEIM = "https://cache.thalheim.io"
 THALHEIM_KEY = "cache.thalheim.io-1:R7msbosLEZKrxk/lKxf9BTjOOH7Ax3H0Qj0/6wiHOgc="
+NIXOS = "https://cache.nixos.org/"
+NIXOS_KEY = "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
 USTC = "https://mirrors.ustc.edu.cn/nix-channels/store"
 
 
@@ -34,6 +36,7 @@ class NixTrustPythonTests(unittest.TestCase):
 
         sudo.assert_called_once_with(
             "bash", str(SCRIPT), "repair", "--mode", "china", "--user", "policy-user",
+            "--reload",
             capture=False,
             activity="Nix daemon trust repair",
         )
@@ -59,12 +62,14 @@ class NixTrustScriptTests(unittest.TestCase):
         action: str,
         *,
         mode: str = "china",
-        systemctl: Path | str = "missing-systemctl",
+        systemctl: Path | str | None = None,
         launchctl: Path | str = "missing-launchctl",
         platform: str = "Linux",
         environment: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         env = dict(os.environ)
+        if systemctl is None:
+            systemctl = self._systemctl()
         self.uname.write_text(f"#!{shutil.which('bash')}\nprintf '%s\\n' {platform!r}\n")
         self.uname.chmod(0o755)
         env["PATH"] = f"{self.bin_dir}{os.pathsep}{env['PATH']}"
@@ -100,7 +105,9 @@ class NixTrustScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         text = self.custom_config.read_text()
         self.assertIn(f"extra-substituters = {THALHEIM}", text)
+        self.assertIn(f"extra-trusted-substituters = {THALHEIM}", text)
         self.assertIn(f"extra-trusted-public-keys = {THALHEIM_KEY}", text)
+        self.assertNotIn(NIXOS, text)
         self.assertNotIn(USTC, text)
         self.assertIn("extra-trusted-users = policy-user", text)
         self.assertIn("download-attempts = 3", text)
@@ -122,6 +129,7 @@ class NixTrustScriptTests(unittest.TestCase):
         self.assertTrue(text.startswith("admin-setting = keep\n"))
         self.assertTrue(text.endswith("admin-tail = keep\n"))
         self.assertIn(f"extra-substituters = {THALHEIM} {USTC}", text)
+        self.assertIn(f"extra-trusted-substituters = {THALHEIM} {NIXOS} {USTC}", text)
         self.assertNotIn("old.invalid", text)
         self.assertEqual(text.count(BEGIN), 1)
         self.assertEqual(text.count(END), 1)
@@ -192,10 +200,12 @@ class NixTrustScriptTests(unittest.TestCase):
 
     @unittest.skipIf(os.geteuid() == 0, "root does not need sudo for the test directory")
     def test_missing_sudo_fails_explicitly_when_repair_needs_root(self):
+        systemctl = self._systemctl()
         self.root.chmod(0o500)
         try:
             result = self.run_helper(
-                "repair", environment={"ENVY_NIX_TRUST_SUDO": "missing-sudo"}
+                "repair", systemctl=systemctl,
+                environment={"ENVY_NIX_TRUST_SUDO": "missing-sudo"}
             )
         finally:
             self.root.chmod(0o700)
@@ -219,7 +229,7 @@ class NixTrustScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         text = self.system_config.read_text()
         self.assertTrue(text.startswith(original + "\n"))
-        self.assertIn(f"extra-trusted-substituters = {THALHEIM} {USTC}", text)
+        self.assertIn(f"extra-trusted-substituters = {THALHEIM} {NIXOS} {USTC}", text)
         self.assertEqual(self.system_config.stat().st_mode & 0o777, 0o640)
         self.assertEqual(self.custom_config.read_text(), "inactive-setting = keep\n")
         inode = self.system_config.stat().st_ino
@@ -267,6 +277,18 @@ class NixTrustScriptTests(unittest.TestCase):
         launchctl = self._launchctl("org.nixos.nix-daemon")
         self.assertEqual(self.run_helper("repair", platform="Darwin", launchctl=launchctl).returncode, 0)
 
+    def test_missing_darwin_daemon_fails_and_rolls_back(self):
+        original = "admin-setting = keep\n"
+        self.custom_config.write_text(original)
+
+        result = self.run_helper(
+            "repair", platform="Darwin", launchctl="missing-launchctl"
+        )
+
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("no active daemon was found", result.stderr)
+        self.assertEqual(self.custom_config.read_text(), original)
+
     def test_symlink_configuration_is_never_replaced(self):
         target = self.root / "external.conf"
         target.write_text("external-setting = keep\n")
@@ -277,6 +299,16 @@ class NixTrustScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertTrue(self.custom_config.is_symlink())
         self.assertEqual(target.read_text(), "external-setting = keep\n")
+
+    def _systemctl(self) -> Path:
+        systemctl = self.root / "systemctl"
+        systemctl.write_text(
+            f"#!{shutil.which('bash')}\n"
+            'if [ "$1" = is-active ]; then exit 0; fi\n'
+            'exit 0\n'
+        )
+        systemctl.chmod(0o755)
+        return systemctl
 
     def _launchctl(self, service: str, *, restart_status: int = 0) -> Path:
         launchctl = self.root / "launchctl"

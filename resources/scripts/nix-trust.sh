@@ -7,6 +7,7 @@ END_MARKER='# END ENVY MANAGED NIX MIRROR'
 THALHEIM_URL='https://cache.thalheim.io'
 THALHEIM_KEY='cache.thalheim.io-1:R7msbosLEZKrxk/lKxf9BTjOOH7Ax3H0Qj0/6wiHOgc='
 USTC_URL='https://mirrors.ustc.edu.cn/nix-channels/store'
+NIXOS_URL='https://cache.nixos.org/'
 NIXOS_KEY='cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY='
 
 command_name="${1:-status}"
@@ -23,6 +24,7 @@ launchctl_command="${ENVY_NIX_TRUST_LAUNCHCTL:-/bin/launchctl}"
 sudo_command="${ENVY_NIX_TRUST_SUDO:-sudo}"
 elevated=0
 quiet=0
+force_reload=0
 temporary_file=""
 previous_file=""
 
@@ -36,6 +38,7 @@ Options:
   --custom-config PATH  Managed nix.custom.conf path
   --system-config PATH  Parent nix.conf (managed directly if no custom include)
   --quiet               Suppress successful/status output
+  --reload              Reload the active daemon even when the block is unchanged
 EOF
 }
 
@@ -100,6 +103,10 @@ while [ "$#" -gt 0 ]; do
             quiet=1
             shift
             ;;
+        --reload)
+            force_reload=1
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -142,18 +149,24 @@ case "$custom_config:$system_config" in
 esac
 
 render_block() {
-    local substituters="$THALHEIM_URL"
+    # Keep this list aligned with the explicit bootstrap NIX_CONFIG. Nix
+    # daemons reject a substituter supplied by an untrusted client unless the
+    # exact endpoint is present in trusted-substituters, even when it is the
+    # usual cache.nixos.org default.
+    local extra_substituters="$THALHEIM_URL"
+    local trusted_substituters="$THALHEIM_URL"
     local keys="$THALHEIM_KEY"
     if [ "$mirror_mode" = "china" ]; then
-        substituters="$substituters $USTC_URL"
+        extra_substituters="$extra_substituters $USTC_URL"
+        trusted_substituters="$trusted_substituters $NIXOS_URL $USTC_URL"
         keys="$keys $NIXOS_KEY"
     fi
 
     printf '%s\n' \
         "$BEGIN_MARKER" \
         'extra-experimental-features = nix-command flakes' \
-        "extra-substituters = $substituters" \
-        "extra-trusted-substituters = $substituters" \
+        "extra-substituters = $extra_substituters" \
+        "extra-trusted-substituters = $trusted_substituters" \
         "extra-trusted-public-keys = $keys" \
         "extra-trusted-users = $managed_user" \
         'download-attempts = 3' \
@@ -258,29 +271,55 @@ is_ready() {
 
 restart_active_daemon() {
     local service
+    local attempt
     if [ "$(uname -s)" = "Darwin" ]; then
         if ! command -v "$launchctl_command" >/dev/null 2>&1; then
-            return
+            return 1
         fi
-        for service in org.nixos.nix-daemon systems.determinate.nix-daemon; do
-            if "$launchctl_command" print "system/$service" >/dev/null 2>&1; then
-                "$launchctl_command" kickstart -k "system/$service" || return "$?"
-                say "[OK] Restarted $service after updating Nix daemon trust."
-                return
-            fi
+        attempt=1
+        while [ "$attempt" -le 10 ]; do
+            for service in org.nixos.nix-daemon systems.determinate.nix-daemon; do
+                if "$launchctl_command" print "system/$service" >/dev/null 2>&1; then
+                    "$launchctl_command" kickstart -k "system/$service" || return "$?"
+                    # launchd can report the job before the restarted daemon
+                    # has registered its sockets. Wait briefly so the first
+                    # Nix call does not race the daemon reload.
+                    attempt=1
+                    while [ "$attempt" -le 10 ]; do
+                        if "$launchctl_command" print "system/$service" >/dev/null 2>&1; then
+                            say "[OK] Restarted $service after updating Nix daemon trust."
+                            return 0
+                        fi
+                        sleep 1
+                        attempt=$((attempt + 1))
+                    done
+                    return 1
+                fi
+            done
+            sleep 1
+            attempt=$((attempt + 1))
         done
-        return
+        return 1
     fi
     if ! command -v "$systemctl_command" >/dev/null 2>&1; then
-        return
+        return 1
     fi
     for service in nix-daemon.service determinate-nixd.service; do
         if "$systemctl_command" is-active --quiet "$service" 2>/dev/null; then
             "$systemctl_command" restart "$service" || return "$?"
-            say "[OK] Restarted $service after updating Nix daemon trust."
-            return
+            attempt=1
+            while [ "$attempt" -le 10 ]; do
+                if "$systemctl_command" is-active --quiet "$service" 2>/dev/null; then
+                    say "[OK] Restarted $service after updating Nix daemon trust."
+                    return 0
+                fi
+                sleep 1
+                attempt=$((attempt + 1))
+            done
+            return 1
         fi
     done
+    return 1
 }
 
 repair_as_current_user() {
@@ -298,6 +337,11 @@ repair_as_current_user() {
     if [ -f "$managed_config" ] && cmp -s "$temporary_file" "$managed_config"; then
         rm -f "$temporary_file"
         temporary_file=""
+        if [ "$force_reload" -eq 1 ]; then
+            if ! restart_active_daemon; then
+                fail "Nix daemon reload failed; configuration was left unchanged"
+            fi
+        fi
         say "[OK] Nix daemon trust is already ready: $managed_config"
         return
     fi
@@ -315,13 +359,13 @@ repair_as_current_user() {
         else
             rm -f "$managed_config"
         fi
-        fail "Nix daemon restart failed; restored the previous configuration"
+        fail "Nix daemon restart failed or no active daemon was found; restored the previous configuration"
     fi
     say "[OK] Updated Nix daemon trust: $managed_config"
 }
 
 select_managed_config
-if is_ready; then
+if is_ready && [ "$force_reload" -eq 0 ]; then
     say "[OK] Nix daemon trust is ready: $managed_config"
     exit 0
 fi
@@ -345,9 +389,33 @@ if ! command -v "$sudo_command" >/dev/null 2>&1; then
 fi
 
 bash_command="$(command -v bash)"
-quiet_args=()
-if [ "$quiet" -eq 1 ]; then
-    quiet_args=(--quiet)
+if [ "$quiet" -eq 1 ] && [ "$force_reload" -eq 1 ]; then
+    exec "$sudo_command" -- "$bash_command" "$0" repair \
+        --mode "$mirror_mode" \
+        --user "$managed_user" \
+        --custom-config "$custom_config" \
+        --system-config "$system_config" \
+        --systemctl "$systemctl_command" \
+        --launchctl "$launchctl_command" \
+        --quiet --reload --elevated
+elif [ "$quiet" -eq 1 ]; then
+    exec "$sudo_command" -- "$bash_command" "$0" repair \
+        --mode "$mirror_mode" \
+        --user "$managed_user" \
+        --custom-config "$custom_config" \
+        --system-config "$system_config" \
+        --systemctl "$systemctl_command" \
+        --launchctl "$launchctl_command" \
+        --quiet --elevated
+elif [ "$force_reload" -eq 1 ]; then
+    exec "$sudo_command" -- "$bash_command" "$0" repair \
+        --mode "$mirror_mode" \
+        --user "$managed_user" \
+        --custom-config "$custom_config" \
+        --system-config "$system_config" \
+        --systemctl "$systemctl_command" \
+        --launchctl "$launchctl_command" \
+        --reload --elevated
 fi
 exec "$sudo_command" -- "$bash_command" "$0" repair \
     --mode "$mirror_mode" \
@@ -356,5 +424,4 @@ exec "$sudo_command" -- "$bash_command" "$0" repair \
     --system-config "$system_config" \
     --systemctl "$systemctl_command" \
     --launchctl "$launchctl_command" \
-    "${quiet_args[@]}" \
     --elevated

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """envY setup CLI for the selected machine file and sops secrets."""
 
+import os
 import subprocess
 from dataclasses import dataclass
 from typing import Optional
@@ -174,14 +175,18 @@ def init_values() -> dict:
 
 
 def handle_decrypt_failure() -> tuple[dict, bool]:
-    """Layered guidance when sops decryption fails on a new device.
-    Delegates to key_import() interactive mode from key.py."""
+    """Choose between restoring existing secrets and starting with empty ones."""
     log.console.print(Panel(
         "[bold red]sops decryption failed[/bold red]\n\n"
         "This usually means you're on a [bold]new device[/bold] and the age key\n"
         "doesn't match the one that encrypted secrets.yaml.\n\n"
-        "To restore your existing secrets, you need a key from another device.",
-        title="New Device Detected", border_style="red"))
+        "Choose whether to import an old device key or replace the encrypted\n"
+        "secrets with values entered on this device.",
+        title="New Device Secrets", border_style="red"))
+
+    if not prompt_yes_no("Import an existing age key to restore the old secrets?"):
+        log.warn("setup", "starting with empty secrets; the next save will replace secrets.yaml")
+        return {}, True
 
     pub = key_import(register=False)  # setup registers/re-encrypts only after save confirmation
     if pub:
@@ -192,7 +197,7 @@ def handle_decrypt_failure() -> tuple[dict, bool]:
         else:
             log.warn("setup", "key imported but decryption still failed, try another key")
 
-    log.warn("setup", "proceeding with empty secrets — re-enter all values in the menuconfig UI")
+    log.warn("setup", "proceeding with empty secrets; the next save will replace secrets.yaml")
     return {}, True
 
 
@@ -691,7 +696,7 @@ def prompt_yes_no(question: str) -> bool:
     while True:
         try:
             answer = pt_prompt(f"? {question} [y/n]: ").strip().casefold()
-        except (EOFError, KeyboardInterrupt):
+        except (EOFError, KeyboardInterrupt, OSError):
             return False
         if answer in {"y", "yes"}:
             return True
@@ -836,7 +841,7 @@ def ensure_machine_configuration(machine_id: str) -> bool:
             log.error("host", "creation mode must be import or copy")
         initialize_machine(selected, mode)
         return True
-    except (EOFError, KeyboardInterrupt):
+    except (EOFError, KeyboardInterrupt, OSError):
         log.hint(f"Create it later with: envy host init {selected}")
         return False
 
@@ -864,14 +869,21 @@ def main() -> int:
 
     existing_config = read_machine_nix()
     evaluated_config = manifest_settings(manifest)
-    existing_secrets, decrypt_ok = read_secrets_yaml()
-    replace_secrets = False
+    reset_secrets = os.environ.get("ENVY_SETUP_RESET_SECRETS", "0") == "1"
+    if reset_secrets:
+        existing_secrets, decrypt_ok = {}, True
+        replace_secrets = True
+        log.warn("setup", "secret reset requested; existing secret values will not be loaded")
+    else:
+        existing_secrets, decrypt_ok = read_secrets_yaml()
+        replace_secrets = False
 
-    # Layered guidance for new device: if decryption failed, try key import before menuconfig
-    if not decrypt_ok and SECRETS_FILE.exists():
-        restored_secrets, replace_secrets = handle_decrypt_failure()
-        if restored_secrets:
-            existing_secrets = restored_secrets
+        # Layered guidance for new device: if decryption failed, choose whether
+        # to import an old key or replace the encrypted secrets.
+        if not decrypt_ok and SECRETS_FILE.exists():
+            restored_secrets, replace_secrets = handle_decrypt_failure()
+            if restored_secrets:
+                existing_secrets = restored_secrets
 
     # Build initial values from config + (possibly restored) secrets
     values = {}
@@ -888,7 +900,11 @@ def main() -> int:
             values[f.path] = f.default_fn()
     old_values = dict(values)
 
-    result = menuconfig_loop(old_values, manifest, original_exclusions)
+    try:
+        result = menuconfig_loop(old_values, manifest, original_exclusions)
+    except (EOFError, KeyboardInterrupt, OSError):
+        log.hint("Setup needs an interactive terminal. Run it again from a real terminal, or create the machine with: envy host init")
+        return 2
 
     if result is None:
         log.hint("Quit without saving.")

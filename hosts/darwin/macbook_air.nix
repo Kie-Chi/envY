@@ -90,8 +90,17 @@
   envy.agents.pi.adapter = "pi";
   envy.agents.pi.credential = "xikai";
   envy.agents.pi.endpoint = "xikai-openai";
-  envy.agents.pi.model = "gpt-6.1-sol";
+  envy.agents.pi.model = "gpt-6-astra";
   envy.agents.pi.moreThinking = true;
+  envy.agents.pi.contextWindow = 272000;
+  envy.agents.pi.maxTokens = 128000;
+  envy.agents.pi.additionalSettings = {
+    compaction = {
+      keepRecentTokens = 27200;
+      reserveTokens = 27200;
+    };
+    defaultTools = [ "+codemode" ];
+  };
   # END ENVY MANAGED AGENTS
 
 }

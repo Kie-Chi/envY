@@ -32,7 +32,7 @@ generated assignments，其他 target 与手工 machine policy 不受影响。ca
 
 首次安装时 machine module 还没有求值，镜像分为两个阶段：
 
-1. `install.sh --mirror china|upstream` 设置 `ENVY_MIRROR`。`china` 模式会先通过 `gh-proxy.com` clone GitHub 仓库（可用 `ENVY_GIT_MIRROR_URL` 替换），失败后回退直连；`setup.sh` 加载 `resources/scripts/mirror-env.sh`，在第一次 `nix run` 前启用 `nix-command`/`flakes` 并注入临时 Nix、npm、PyPI/uv、Go 和 Rust/Cargo 环境。Darwin 和 Linux 都会先用 `resources/scripts/nix-trust.sh` 校准 Nix daemon trust。
+1. `install.sh --mirror china|upstream` 设置 `ENVY_MIRROR`。`china` 模式会先通过 `gh-proxy.com` clone GitHub 仓库（可用 `ENVY_GIT_MIRROR_URL` 替换），失败后回退直连；`setup.sh` 加载 `resources/scripts/mirror-env.sh`，在第一次 `nix run` 前启用 `nix-command`/`flakes` 并注入临时 npm、PyPI/uv、Go 和 Rust/Cargo 环境。Nix cache 在 bootstrap 阶段由 `resources/scripts/nix-trust.sh` 写入 daemon 的自身配置并重载，避免把 Thalheim/USTC 作为未信任的客户端 override。Darwin 和 Linux 都会先校准 Nix daemon trust。
 2. setup 写入 machine setting；`envy apply` 后由 `modules/mirrors/` 维护长期配置。两种平台共用 Home Manager activation 的 trust helper 维护 daemon marker block 和用户 Nix 配置。Darwin 保持 `nix.enable = false`，不依赖不会生效的 nix-darwin `nix.settings`。
 
 直接运行 `bash setup.sh` 时也会读取 `ENVY_MIRROR`，未指定则使用 `china`。bootstrap shell 中的端点必须与 `modules/mirrors/catalog.nix` 保持一致。

@@ -68,6 +68,38 @@ class InstallScriptTests(unittest.TestCase):
         self.assertEqual(self._git_output(target, "rev-parse", "HEAD"), head)
         self.assertIn("Using existing checkout", result.stdout)
 
+    def test_force_reclones_and_replaces_existing_checkout(self):
+        target = self.root / "checkout"
+        self.assertEqual(self._install(target, "--no-setup").returncode, 0)
+        (self.source / "force-marker").write_text("new checkout\n")
+        self._git(self.source, "add", "force-marker")
+        self._git(
+            self.source,
+            "-c", "user.name=envY Test",
+            "-c", "user.email=envy@example.invalid",
+            "commit", "-qm", "force fixture",
+        )
+
+        result = self._install(target, "-f", "--no-setup")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((target / "force-marker").read_text(), "new checkout\n")
+        self.assertIn("Replacing existing checkout", result.stdout)
+
+    def test_force_clone_failure_preserves_existing_checkout(self):
+        target = self.root / "checkout"
+        self.assertEqual(self._install(target, "--no-setup").returncode, 0)
+        marker = target / "setup.sh"
+        original = marker.read_text()
+
+        result = self._install(
+            target,
+            "--force", "--repo", str(self.root / "does-not-exist"), "--no-setup",
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(marker.read_text(), original)
+
     def test_non_repository_target_is_rejected_without_deleting_it(self):
         target = self.root / "occupied"
         target.mkdir()
@@ -129,6 +161,7 @@ class InstallScriptTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--mirror MODE", result.stdout)
+        self.assertIn("--force", result.stdout)
         self.assertIn("ENVY_MIRROR", result.stdout)
         self.assertIn("ENVY_ROOT", result.stdout)
         self.assertIn("$HOME/.envy", result.stdout)

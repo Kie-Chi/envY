@@ -14,7 +14,9 @@
 envY 需要 Nix 的 `nix-command` 和 `flakes` 功能。官方 Nix 安装后默认未启用它们；
 setup 和仓库内的 `./envy` 入口会通过当前进程的 `NIX_CONFIG` 临时启用，并保留已有的
 其他实验功能。apply 后，用户的 `~/.config/nix/nix.conf` 会持久启用这两个功能。
-macOS 首次 apply 的 `sudo nix run` fallback 也会显式传入对应开关。
+macOS 首次 apply 的 `sudo nix run` fallback 也会显式传入对应开关。首次 setup 的
+runtime 不把镜像作为 `NIX_CONFIG` 客户端 override；trust helper 先将 daemon 自身的
+substituters 配置好并重载，因此 Thalheim/USTC 不会在 runtime 阶段被当成 untrusted。
 
 如果旧 checkout 在运行 `./setup.sh` 时提示
 `experimental Nix feature 'nix-command' is disabled`（或 `flakes` 被禁用），这是
@@ -82,10 +84,14 @@ curl --proto '=https' --tlsv1.2 -fsSL \
 --target PATH    checkout 路径，默认 $HOME/.envy
 --mirror MODE    bootstrap mirror：china 或 upstream，默认 china
 --no-setup       只 clone，不运行 setup.sh
+--force, -f      重新 clone 并替换已有 checkout
+--reset-secrets  使用空 secrets 启动 setup，并替换 secrets.yaml
 ```
 
 对应环境变量是 `ENVY_REPOSITORY_URL`、`ENVY_BRANCH`、`ENVY_ROOT`、`ENVY_MIRROR` 和
-`ENVY_GIT_MIRROR_URL`。`ENVY_NIX_INSTALLER_URL` 可以显式覆盖 Nix installer 下载地址；
+`ENVY_GIT_MIRROR_URL`。`ENVY_NIX_INSTALLER_URL` 可以显式覆盖 Nix installer 下载地址；`--reset-secrets` 也可以通过
+`bash setup.sh --reset-secrets` 使用。它不会读取旧 secrets 的值，保存时会整体替换加密文件。
+
 如果该地址提供标准 Nix 安装脚本，可再设置 `ENVY_NIX_INSTALLER_ARGS='--daemon'`。
 国内模式的默认 GitHub 代理是可替换的第三方 endpoint，使用前应确认其信任边界。例如：
 
@@ -127,7 +133,7 @@ macOS 的 apply 会保留 bootstrap 的 `NIX_CONFIG`，让 sudo 下的构建继�
 
 目标不存在时，bootstrap 先 clone 到 `mktemp` 创建的临时目录，再移动到目标路径。clone 失败不会留下半成品 target。
 
-目标已经是 Git checkout 时，脚本直接使用它；不会隐式执行 `fetch`、`pull`、`reset` 或切换 branch。这样不会覆盖本地修改，但也意味着 bootstrap 不负责更新已有仓库。进入正常工作流后使用 `envy sync`。
+目标已经是 Git checkout 时，脚本默认直接使用它；不会隐式执行 `fetch`、`pull`、`reset` 或切换 branch。需要重新取得完整 checkout 时显式使用 `install.sh --force`（或 `-f`）；脚本会先在 target 同目录完成临时 clone，成功后替换旧目录，下载失败则保留旧 checkout。强制模式会删除旧 checkout 中的本地修改。进入正常工作流后使用 `envy sync`。
 
 目标存在但不是 Git checkout 时，脚本会拒绝继续且不会删除其中内容。它还拒绝把 `/` 或 `$HOME` 当作 target。
 

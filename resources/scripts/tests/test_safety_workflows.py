@@ -218,6 +218,21 @@ sops:
                 utils.run_darwin_switch()
         success.assert_not_called()
 
+    def test_darwin_bootstrap_enables_flakes_for_sudo_nix_invocation(self):
+        with patch.object(utils.shutil, "which", return_value=None), patch.object(
+            utils, "esudo"
+        ) as sudo, patch.object(utils, "flake_target", return_value="path:.#mac"):
+            utils.run_darwin_switch()
+
+        sudo.assert_called_once_with(
+            "--preserve-env=HOME,NIX_CONFIG",
+            "nix", "--extra-experimental-features", "nix-command flakes",
+            "run", "--inputs-from", "path:.", "darwin", "--", "switch",
+            "--flake", "path:.#mac", "--impure",
+            capture=False,
+            activity="nix-darwin build and activation",
+        )
+
     def test_update_restores_lock_when_validation_fails(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

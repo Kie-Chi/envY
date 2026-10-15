@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(os.environ.get("ENVY_TEST_ROOT", Path(__file__).resolve().parents[3]))
@@ -17,6 +18,27 @@ THALHEIM_KEY = "cache.thalheim.io-1:R7msbosLEZKrxk/lKxf9BTjOOH7Ax3H0Qj0/6wiHOgc=
 USTC = "https://mirrors.ustc.edu.cn/nix-channels/store"
 
 
+class NixTrustPythonTests(unittest.TestCase):
+    def test_repair_uses_sops_backed_esudo(self):
+        from envy import nix_trust
+
+        result = subprocess.CompletedProcess([], 0, "", "")
+        context = nix_trust.NixTrustContext(mode="china", user="policy-user")
+        with patch.object(nix_trust, "esudo", return_value=result) as sudo, patch.object(
+            nix_trust, "nix_trust_script", return_value=SCRIPT
+        ):
+            self.assertIs(
+                nix_trust.run_nix_trust("repair", context=context),
+                result,
+            )
+
+        sudo.assert_called_once_with(
+            "bash", str(SCRIPT), "repair", "--mode", "china", "--user", "policy-user",
+            capture=False,
+            activity="Nix daemon trust repair",
+        )
+
+
 class NixTrustScriptTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -24,6 +46,9 @@ class NixTrustScriptTests(unittest.TestCase):
         self.system_config = self.root / "nix.conf"
         self.custom_config = self.root / "nix.custom.conf"
         self.system_config.write_text("!include nix.custom.conf\n")
+        self.bin_dir = self.root / "bin"
+        self.bin_dir.mkdir()
+        self.uname = self.bin_dir / "uname"
 
     def tearDown(self):
         self.root.chmod(0o700)
@@ -35,9 +60,14 @@ class NixTrustScriptTests(unittest.TestCase):
         *,
         mode: str = "china",
         systemctl: Path | str = "missing-systemctl",
+        launchctl: Path | str = "missing-launchctl",
+        platform: str = "Linux",
         environment: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         env = dict(os.environ)
+        self.uname.write_text(f"#!{shutil.which('bash')}\nprintf '%s\\n' {platform!r}\n")
+        self.uname.chmod(0o755)
+        env["PATH"] = f"{self.bin_dir}{os.pathsep}{env['PATH']}"
         if environment:
             env.update(environment)
         return subprocess.run(
@@ -55,6 +85,8 @@ class NixTrustScriptTests(unittest.TestCase):
                 str(self.custom_config),
                 "--systemctl",
                 str(systemctl),
+                "--launchctl",
+                str(launchctl),
             ],
             capture_output=True,
             text=True,
@@ -72,6 +104,7 @@ class NixTrustScriptTests(unittest.TestCase):
         self.assertNotIn(USTC, text)
         self.assertIn("extra-trusted-users = policy-user", text)
         self.assertIn("download-attempts = 3", text)
+        self.assertIn("extra-experimental-features = nix-command flakes", text)
 
     def test_old_marker_block_is_upgraded_without_touching_admin_content(self):
         self.custom_config.write_text(
@@ -171,14 +204,93 @@ class NixTrustScriptTests(unittest.TestCase):
         self.assertIn("sudo is unavailable", result.stderr)
         self.assertFalse(self.custom_config.exists())
 
-    def test_missing_parent_include_fails_without_writing(self):
-        self.system_config.write_text("experimental-features = nix-command flakes\n")
+    def test_official_install_without_include_manages_only_parent_marker_block(self):
+        original = "build-users-group = nixbld\ntrusted-users = root admin"
+        self.system_config.write_text(original)
+        self.system_config.chmod(0o640)
+        self.custom_config.write_text("inactive-setting = keep\n")
+
+        status = self.run_helper("status")
+        self.assertEqual(status.returncode, 1)
+        self.assertEqual(self.system_config.read_text(), original)
+
+        result = self.run_helper("repair")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = self.system_config.read_text()
+        self.assertTrue(text.startswith(original + "\n"))
+        self.assertIn(f"extra-trusted-substituters = {THALHEIM} {USTC}", text)
+        self.assertEqual(self.system_config.stat().st_mode & 0o777, 0o640)
+        self.assertEqual(self.custom_config.read_text(), "inactive-setting = keep\n")
+        inode = self.system_config.stat().st_ino
+        self.assertEqual(self.run_helper("repair").returncode, 0)
+        self.assertEqual(self.system_config.stat().st_ino, inode)
+
+    def test_required_and_absolute_custom_includes_are_recognized(self):
+        for include in ("include nix.custom.conf", f"!include {self.custom_config} # custom"):
+            with self.subTest(include=include):
+                self.system_config.write_text(include + "\n")
+                self.custom_config.unlink(missing_ok=True)
+
+                result = self.run_helper("repair")
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.system_config.read_text(), include + "\n")
+                self.assertIn(BEGIN, self.custom_config.read_text())
+
+    def test_darwin_restarts_only_the_loaded_daemon_and_only_after_changes(self):
+        for service in ("org.nixos.nix-daemon", "systems.determinate.nix-daemon"):
+            with self.subTest(service=service):
+                self.custom_config.unlink(missing_ok=True)
+                calls = self.root / "launchctl.calls"
+                calls.unlink(missing_ok=True)
+                launchctl = self._launchctl(service)
+
+                first = self.run_helper("repair", platform="Darwin", launchctl=launchctl)
+                second = self.run_helper("repair", platform="Darwin", launchctl=launchctl)
+
+                self.assertEqual(first.returncode, 0, first.stderr)
+                self.assertEqual(second.returncode, 0, second.stderr)
+                self.assertEqual(calls.read_text().splitlines(), [f"kickstart -k system/{service}"])
+
+    def test_failed_darwin_restart_rolls_back_and_can_be_retried(self):
+        original = "admin-setting = keep\n"
+        self.custom_config.write_text(original)
+        launchctl = self._launchctl("org.nixos.nix-daemon", restart_status=7)
+
+        result = self.run_helper("repair", platform="Darwin", launchctl=launchctl)
+
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("restored the previous configuration", result.stderr)
+        self.assertEqual(self.custom_config.read_text(), original)
+        self.assertEqual(self.run_helper("status").returncode, 1)
+        launchctl = self._launchctl("org.nixos.nix-daemon")
+        self.assertEqual(self.run_helper("repair", platform="Darwin", launchctl=launchctl).returncode, 0)
+
+    def test_symlink_configuration_is_never_replaced(self):
+        target = self.root / "external.conf"
+        target.write_text("external-setting = keep\n")
+        self.custom_config.symlink_to(target)
 
         result = self.run_helper("repair")
 
         self.assertEqual(result.returncode, 2)
-        self.assertIn("does not include nix.custom.conf", result.stderr)
-        self.assertFalse(self.custom_config.exists())
+        self.assertTrue(self.custom_config.is_symlink())
+        self.assertEqual(target.read_text(), "external-setting = keep\n")
+
+    def _launchctl(self, service: str, *, restart_status: int = 0) -> Path:
+        launchctl = self.root / "launchctl"
+        launchctl.write_text(
+            f"#!{shutil.which('bash')}\n"
+            'if [ "$1" = print ]; then\n'
+            f'  [ "$2" = "system/{service}" ]\n'
+            "  exit\n"
+            "fi\n"
+            f'printf "%s\\n" "$*" >> {str(self.root / "launchctl.calls")!r}\n'
+            f"exit {restart_status}\n"
+        )
+        launchctl.chmod(0o755)
+        return launchctl
 
 
 if __name__ == "__main__":

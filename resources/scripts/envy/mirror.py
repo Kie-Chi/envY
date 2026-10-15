@@ -8,6 +8,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -1271,7 +1272,7 @@ def cmd_reset(
 
 
 cache_app = typer.Typer(name="cache", help="Inspect or clear mirror source and measurement cache", no_args_is_help=True)
-trust_app = typer.Typer(name="trust", help="Inspect or repair Linux Nix daemon cache trust", no_args_is_help=True)
+trust_app = typer.Typer(name="trust", help="Inspect or repair Nix daemon cache trust", no_args_is_help=True)
 
 
 def _run_trust_command(action: str, *, json_output: bool) -> None:
@@ -1279,14 +1280,14 @@ def _run_trust_command(action: str, *, json_output: bool) -> None:
     if not nix_trust_is_applicable():
         data = {
             "applicable": False,
-            "platform": "darwin",
-            "state": "declarative",
+            "platform": sys.platform,
+            "state": "unsupported",
             "mode": context.mode,
         }
         if json_output:
             emit(f"mirror.trust.{action}", data=data)
         else:
-            log.info("mirror", "Nix daemon trust is managed declaratively by nix-darwin")
+            log.info("mirror", "Nix daemon trust is not supported on this platform")
         return
 
     capture = action == "status"
@@ -1301,7 +1302,7 @@ def _run_trust_command(action: str, *, json_output: bool) -> None:
             ok=ready,
             data={
                 "applicable": True,
-                "platform": "linux",
+                "platform": sys.platform,
                 "state": state,
                 "mode": context.mode,
                 "user": context.user,
@@ -1322,7 +1323,7 @@ def _run_trust_command(action: str, *, json_output: bool) -> None:
 def cmd_trust_status(
     json_output: bool = typer.Option(False, "--json", help="Emit a stable status envelope."),
 ):
-    """Check whether the selected Linux cache policy is trusted by the Nix daemon."""
+    """Check whether the selected cache policy is trusted by the Nix daemon."""
     _run_trust_command("status", json_output=json_output)
 
 

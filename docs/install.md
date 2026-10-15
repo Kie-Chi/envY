@@ -11,6 +11,21 @@
 - 运行交互式 setup 时需要真实终端。无 TTY 的 CI 环境应使用 `--no-setup`
 - 首次安装 Nix 可能要求 `sudo`。`setup.sh` 在 `china` 模式通过清华镜像运行官方 Nix 二进制安装脚本，在 `upstream` 模式使用 Determinate Nix Installer，然后运行最小化的 setup flake app
 
+envY 需要 Nix 的 `nix-command` 和 `flakes` 功能。官方 Nix 安装后默认未启用它们；
+setup 和仓库内的 `./envy` 入口会通过当前进程的 `NIX_CONFIG` 临时启用，并保留已有的
+其他实验功能。apply 后，用户的 `~/.config/nix/nix.conf` 会持久启用这两个功能。
+macOS 首次 apply 的 `sudo nix run` fallback 也会显式传入对应开关。
+
+如果旧 checkout 在运行 `./setup.sh` 时提示
+`experimental Nix feature 'nix-command' is disabled`（或 `flakes` 被禁用），这是
+bootstrap 缺少功能开关；该报错本身不表示 Nix 版本不兼容。可以先临时启用后重试：
+
+```bash
+export NIX_CONFIG="${NIX_CONFIG:-}
+extra-experimental-features = nix-command flakes"
+bash ./setup.sh
+```
+
 ## Remote Bootstrap
 
 从默认 `master` clone 到 `~/.envy` 并启动交互式 setup：
@@ -94,16 +109,19 @@ shell 环境和文档统一使用 `ENVY_ROOT`。已有 `~/.dotfiles` checkout �
 不存在，这是旧版 flake 提前导入兼容配置的问题，需要更新 checkout 中的 `flake.nix`。
 命名目标不需要为此重新创建旧 `config.nix`。
 
-`setup.sh` 也支持 `--mirror china|upstream`。Linux 的 Nix daemon 模式会拒绝普通用户
+`setup.sh` 也支持 `--mirror china|upstream`。Darwin 和 Linux 的 Nix daemon 模式会拒绝普通用户
 通过 `NIX_CONFIG` 临时添加未信任的 substituter；setup 会在第一次 Nix build 前调用
-`resources/scripts/nix-trust.sh`，原子维护被 `/etc/nix/nix.conf` include 的
-`/etc/nix/nix.custom.conf` 中固定标记块。两种模式都信任 sops-nix 的
+`resources/scripts/nix-trust.sh`。如果 `/etc/nix/nix.conf` include 了
+`/etc/nix/nix.custom.conf`，helper 原子维护后者的固定标记块；官方安装器未生成该 include
+时，则只在主配置中维护同一标记块，保留标记外的安装器和管理员配置。两种模式都信任 sops-nix 的
 `cache.thalheim.io` 及固定 public key；`china` 另外信任 USTC 和官方 cache key。该 block
-还使用 `extra-trusted-users` 加入当前用户，不会替换管理员已有的 `trusted-users` policy。
+还启用 `nix-command` 和 `flakes`，并使用 `extra-trusted-users` 加入当前用户，不会替换管理员已有的 `trusted-users` policy。
 
 仅当 block 需要创建或升级时才会请求 `sudo`，更改后只重启当前 active 的 Nix daemon。
-缺少 include、marker 格式损坏或没有提权能力都会明确终止 setup，避免带着实际未生效的
-缓存策略继续执行大规模本地构建。envY 不会直接改写官方主配置文件的其他内容。
+Darwin 使用 `launchctl`，兼容官方和 Determinate 的 daemon label；Linux 使用 `systemctl`。
+marker 格式损坏、配置由外部 symlink 管理或没有提权能力都会明确终止 setup；daemon 重启
+失败会还原配置并报错，避免带着实际未生效的缓存策略继续执行大规模本地构建。
+macOS 的 apply 会保留 bootstrap 的 `NIX_CONFIG`，让 sudo 下的构建继续使用所选镜像。
 
 ## Existing Checkouts
 

@@ -174,6 +174,12 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("https://mirrors.ustc.edu.cn/nix-channels/store", result.stdout)
         self.assertIn("https://cache.nixos.org/", result.stdout)
         self.assertIn("extra-substituters = https://cache.thalheim.io", result.stdout)
+        self.assertEqual(
+            result.stdout.splitlines().count(
+                "extra-experimental-features = nix-command flakes"
+            ),
+            1,
+        )
 
     def test_upstream_bootstrap_also_uses_sops_nix_cache(self):
         script = ROOT / "resources" / "scripts" / "mirror-env.sh"
@@ -198,6 +204,12 @@ class InstallScriptTests(unittest.TestCase):
         self.assertEqual(result.stdout.count("extra-substituters ="), 1)
         self.assertIn("https://cache.thalheim.io", result.stdout)
         self.assertNotIn("mirrors.ustc.edu.cn", result.stdout)
+        self.assertEqual(
+            result.stdout.splitlines().count(
+                "extra-experimental-features = nix-command flakes"
+            ),
+            1,
+        )
 
     def test_setup_without_a_terminal_fails_with_clone_only_guidance(self):
         target = self.root / "checkout"

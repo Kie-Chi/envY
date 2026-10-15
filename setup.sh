@@ -84,7 +84,7 @@ command -v nix >/dev/null 2>&1 || {
     exit 1
 }
 
-if [ "$(uname -s)" = "Linux" ]; then
+if [ "$(uname -s)" = "Linux" ] || [ "$(uname -s)" = "Darwin" ]; then
     [ -r "$NIX_TRUST_SCRIPT" ] || {
         echo "[ERROR] Nix trust helper is missing: $NIX_TRUST_SCRIPT" >&2
         exit 1

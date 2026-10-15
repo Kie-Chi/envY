@@ -442,6 +442,7 @@ let
     mkRenderedText = config.renderedText;
     mkRenderedFile = config.renderedFile;
     mkDeployScript = config.deployScript;
+    deployScript = config.deployScript;
     deploy = config.deploy;
   };
 in

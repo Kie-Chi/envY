@@ -1,24 +1,10 @@
-{ config, lib, pkgs, sys, ... }:
+{ config, lib, sys, ... }:
 
 let
   profile = (import ./resolve.nix { inherit lib; })
     (import ./catalog.nix).${config.envy.mirrors.mode}
     config.envy.mirrors.overrides;
   sourcePath = "/etc/apt/sources.list.d/envy-mirror.sources";
-  nixTrustSource = ../../resources/scripts/nix-trust.sh;
-  nixTrust = pkgs.writeShellApplication {
-    name = "envy-nix-trust";
-    runtimeInputs = with pkgs; [
-      coreutils
-      diffutils
-      gawk
-      gnugrep
-    ];
-    text = ''
-      exec ${pkgs.bash}/bin/bash "${nixTrustSource}" "$@"
-    '';
-  };
-  nixTrustCommand = "${nixTrust}/bin/envy-nix-trust";
   removeManagedMirrorFile = ''
     remove_envy_apt_mirror() {
       if [ -e "${sourcePath}" ]; then
@@ -102,26 +88,6 @@ EOF
   '';
 in
 {
-  home.activation.configureNixDaemonTrust = sys.task.root {
-    name = "configure-nix-daemon-trust";
-    script = ''
-      if ${nixTrustCommand} status \
-          --mode "${config.envy.mirrors.mode}" \
-          --user "${config.envy.user.name}"; then
-        :
-      else
-        TRUST_STATUS=$?
-        if [ "$TRUST_STATUS" -ne 1 ]; then
-          exit "$TRUST_STATUS"
-        fi
-        esudo ${nixTrustCommand} repair \
-          --mode "${config.envy.mirrors.mode}" \
-          --user "${config.envy.user.name}" \
-          --elevated
-      fi
-    '';
-  };
-
   home.activation.configureAptMirror = sys.task.root {
     name = "configure-apt-mirror";
     script = if config.envy.mirrors.mode == "china"

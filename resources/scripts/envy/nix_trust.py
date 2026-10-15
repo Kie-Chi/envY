@@ -1,4 +1,4 @@
-"""Linux Nix daemon trust preflight backed by the bootstrap-safe shell helper."""
+"""Nix daemon trust preflight backed by the bootstrap-safe shell helper."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import typer
 from envy import log
 from envy.config import read_machine_nix
 from envy.process import run_process
-from envy.utils import ENVY_ROOT
+from envy.utils import ENVY_ROOT, esudo
 
 
 @dataclass(frozen=True)
@@ -23,7 +23,7 @@ class NixTrustContext:
 
 
 def nix_trust_is_applicable(platform: str | None = None) -> bool:
-    return (platform or sys.platform) == "linux"
+    return (platform or sys.platform) in {"linux", "darwin"}
 
 
 def current_nix_trust_context() -> NixTrustContext:
@@ -54,25 +54,35 @@ def run_nix_trust(
 ):
     selected = context or current_nix_trust_context()
     quiet_args = ["--quiet"] if quiet else []
+    command = [
+        "bash",
+        str(nix_trust_script()),
+        action,
+        "--mode",
+        selected.mode,
+        "--user",
+        selected.user,
+        *quiet_args,
+    ]
+    if action == "repair":
+        # The helper edits the system Nix configuration. Route it through the
+        # same sops-backed sudo wrapper as the rest of envy so apply does not
+        # ask for a second interactive password prompt.
+        return esudo(
+            *command,
+            capture=capture,
+            activity="Nix daemon trust repair",
+        )
     return run_process(
-        [
-            "bash",
-            str(nix_trust_script()),
-            action,
-            "--mode",
-            selected.mode,
-            "--user",
-            selected.user,
-            *quiet_args,
-        ],
+        command,
         capture=capture,
         check=False,
-        activity="Nix daemon trust repair" if action == "repair" else None,
+        activity=None,
     )
 
 
 def ensure_nix_daemon_trust(*, platform: str | None = None) -> None:
-    """Repair Linux daemon trust before a command performs any Nix evaluation."""
+    """Repair daemon trust before a command performs any Nix evaluation."""
     if not nix_trust_is_applicable(platform):
         return
     context = current_nix_trust_context()

@@ -32,19 +32,25 @@ from envy.mirror import (
 
 
 class MirrorTests(unittest.TestCase):
-    def test_trust_status_is_registered_and_reports_darwin_declarative_state(self):
+    def test_trust_status_checks_the_daemon_on_both_platforms(self):
         context = SimpleNamespace(mode="china", user="policy-user")
-        with patch("envy.mirror.nix_trust_is_applicable", return_value=False), patch(
-            "envy.mirror.current_nix_trust_context", return_value=context
-        ):
-            result = CliRunner().invoke(
-                main.cli, ["mirror", "trust", "status", "--json"]
-            )
+        for platform in ("darwin", "linux"):
+            with self.subTest(platform=platform), patch(
+                "envy.nix_trust.sys.platform", platform
+            ), patch("envy.mirror.current_nix_trust_context", return_value=context), patch(
+                "envy.mirror.run_nix_trust",
+                return_value=subprocess.CompletedProcess([], 0, "ready", ""),
+            ) as run:
+                result = CliRunner().invoke(
+                    main.cli, ["mirror", "trust", "status", "--json"]
+                )
 
-        self.assertEqual(result.exit_code, 0, result.output)
-        payload = json.loads(result.output)
-        self.assertTrue(payload["ok"])
-        self.assertEqual(payload["data"]["state"], "declarative")
+                self.assertEqual(result.exit_code, 0, result.output)
+                payload = json.loads(result.output)
+                self.assertTrue(payload["ok"])
+                self.assertEqual(payload["data"]["state"], "ready")
+                self.assertEqual(payload["data"]["platform"], platform)
+                run.assert_called_once_with("status", context=context, capture=True, quiet=False)
 
     def test_entries_flatten_effective_values_and_hide_probe_metadata(self):
         mirrors = {

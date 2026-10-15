@@ -406,11 +406,14 @@ def run_darwin_switch() -> None:
     else:
         log.warn("darwin", "darwin-rebuild not found, using repository-locked fallback")
         command = [
-            "nix", "run", "--inputs-from", "path:.", "darwin", "--", "switch",
+            # sudo does not retain bootstrap's NIX_CONFIG or the user's Nix
+            # configuration, so enable flake support on this invocation too.
+            "nix", "--extra-experimental-features", "nix-command flakes",
+            "run", "--inputs-from", "path:.", "darwin", "--", "switch",
             "--flake", flake_target(), "--impure",
         ]
     esudo(
-        "--preserve-env=HOME", *command, capture=False,
+        "--preserve-env=HOME,NIX_CONFIG", *command, capture=False,
         activity="nix-darwin build and activation",
     )
     log.ok("darwin", "system successfully updated")

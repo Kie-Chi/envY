@@ -1,4 +1,4 @@
-{ config, lib, machinePlatform, ... }:
+{ config, lib, pkgs, sys, machinePlatform, ... }:
 
 let
   catalog = import ./catalog.nix;
@@ -7,6 +7,15 @@ let
     config.envy.mirrors.overrides;
   substituters = lib.concatStringsSep " " profile.nix.substituters;
   extraSubstituters = lib.concatStringsSep " " profile.nix.extraSubstituters;
+  nixTrustSource = ../../resources/scripts/nix-trust.sh;
+  nixTrust = pkgs.writeShellApplication {
+    name = "envy-nix-trust";
+    runtimeInputs = with pkgs; [ coreutils diffutils gawk gnugrep ];
+    text = ''
+      exec ${pkgs.bash}/bin/bash "${nixTrustSource}" "$@"
+    '';
+  };
+  nixTrustCommand = "${nixTrust}/bin/envy-nix-trust";
   condaConfig = {
     envs_dirs = [ "~/.mamba/envs" ];
     pkgs_dirs = [ "~/.mamba/pkgs" ];
@@ -22,6 +31,28 @@ in
 {
   imports = lib.optionals (machinePlatform == "linux") [ ./linux.nix ];
 
+  # nix.enable is false on Darwin so nix-darwin does not own the installer's
+  # daemon configuration. Use the same marked configuration on both platforms.
+  home.activation.configureNixDaemonTrust = sys.task.root {
+    name = "configure-nix-daemon-trust";
+    script = ''
+      if ${nixTrustCommand} status \
+          --mode "${config.envy.mirrors.mode}" \
+          --user "${config.envy.user.name}"; then
+        :
+      else
+        TRUST_STATUS=$?
+        if [ "$TRUST_STATUS" -ne 1 ]; then
+          exit "$TRUST_STATUS"
+        fi
+        esudo ${nixTrustCommand} repair \
+          --mode "${config.envy.mirrors.mode}" \
+          --user "${config.envy.user.name}" \
+          --elevated
+      fi
+    '';
+  };
+
   home.sessionVariables = {
     npm_config_registry = profile.npm.registry;
     PIP_INDEX_URL = profile.python.index;
@@ -35,6 +66,7 @@ in
 
   home.file = {
     ".config/nix/nix.conf".text = ''
+      extra-experimental-features = nix-command flakes
       ${nixMirrorConfig}fallback = true
       connect-timeout = 5
     '';

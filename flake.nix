@@ -375,11 +375,10 @@
             && !(configuration.config.envy.machine.manifest.mirrors ? dockerInstallerMirror)
             && builtins.elem
               "https://cache.thalheim.io"
-              configuration.config.nix.settings.substituters
+              configuration.config.envy.machine.manifest.mirrors.nix.extraSubstituters
             && builtins.elem
               "cache.thalheim.io-1:R7msbosLEZKrxk/lKxf9BTjOOH7Ax3H0Qj0/6wiHOgc="
-              configuration.config.nix.settings.extra-trusted-public-keys
-            && configuration.config.nix.settings.download-attempts == 3
+              configuration.config.envy.machine.manifest.mirrors.nix.extraTrustedPublicKeys
             && configuration.config.envy.machine.manifest.schemaVersion == 3
             && configuration.config.envy.machine.manifest.software.sources ? "nix:nixpkgs"
             && configuration.config.envy.machine.manifest ? environment

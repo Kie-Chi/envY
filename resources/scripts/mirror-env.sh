@@ -19,7 +19,11 @@ esac
 export ENVY_MIRROR="$envy_mirror_mode"
 
 if [ "${ENVY_MIRROR_ENV_APPLIED:-}" != "$envy_mirror_mode" ]; then
-    envy_nix_config='extra-substituters = https://cache.thalheim.io
+    # Official Nix installs leave these disabled. Both bootstrap entry points
+    # and setup's child processes need them before the first flake evaluation.
+    # Use extra- to preserve any experimental features already configured.
+    envy_nix_config='extra-experimental-features = nix-command flakes
+extra-substituters = https://cache.thalheim.io
 fallback = true
 connect-timeout = 5'
     if [ "$envy_mirror_mode" = "china" ]; then

@@ -32,8 +32,8 @@ generated assignments，其他 target 与手工 machine policy 不受影响。ca
 
 首次安装时 machine module 还没有求值，镜像分为两个阶段：
 
-1. `install.sh --mirror china|upstream` 设置 `ENVY_MIRROR`。`china` 模式会先通过 `gh-proxy.com` clone GitHub 仓库（可用 `ENVY_GIT_MIRROR_URL` 替换），失败后回退直连；`setup.sh` 加载 `resources/scripts/mirror-env.sh`，在第一次 `nix develop` 前注入临时 Nix、npm、PyPI/uv、Go 和 Rust/Cargo 环境。Linux 还会先用 `resources/scripts/nix-trust.sh` 校准 Nix daemon trust。
-2. setup 写入 machine setting；`envy apply` 后由 `modules/mirrors/` 维护长期配置。Darwin 通过 nix-darwin 的 `nix.settings` 声明，Linux 通过同一个 trust helper 维护 marker block。
+1. `install.sh --mirror china|upstream` 设置 `ENVY_MIRROR`。`china` 模式会先通过 `gh-proxy.com` clone GitHub 仓库（可用 `ENVY_GIT_MIRROR_URL` 替换），失败后回退直连；`setup.sh` 加载 `resources/scripts/mirror-env.sh`，在第一次 `nix run` 前启用 `nix-command`/`flakes` 并注入临时 Nix、npm、PyPI/uv、Go 和 Rust/Cargo 环境。Darwin 和 Linux 都会先用 `resources/scripts/nix-trust.sh` 校准 Nix daemon trust。
+2. setup 写入 machine setting；`envy apply` 后由 `modules/mirrors/` 维护长期配置。两种平台共用 Home Manager activation 的 trust helper 维护 daemon marker block 和用户 Nix 配置。Darwin 保持 `nix.enable = false`，不依赖不会生效的 nix-darwin `nix.settings`。
 
 直接运行 `bash setup.sh` 时也会读取 `ENVY_MIRROR`，未指定则使用 `china`。bootstrap shell 中的端点必须与 `modules/mirrors/catalog.nix` 保持一致。
 
@@ -101,11 +101,16 @@ envy mirror trust repair
 
 `status` 展示当前 machine evaluated manifest 中实际生效的平台端点。`probe` 对 catalog 中的 probe URL 做只读 HTTP HEAD 检查，报告状态码和耗时；失败时返回非零，不下载 artifact、不写 machine 配置，也不调用 `chsrc`。
 
-Linux 上的 `trust status` 不写配置；`trust repair` 只替换
-`/etc/nix/nix.custom.conf` 中 `ENVY MANAGED NIX MIRROR` 标记之间的内容，保留标记外的管理员设置。
+Darwin 和 Linux 上的 `trust status` 不写配置；`trust repair` 只替换
+`ENVY MANAGED NIX MIRROR` 标记之间的内容，保留标记外的管理员设置。
+主配置 include `nix.custom.conf` 时管理 `/etc/nix/nix.custom.conf`；官方安装器没有该 include
+时直接管理 `/etc/nix/nix.conf` 中的标记块，不会向一个未被读取的文件写入策略。
 旧 block 会升级到当前策略；重复运行不会写文件或重启服务。只有内容实际变化时，才会重启
-当前 active 的 `nix-daemon.service` 或 `determinate-nixd.service`。marker 缺失一端、重复或顺序
-错误时会停止且不修改文件。`envy apply` 在 `refine` 和首次 Nix 求值之前自动执行同一预检。
+当前 active 的 daemon。Linux 使用 `systemctl`（`nix-daemon.service` 或 `determinate-nixd.service`）；
+Darwin 使用 `launchctl`（`org.nixos.nix-daemon` 或 `systems.determinate.nix-daemon`）。
+重启失败会还原配置，下一次 repair 可以重新尝试。marker 缺失一端、重复或顺序错误时会停止
+且不修改文件；不会替换外部管理的配置 symlink。`envy apply` 在 `refine` 和首次 Nix 求值之前
+自动执行同一预检。首次 macOS apply 通过 sudo 构建时也会保留 bootstrap 的镜像环境。
 
 ## Per-target source selection and cache
 

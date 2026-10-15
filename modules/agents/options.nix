@@ -67,7 +67,10 @@ in
           description = "Additional skill catalog entries beyond agents.skills.active. Instances of an adapter share their discovery directory.";
         };
         additionalSettings = mkOption {
-          type = types.attrs;
+          # attrsOf anything, not attrs: the latter merges shallowly and leaves
+          # nested mkDefault wrappers unevaluated, serializing a literal
+          # {_type="override";...} object into the agent's settings file.
+          type = types.attrsOf types.anything;
           default = { };
           description = "Provider-specific settings merged into the agent's writable application file.";
         };

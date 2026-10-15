@@ -25,7 +25,7 @@ in
     builtins.elem "desktoppr" (map lib.getName config.envy.software.nix.packages.effective)
   ) (sys.task.activation {
     name = "deployWallPaper";
-    script = sys.deployScript {
+    script = sys.config.deployScript {
       source = wallpaperSource;
       target = wallpaperPath;
       owner = config.home.username;

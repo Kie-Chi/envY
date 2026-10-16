@@ -175,7 +175,8 @@ render_block() {
 
     printf '%s\n' \
         "$BEGIN_MARKER" \
-        'extra-experimental-features = nix-command flakes'
+        'extra-experimental-features = nix-command flakes' \
+        'http2 = false'
     if [ "$mirror_mode" = "china" ]; then
         printf '%s\n' "substituters = $USTC_URL"
     fi

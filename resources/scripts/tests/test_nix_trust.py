@@ -142,6 +142,7 @@ class NixTrustScriptTests(unittest.TestCase):
         self.assertNotIn(USTC, text)
         self.assertIn("extra-trusted-users = policy-user", text)
         self.assertIn("download-attempts = 3", text)
+        self.assertIn("http2 = false", text)
         self.assertIn("extra-experimental-features = nix-command flakes", text)
 
     def test_old_marker_block_is_upgraded_without_touching_admin_content(self):
@@ -162,6 +163,7 @@ class NixTrustScriptTests(unittest.TestCase):
         self.assertIn(f"substituters = {USTC}", text)
         self.assertIn(f"extra-substituters = {THALHEIM} {NIXOS}", text)
         self.assertIn(f"extra-trusted-substituters = {THALHEIM} {NIXOS} {USTC}", text)
+        self.assertIn("http2 = false", text)
         self.assertNotIn("old.invalid", text)
         self.assertEqual(text.count(BEGIN), 1)
         self.assertEqual(text.count(END), 1)
@@ -279,6 +281,7 @@ class NixTrustScriptTests(unittest.TestCase):
         self.assertIn(f"substituters = {USTC}", text)
         self.assertIn(f"extra-substituters = {THALHEIM} {NIXOS}", text)
         self.assertIn(f"extra-trusted-substituters = {THALHEIM} {NIXOS} {USTC}", text)
+        self.assertIn("http2 = false", text)
         self.assertEqual(self.system_config.stat().st_mode & 0o777, 0o640)
         self.assertEqual(self.custom_config.read_text(), "inactive-setting = keep\n")
         inode = self.system_config.stat().st_ino

@@ -23,7 +23,9 @@
       ];
       condaForge = "https://conda.anaconda.org/conda-forge";
     };
+    flakeSourceMirror = null;
     homebrew = {
+      installerUrl = "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh";
       apiDomain = "https://formulae.brew.sh/api";
       bottleDomain = "https://ghcr.io/v2/homebrew/core";
       brewGitRemote = "https://github.com/Homebrew/brew";
@@ -88,11 +90,15 @@
       ];
       condaForge = "https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge";
     };
+    flakeSourceMirror = "https://gh-proxy.com/";
     homebrew = {
-      apiDomain = "https://mirrors.tuna.tsinghua.edu.cn/homebrew-bottles/api";
-      bottleDomain = "https://mirrors.tuna.tsinghua.edu.cn/homebrew-bottles";
-      brewGitRemote = "https://mirrors.tuna.tsinghua.edu.cn/git/homebrew/brew.git";
-      coreGitRemote = "https://mirrors.tuna.tsinghua.edu.cn/git/homebrew/homebrew-core.git";
+      installerUrl = "https://mirrors.ustc.edu.cn/misc/brew-install.sh";
+      apiDomain = "https://mirrors.ustc.edu.cn/homebrew-bottles/api";
+      bottleDomain = "https://mirrors.ustc.edu.cn/homebrew-bottles";
+      brewGitRemote = "https://mirrors.ustc.edu.cn/brew.git";
+      # USTC no longer publishes homebrew-core.git. Modern Homebrew uses the
+      # mirrored JSON API by default; explicit core Git use stays upstream.
+      coreGitRemote = "https://github.com/Homebrew/homebrew-core";
     };
     apt = {
       ubuntu = "https://mirrors.tuna.tsinghua.edu.cn/ubuntu";
@@ -114,7 +120,8 @@
         { name = "Conda defaults"; url = "https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/noarch/repodata.json.zst"; }
       ];
       darwin = [
-        { name = "Homebrew API"; url = "https://mirrors.tuna.tsinghua.edu.cn/homebrew-bottles/api/formula/curl.json"; }
+        { name = "Homebrew installer"; url = "https://mirrors.ustc.edu.cn/misc/brew-install.sh"; }
+        { name = "Homebrew API"; url = "https://mirrors.ustc.edu.cn/homebrew-bottles/api/formula/curl.json"; }
       ];
       linux = [
         { name = "Ubuntu archive"; url = "https://mirrors.tuna.tsinghua.edu.cn/ubuntu/dists/noble/InRelease"; }

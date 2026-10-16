@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from envy import log
 from envy.journal import record_operation
-from envy.process import run_process
+from envy.process import prime_flake_sources, run_process
 from envy.transaction import FileTransaction
 from envy.utils import ENVY_ROOT
 from envy.workflows.check import check_or_exit
@@ -26,6 +26,7 @@ def update_inputs(input_name: str | None = None, *, validate: bool = True) -> No
             command, cwd=ENVY_ROOT, check=True,
             activity="flake input update",
         )
+        prime_flake_sources(ENVY_ROOT)
         if validate:
             check_or_exit(all_machines=True)
         transaction.commit()

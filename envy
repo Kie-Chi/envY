@@ -7,6 +7,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 export ENVY_ROOT="$ROOT"
 export PYTHONPATH="$ROOT/resources/scripts:${PYTHONPATH:-}"
 MIRROR_ENV_SCRIPT="$ROOT/resources/scripts/mirror-env.sh"
+FLAKE_SOURCE_MIRROR_SCRIPT="$ROOT/resources/scripts/flake-source-mirror.sh"
 
 # Nix installers update shell startup files, but this process may be running
 # before those files have been sourced (notably right after bootstrap). Restore
@@ -45,6 +46,9 @@ if [ "${ENVY_DEV_SHELL:-0}" != "1" ] && command -v nix >/dev/null 2>&1; then
   # `nix develop` pulls the whole closure from the upstream cache.
   # shellcheck source=resources/scripts/mirror-env.sh
   [ -f "$MIRROR_ENV_SCRIPT" ] && . "$MIRROR_ENV_SCRIPT"
+  if [ -r "$FLAKE_SOURCE_MIRROR_SCRIPT" ]; then
+    bash "$FLAKE_SOURCE_MIRROR_SCRIPT" "$ROOT" prime || true
+  fi
   export ENVY_DEV_SHELL=1
   exec nix develop "path:$ROOT" --command "$ROOT/envy" "$@"
 fi

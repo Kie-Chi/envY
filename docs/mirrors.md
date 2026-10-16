@@ -48,7 +48,7 @@ generated assignments，其他 target 与手工 machine policy 不受影响。ca
 | Common | rustup / Cargo | RSProxy |
 | Common | Maven Central | Aliyun public repository |
 | Common | Conda / conda-forge | TUNA；保留仓库原有 mamba env/package directories |
-| Darwin | Homebrew API, bottles, brew/core Git | TUNA，通过 nix-darwin activation environment |
+| Darwin | Homebrew installer, API, bottles, brew/core Git | China 使用 USTC；Homebrew core Git 当前保留官方地址；通过 nix-darwin activation environment |
 | Linux | Ubuntu / Debian APT | TUNA，Deb822 source owned by envY |
 | Linux | Docker installer | `get.docker.com --mirror Aliyun` |
 
@@ -73,6 +73,30 @@ https://cache.nixos.org/
 Nix source fetcher 上而不是 binary cache。前者是有意保留的官方回退，后者仍使用源码声明
 中的原始 URL。可以用 `nix config show | grep '^substituters'` 检查当前生效顺序；如果仍然
 看到 USTC 排在系统默认缓存之后，说明尚未重新运行 Home Manager/nix-darwin activation。
+
+### Flake source mirror
+
+`substituters` 是二进制缓存设置，不能替代 Flake source mirror。`china` profile 的
+`flakeSourceMirror` 当前是显式 catalog endpoint；`upstream` profile 不做源码预取。
+在第一次 `nix run`、`nix develop` 或后续 `envy` Nix 命令前，
+`resources/scripts/flake-source-mirror.sh` 从 `flake.lock` 读取 GitHub/GitHub API
+锁定节点，把对应 archive 通过镜像预取到 Nix store。每次预取都携带锁定的 `narHash`，
+内容校验失败时 Nix 会拒绝该 source；失败的节点保留原始锁定 URL 作为回退。成功运行的
+lock fingerprint 和 endpoint marker 写入 `${XDG_CACHE_HOME:-~/.cache}/envy/flake-sources`，
+不会修改 `flake.nix` 或 `flake.lock`。
+
+可以用环境变量显式控制 bootstrap：
+
+```bash
+ENVY_FLAKE_MIRROR_URL='https://trusted.example/' ./envy check
+ENVY_FLAKE_SOURCE_MIRROR=0 ./envy check
+ENVY_MIRROR=upstream ./envy check
+```
+
+`ENVY_FLAKE_MIRROR_URL` 只接受 HTTPS endpoint；显式 endpoint 优先于 catalog。镜像预取
+只覆盖 Flake lock 中有 `narHash` 的 GitHub/GitHub API source，固定哈希的其他下载地址仍
+保持声明中的原始 URL。当前默认的 `gh-proxy.com` 属于版本化 bootstrap policy；如果组织
+环境不信任该 endpoint，应通过 `ENVY_FLAKE_MIRROR_URL` 指向已审查的镜像，或禁用该功能。
 
 DNF、pacman 和 zypper 继续使用机器已有 repositories。仓库目前没有为这些发行版选择并验证统一镜像，不能因为它们也安装 system packages 就复用 APT 配置。
 
@@ -161,7 +185,7 @@ effective source 会以 `CURRENT profile` 或 `CURRENT override` 标识。候选
 
 Nix binary cache 只提供已经构建的 store paths，不能代替所有 source 下载：
 
-- clone envY 仓库在 `china` 模式默认使用 `gh-proxy.com`，也会回退到 GitHub 直连；可以用 `ENVY_GIT_MIRROR_URL` 或 `ENVY_REPOSITORY_URL` 指向用户信任的 endpoint。flake 的 GitHub inputs 仍需能够访问 GitHub，受限网络可设置 `HTTPS_PROXY`。
+- clone envY 仓库在 `china` 模式默认使用 `gh-proxy.com`，也会回退到 GitHub 直连；可以用 `ENVY_GIT_MIRROR_URL` 或 `ENVY_REPOSITORY_URL` 指向用户信任的 endpoint。Flake source mirror 会对有锁定 `narHash` 的 GitHub/GitHub API input 先做校验预取；镜像失败时 Nix 仍回退到原始锁定 URL，其他固定哈希下载保持原 URL。
 - `china` 模式的 Nix installer 使用清华镜像中的官方 Nix 二进制安装脚本，脚本会先验证 tarball 的 SHA-256；`upstream` 模式继续使用 Determinate Nix Installer。需要其他来源时显式设置经过审查的 `ENVY_NIX_INSTALLER_URL`，必要时配合 `ENVY_NIX_INSTALLER_ARGS`。
 - 固定哈希的 `fetchurl`、`fetchFromGitHub`、Zotero XPI、GitHub release、KDE artifact 和 Rime source 保持原 URL。把它们透明改写到通用代理会改变供应链边界，即使哈希仍能检测内容变化。
 - Docker 与 Waydroid 安装脚本仍来自其官方 endpoint；Docker 的 package repository 通过官方脚本参数选择 Aliyun。

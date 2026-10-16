@@ -5,7 +5,7 @@ import json
 import re
 from pathlib import Path
 
-from envy.process import run_process
+from envy.process import prime_flake_sources, run_process
 from envy.secure_io import atomic_write_text
 from envy.sources.model import SourceError, public_url
 from envy.transaction import FileTransaction
@@ -74,6 +74,7 @@ def apply(input_name, ref, action, *, root=ENVY_ROOT):
             run_process(["nix", "flake", "lock", f"path:{root}"], cwd=root, check=True,
                         capture=True,
                         activity="shared software source lock")
+            prime_flake_sources(root)
             stage = "evaluating all machines"
             check_or_exit(all_machines=True)
             # A source can support either project platform; absent outputs stay unsupported.

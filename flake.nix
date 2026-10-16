@@ -303,8 +303,9 @@
           bash -n setup.sh
           bash -n requires.sh
           bash -n resources/scripts/mirror-env.sh
+          bash -n ${./resources/scripts/flake-source-mirror.sh}
           bash -n resources/scripts/nix-trust.sh
-          shellcheck -x envy install.sh setup.sh requires.sh resources/scripts/mirror-env.sh resources/scripts/nix-trust.sh
+          shellcheck -x envy install.sh setup.sh requires.sh resources/scripts/mirror-env.sh resources/scripts/flake-source-mirror.sh resources/scripts/nix-trust.sh
           touch "$out"
         '';
 

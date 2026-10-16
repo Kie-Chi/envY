@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shlex
@@ -15,6 +16,66 @@ from typing import Mapping, Sequence
 from urllib.parse import urlsplit, urlunsplit
 
 from envy import log
+
+
+_FLAKE_SOURCE_MIRROR_PRIMED: set[tuple[str, str]] = set()
+
+
+def prime_flake_sources(
+    cwd: Path | str | None = None, env: Mapping[str, str] | None = None,
+) -> None:
+    """Prime the current checkout's locked Flake sources through its mirror."""
+    effective_env = dict(env) if env is not None else os.environ.copy()
+    if effective_env.get("ENVY_FLAKE_SOURCE_MIRROR", "1").strip().casefold() in {
+        "0", "false", "no", "off",
+    }:
+        return
+    checkout = Path(cwd or effective_env.get("ENVY_ROOT", Path.cwd())).expanduser()
+    lock_file = checkout / "flake.lock"
+    helper = checkout / "resources" / "scripts" / "flake-source-mirror.sh"
+    if not lock_file.is_file() or not helper.is_file():
+        return
+    key = str(checkout.resolve())
+    try:
+        lock_signature = hashlib.sha256(lock_file.read_bytes()).hexdigest()
+    except OSError:
+        return
+    state_key = (key, lock_signature)
+    if state_key in _FLAKE_SOURCE_MIRROR_PRIMED:
+        return
+    result = subprocess.run(
+        ["bash", str(helper), str(checkout), "prime"],
+        cwd=str(checkout),
+        env=effective_env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        log.debug(
+            "mirror", "flake source prefetch helper failed; using locked URLs",
+            checkout=key, exit_code=result.returncode,
+        )
+    elif result.stderr and log.is_debug():
+        log.debug("mirror", "flake source prefetch completed", checkout=key)
+    _FLAKE_SOURCE_MIRROR_PRIMED.add(state_key)
+
+
+def _maybe_prime_flake_sources(
+    command: Sequence[str], cwd: Path | str | None, env: Mapping[str, str] | None,
+) -> None:
+    """Prime locked Flake sources once before a Nix Flake command."""
+    effective_env = dict(env) if env is not None else os.environ.copy()
+    nix_index = next(
+        (index for index, part in enumerate(command) if Path(str(part)).name == "nix"),
+        None,
+    )
+    if nix_index is None:
+        return
+    nix_commands = {"build", "develop", "eval", "flake", "run", "search"}
+    if not any(str(part) in nix_commands for part in command[nix_index + 1:]):
+        return
+    prime_flake_sources(cwd, effective_env)
 
 
 class CommandError(subprocess.CalledProcessError):
@@ -203,6 +264,7 @@ def run_process(
     activity: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     argv = [str(part) for part in command]
+    _maybe_prime_flake_sources(argv, cwd, env)
     displayed = command_display(argv)
     reporter = _ActivityReporter(activity or _activity_label(argv))
     log.debug(

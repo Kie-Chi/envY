@@ -42,6 +42,7 @@ profile // {
     condaForge = field "conda" "condaForge" profile.conda.condaForge;
   };
   homebrew = profile.homebrew // {
+    installerUrl = field "homebrew" "installerUrl" profile.homebrew.installerUrl;
     apiDomain = field "homebrew" "apiDomain" profile.homebrew.apiDomain;
     bottleDomain = field "homebrew" "bottleDomain" profile.homebrew.bottleDomain;
     brewGitRemote = field "homebrew" "brewGitRemote" profile.homebrew.brewGitRemote;
@@ -53,5 +54,6 @@ profile // {
     debian = field "apt" "debian" profile.apt.debian;
     debianSecurity = field "apt" "debianSecurity" profile.apt.debianSecurity;
   };
+  flakeSourceMirror = valueAt [ "flakeSourceMirror" ] (profile.flakeSourceMirror or null);
   dockerInstallerMirror = valueAt [ "dockerInstallerMirror" ] profile.dockerInstallerMirror;
 }

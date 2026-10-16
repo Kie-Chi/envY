@@ -48,7 +48,7 @@ generated assignments，其他 target 与手工 machine policy 不受影响。ca
 | Common | rustup / Cargo | RSProxy |
 | Common | Maven Central | Aliyun public repository |
 | Common | Conda / conda-forge | TUNA；保留仓库原有 mamba env/package directories |
-| Darwin | Homebrew installer, API, bottles, brew/core Git | China 使用 USTC；Homebrew core Git 当前保留官方地址；通过 nix-darwin activation environment |
+| Darwin | Homebrew installer, API, OCI artifacts, bottles, brew/core Git | China 使用 USTC 的 installer/API/普通 bottle 源；portable Ruby 等 OCI artifact 使用 catalog 中的 digest mirror；Homebrew core Git 当前保留官方地址；通过 nix-darwin activation environment |
 | Linux | Ubuntu / Debian APT | TUNA，Deb822 source owned by envY |
 | Linux | Docker installer | `get.docker.com --mirror Aliyun` |
 
@@ -187,6 +187,7 @@ Nix binary cache 只提供已经构建的 store paths，不能代替所有 sourc
 
 - clone envY 仓库在 `china` 模式默认使用 `gh-proxy.com`，也会回退到 GitHub 直连；可以用 `ENVY_GIT_MIRROR_URL` 或 `ENVY_REPOSITORY_URL` 指向用户信任的 endpoint。Flake source mirror 会对有锁定 `narHash` 的 GitHub/GitHub API input 先做校验预取；镜像失败时 Nix 仍回退到原始锁定 URL，其他固定哈希下载保持原 URL。
 - `china` 模式的 Nix installer 使用清华镜像中的官方 Nix 二进制安装脚本，脚本会先验证 tarball 的 SHA-256；`upstream` 模式继续使用 Determinate Nix Installer。需要其他来源时显式设置经过审查的 `ENVY_NIX_INSTALLER_URL`，必要时配合 `ENVY_NIX_INSTALLER_ARGS`。
+- Homebrew 的 portable Ruby 是按 OCI digest 获取的 artifact，不能假定 USTC 的平面 bottle 目录包含 API 返回的每个文件。China profile 因此将 API/普通 bottle 与 OCI artifact endpoint 分开配置；更换 artifact endpoint 时，应验证对应 portable Ruby digest 可以直接读取。
 - 固定哈希的 `fetchurl`、`fetchFromGitHub`、Zotero XPI、GitHub release、KDE artifact 和 Rime source 保持原 URL。把它们透明改写到通用代理会改变供应链边界，即使哈希仍能检测内容变化。
 - Docker 与 Waydroid 安装脚本仍来自其官方 endpoint；Docker 的 package repository 通过官方脚本参数选择 Aliyun。
 

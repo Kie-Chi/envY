@@ -8,6 +8,7 @@ let
   # China bootstrap endpoints after selecting the upstream machine profile.
   homebrewEnv = {
     HOMEBREW_API_DOMAIN = profile.homebrew.apiDomain;
+    HOMEBREW_ARTIFACT_DOMAIN = profile.homebrew.artifactDomain;
     HOMEBREW_BOTTLE_DOMAIN = profile.homebrew.bottleDomain;
     HOMEBREW_BREW_GIT_REMOTE = profile.homebrew.brewGitRemote;
     HOMEBREW_CORE_GIT_REMOTE = profile.homebrew.coreGitRemote;

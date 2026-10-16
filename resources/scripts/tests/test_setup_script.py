@@ -15,12 +15,14 @@ UPSTREAM_INSTALLER = "https://raw.githubusercontent.com/Homebrew/install/HEAD/in
 HOMEBREW_ENV = {
     "china": [
         "https://mirrors.ustc.edu.cn/homebrew-bottles/api",
+        "https://ghcr.nju.edu.cn",
         "https://mirrors.ustc.edu.cn/homebrew-bottles",
         "https://mirrors.ustc.edu.cn/brew.git",
         "https://github.com/Homebrew/homebrew-core",
     ],
     "upstream": [
         "https://formulae.brew.sh/api",
+        "https://ghcr.io",
         "https://ghcr.io/v2/homebrew/core",
         "https://github.com/Homebrew/brew",
         "https://github.com/Homebrew/homebrew-core",
@@ -48,8 +50,9 @@ if [ "${ENVY_TEST_DOWNLOAD_FAILURE:-}" = all ] \\
 fi
 cat > "$output" <<'INSTALLER'
 set -eu
-printf '%s\\n' "$HOMEBREW_API_DOMAIN" "$HOMEBREW_BOTTLE_DOMAIN" \\
-    "$HOMEBREW_BREW_GIT_REMOTE" "$HOMEBREW_CORE_GIT_REMOTE" \\
+printf '%s\\n' "$HOMEBREW_API_DOMAIN" "$HOMEBREW_ARTIFACT_DOMAIN" \\
+    "$HOMEBREW_BOTTLE_DOMAIN" "$HOMEBREW_BREW_GIT_REMOTE" \\
+    "$HOMEBREW_CORE_GIT_REMOTE" \\
     > "$ENVY_TEST_INSTALLED_ENV"
 if [ "${ENVY_TEST_INSTALLER_FAILURE:-0}" = 1 ]; then exit 9; fi
 printf '#!/bin/bash\\nprintf "Homebrew 7.0.0\\\\n"\\n' > "$ENVY_TEST_BREW_PATH"
@@ -137,13 +140,14 @@ class SetupScriptTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             override = "https://trusted.example/install.sh"
-            values = ["https://trusted.example/" + name for name in ("api", "bottles", "brew", "core")]
+            values = ["https://trusted.example/" + name for name in ("api", "artifacts", "bottles", "brew", "core")]
             result = self.run_requires(root, "Darwin", extra_env={
                 "ENVY_HOMEBREW_INSTALL_URL": override,
                 "HOMEBREW_API_DOMAIN": values[0],
-                "HOMEBREW_BOTTLE_DOMAIN": values[1],
-                "HOMEBREW_BREW_GIT_REMOTE": values[2],
-                "HOMEBREW_CORE_GIT_REMOTE": values[3],
+                "HOMEBREW_ARTIFACT_DOMAIN": values[1],
+                "HOMEBREW_BOTTLE_DOMAIN": values[2],
+                "HOMEBREW_BREW_GIT_REMOTE": values[3],
+                "HOMEBREW_CORE_GIT_REMOTE": values[4],
                 # The installer still needs its environment when setup has
                 # already applied the shared bootstrap environment marker.
                 "ENVY_MIRROR_ENV_APPLIED": "china",

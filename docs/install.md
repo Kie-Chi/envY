@@ -90,7 +90,10 @@ curl --proto '=https' --tlsv1.2 -fsSL \
 
 对应环境变量是 `ENVY_REPOSITORY_URL`、`ENVY_BRANCH`、`ENVY_ROOT`、`ENVY_MIRROR` 和
 `ENVY_GIT_MIRROR_URL`。`ENVY_NIX_INSTALLER_URL` 可以显式覆盖 Nix installer 下载地址；Darwin 的
-`ENVY_HOMEBREW_INSTALL_URL` 可以显式指定经过信任的 Homebrew 安装脚本地址。`--reset-secrets` 也可以通过
+`ENVY_HOMEBREW_INSTALL_URL` 可以显式指定经过信任的 Homebrew 安装脚本地址，
+`ENVY_HOMEBREW_ARTIFACT_DOMAIN` 可以显式指定 Homebrew OCI artifact mirror。China 默认使用
+USTC 的 Homebrew API/普通 bottle 源，并使用可按 digest 读取 portable Ruby 的 OCI endpoint；
+`ENVY_HOMEBREW_BOTTLE_DOMAIN` 仍可覆盖普通 bottle 源。`--reset-secrets` 也可以通过
 `bash setup.sh --reset-secrets` 使用。它不会读取旧 secrets 的值，保存时会整体替换加密文件。
 
 如果该地址提供标准 Nix 安装脚本，可再设置 `ENVY_NIX_INSTALLER_ARGS='--daemon'`。

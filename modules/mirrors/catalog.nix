@@ -27,6 +27,7 @@
     homebrew = {
       installerUrl = "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh";
       apiDomain = "https://formulae.brew.sh/api";
+      artifactDomain = "https://ghcr.io";
       bottleDomain = "https://ghcr.io/v2/homebrew/core";
       brewGitRemote = "https://github.com/Homebrew/brew";
       coreGitRemote = "https://github.com/Homebrew/homebrew-core";
@@ -94,6 +95,9 @@
     homebrew = {
       installerUrl = "https://mirrors.ustc.edu.cn/misc/brew-install.sh";
       apiDomain = "https://mirrors.ustc.edu.cn/homebrew-bottles/api";
+      # USTC publishes the API and flat bottle mirror, but not all OCI
+      # portable-Ruby artifacts. Use a digest-addressable OCI mirror here.
+      artifactDomain = "https://ghcr.nju.edu.cn";
       bottleDomain = "https://mirrors.ustc.edu.cn/homebrew-bottles";
       brewGitRemote = "https://mirrors.ustc.edu.cn/brew.git";
       # USTC no longer publishes homebrew-core.git. Modern Homebrew uses the

@@ -69,10 +69,12 @@ fi
 if [ "$(uname -s)" = "Darwin" ]; then
     if [ "$envy_mirror_mode" = "china" ]; then
         export HOMEBREW_API_DOMAIN="${ENVY_HOMEBREW_API_DOMAIN:-${HOMEBREW_API_DOMAIN:-https://mirrors.ustc.edu.cn/homebrew-bottles/api}}"
+        export HOMEBREW_ARTIFACT_DOMAIN="${ENVY_HOMEBREW_ARTIFACT_DOMAIN:-${HOMEBREW_ARTIFACT_DOMAIN:-https://ghcr.nju.edu.cn}}"
         export HOMEBREW_BOTTLE_DOMAIN="${ENVY_HOMEBREW_BOTTLE_DOMAIN:-${HOMEBREW_BOTTLE_DOMAIN:-https://mirrors.ustc.edu.cn/homebrew-bottles}}"
         export HOMEBREW_BREW_GIT_REMOTE="${ENVY_HOMEBREW_BREW_GIT_REMOTE:-${HOMEBREW_BREW_GIT_REMOTE:-https://mirrors.ustc.edu.cn/brew.git}}"
     else
         export HOMEBREW_API_DOMAIN="${ENVY_HOMEBREW_API_DOMAIN:-${HOMEBREW_API_DOMAIN:-https://formulae.brew.sh/api}}"
+        export HOMEBREW_ARTIFACT_DOMAIN="${ENVY_HOMEBREW_ARTIFACT_DOMAIN:-${HOMEBREW_ARTIFACT_DOMAIN:-https://ghcr.io}}"
         export HOMEBREW_BOTTLE_DOMAIN="${ENVY_HOMEBREW_BOTTLE_DOMAIN:-${HOMEBREW_BOTTLE_DOMAIN:-https://ghcr.io/v2/homebrew/core}}"
         export HOMEBREW_BREW_GIT_REMOTE="${ENVY_HOMEBREW_BREW_GIT_REMOTE:-${HOMEBREW_BREW_GIT_REMOTE:-https://github.com/Homebrew/brew}}"
     fi

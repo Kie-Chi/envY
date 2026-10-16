@@ -44,6 +44,7 @@ profile // {
   homebrew = profile.homebrew // {
     installerUrl = field "homebrew" "installerUrl" profile.homebrew.installerUrl;
     apiDomain = field "homebrew" "apiDomain" profile.homebrew.apiDomain;
+    artifactDomain = field "homebrew" "artifactDomain" profile.homebrew.artifactDomain;
     bottleDomain = field "homebrew" "bottleDomain" profile.homebrew.bottleDomain;
     brewGitRemote = field "homebrew" "brewGitRemote" profile.homebrew.brewGitRemote;
     coreGitRemote = field "homebrew" "coreGitRemote" profile.homebrew.coreGitRemote;

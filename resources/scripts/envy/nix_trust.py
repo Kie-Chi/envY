@@ -51,6 +51,7 @@ def run_nix_trust(
     context: NixTrustContext | None = None,
     capture: bool = False,
     quiet: bool = False,
+    reload: bool = False,
 ):
     selected = context or current_nix_trust_context()
     quiet_args = ["--quiet"] if quiet else []
@@ -62,7 +63,7 @@ def run_nix_trust(
         selected.mode,
         "--user",
         selected.user,
-        *( ["--reload"] if action == "repair" else []),
+        *(["--reload"] if reload else []),
         *quiet_args,
     ]
     if action == "repair":

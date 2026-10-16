@@ -38,11 +38,13 @@ from envy.secure_io import (
 )
 from envy.process import run_process
 from envy.mutation import offer_mutation_commit
+from envy.transaction import FileTransaction
 from envy.utils import (
     AGE_KEY_FILE,
     AGE_KEY_DIR,
     DEVICE_LABEL_FILE,
     ENVY_ROOT,
+    SOPS_YAML,
     LEGACY_MACHINE_SELECTOR,
     LEGACY_SYSTEM_CONFIG,
     LEGACY_USER_CONFIG,
@@ -877,13 +879,44 @@ def set_config_value(path: str, value: str, *, quiet: bool = False) -> None:
         log.ok("machine", "machine value updated", field=path, machine=current_machine_id())
 
 
-def set_secret_value(yaml_path: str, value: str) -> None:
-    data, decrypt_ok = read_secrets_data()
-    if data is None or not decrypt_ok:
-        raise RuntimeError("cannot update a secret without decrypting secrets.yaml")
-    _set_nested(data, yaml_path, value)
-    write_secrets_data(data)
-    log.ok("secrets", "secret value updated", key=yaml_path)
+def set_secret_value(yaml_path: str, value: str, *, replace: bool = False) -> None:
+    if not replace:
+        data, decrypt_ok = read_secrets_data()
+        if data is None or not decrypt_ok:
+            raise RuntimeError(
+                "cannot update a secret without decrypting secrets.yaml; "
+                "use --replace on a new device to initialize a new secrets file"
+            )
+        _set_nested(data, yaml_path, value)
+        write_secrets_data(data)
+        log.ok("secrets", "secret value updated", key=yaml_path)
+        return
+
+    from envy.keys.identity import ensure_sops_label
+    from envy.keys.storage import (
+        current_device_public_key,
+        generate_device_age_key,
+        read_sops_yaml_keys,
+        write_sops_yaml_keys,
+    )
+
+    with FileTransaction([SOPS_YAML, SECRETS_FILE, AGE_KEY_FILE, DEVICE_LABEL_FILE]) as transaction:
+        if not AGE_KEY_FILE.exists():
+            generate_device_age_key()
+        public_key = current_device_public_key()
+        if not public_key:
+            raise RuntimeError("cannot initialize secrets: current age key is unavailable")
+        keys = read_sops_yaml_keys()
+        label = ensure_sops_label()
+        if label == "recovery":
+            raise RuntimeError("device sops label cannot be recovery")
+        keys[label] = public_key
+        data: dict = {}
+        _set_nested(data, yaml_path, value)
+        write_sops_yaml_keys(keys)
+        write_secrets_data(data)
+        transaction.commit()
+    log.ok("secrets", "secret value replaced", key=yaml_path)
 
 
 app = typer.Typer(
@@ -1006,6 +1039,11 @@ def cmd_secret_set(
         ..., help="Secret path, for example llm/steps/apikey", autocompletion=complete_secret_paths,
     ),
     stdin: bool = typer.Option(False, "--stdin", help="Read the secret from standard input"),
+    replace: bool = typer.Option(
+        False,
+        "--replace",
+        help="Initialize a new secrets file without reading the existing ciphertext",
+    ),
 ):
     """Set a secret without exposing it in argv or shell history."""
     if stdin:
@@ -1015,10 +1053,18 @@ def cmd_secret_set(
             log.error("secrets", "non-interactive secret input requires --stdin")
             raise typer.Exit(code=1)
         value = getpass(f"{yaml_path}: ")
-    set_secret_value(yaml_path, value)
+    try:
+        set_secret_value(yaml_path, value, replace=replace)
+    except (OSError, RuntimeError, ValueError) as exc:
+        log.error("secrets", str(exc))
+        if replace:
+            log.hint("The new secrets file was not written; retry with a valid age installation.")
+        else:
+            log.hint("Use --replace only when this is a new device and the old secrets are intentionally discarded.")
+        raise typer.Exit(code=1) from exc
     offer_mutation_commit(
-        [SECRETS_FILE],
-        f"chore(secrets): update {yaml_path}",
+        [SOPS_YAML, SECRETS_FILE],
+        f"chore(secrets): {'replace' if replace else 'update'} {yaml_path}",
     )
 
 

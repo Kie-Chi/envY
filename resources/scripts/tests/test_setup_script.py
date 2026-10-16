@@ -1,5 +1,6 @@
 import os
 import shutil
+import socket as unix_socket
 import subprocess
 import tempfile
 import unittest
@@ -29,6 +30,7 @@ class SetupScriptTests(unittest.TestCase):
                     'printf "runtime:python\\n"\n'
                 ),
                 "nix": (
+                    'if [ "$1" = store ] && [ "$2" = info ]; then exit 0; fi\n'
                     'printf "%s\\n" "$NIX_CONFIG" > "$ENVY_TEST_CAPTURE"\n'
                     'printf "runtime:nix\\n"\n'
                     '[ "$1" = run ] && [ "$2" = "path:$ENVY_ROOT#setup" ]\n'
@@ -39,6 +41,12 @@ class SetupScriptTests(unittest.TestCase):
                 command.write_text(f"#!{shutil.which('bash')}\nset -eu\n" + body)
                 command.chmod(0o755)
             capture = root / "captured-config"
+            daemon_socket = root / "daemon.socket"
+            listener = unix_socket.socket(unix_socket.AF_UNIX, unix_socket.SOCK_STREAM)
+            try:
+                listener.bind(str(daemon_socket))
+            finally:
+                listener.close()
             systemctl = bin_dir / "systemctl"
             systemctl.write_text(
                 f"#!{shutil.which('bash')}\n"
@@ -69,6 +77,7 @@ class SetupScriptTests(unittest.TestCase):
                                 "ENVY_NIX_CUSTOM_CONFIG": str(root / "nix.custom.conf"),
                                 "ENVY_NIX_TRUST_SYSTEMCTL": str(systemctl),
                                 "ENVY_NIX_TRUST_LAUNCHCTL": str(launchctl),
+                                "ENVY_NIX_TRUST_SOCKET": str(daemon_socket),
                                 "NIX_CONFIG": existing_config,
                             })
                             result = subprocess.run(

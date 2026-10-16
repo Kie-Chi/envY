@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket as unix_socket
 import subprocess
 import tempfile
 import unittest
@@ -36,6 +37,22 @@ class NixTrustPythonTests(unittest.TestCase):
 
         sudo.assert_called_once_with(
             "bash", str(SCRIPT), "repair", "--mode", "china", "--user", "policy-user",
+            capture=False,
+            activity="Nix daemon trust repair",
+        )
+
+    def test_repair_can_explicitly_reload_the_daemon(self):
+        from envy import nix_trust
+
+        result = subprocess.CompletedProcess([], 0, "", "")
+        context = nix_trust.NixTrustContext(mode="china", user="policy-user")
+        with patch.object(nix_trust, "esudo", return_value=result) as sudo, patch.object(
+            nix_trust, "nix_trust_script", return_value=SCRIPT
+        ):
+            nix_trust.run_nix_trust("repair", context=context, reload=True)
+
+        sudo.assert_called_once_with(
+            "bash", str(SCRIPT), "repair", "--mode", "china", "--user", "policy-user",
             "--reload",
             capture=False,
             activity="Nix daemon trust repair",
@@ -65,14 +82,26 @@ class NixTrustScriptTests(unittest.TestCase):
         systemctl: Path | str | None = None,
         launchctl: Path | str = "missing-launchctl",
         platform: str = "Linux",
+        socket: Path | str | None = None,
+        nix: Path | str | None = None,
         environment: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         env = dict(os.environ)
         if systemctl is None:
             systemctl = self._systemctl()
+        socket_path = Path(socket or (self.root / "daemon.socket"))
+        if not socket_path.exists():
+            listener = unix_socket.socket(unix_socket.AF_UNIX, unix_socket.SOCK_STREAM)
+            try:
+                listener.bind(str(socket_path))
+            finally:
+                listener.close()
         self.uname.write_text(f"#!{shutil.which('bash')}\nprintf '%s\\n' {platform!r}\n")
         self.uname.chmod(0o755)
+        if nix is None:
+            nix = self._nix()
         env["PATH"] = f"{self.bin_dir}{os.pathsep}{env['PATH']}"
+        env["ENVY_NIX_TRUST_NIX"] = str(nix)
         if environment:
             env.update(environment)
         return subprocess.run(
@@ -92,6 +121,8 @@ class NixTrustScriptTests(unittest.TestCase):
                 str(systemctl),
                 "--launchctl",
                 str(launchctl),
+                "--socket",
+                str(socket or (self.root / "daemon.socket")),
             ],
             capture_output=True,
             text=True,
@@ -174,6 +205,15 @@ class NixTrustScriptTests(unittest.TestCase):
         self.assertIn("malformed", result.stderr)
         self.assertEqual(self.custom_config.read_text(), original)
 
+    def test_configured_socket_is_not_ready_when_nix_cannot_connect(self):
+        self.assertEqual(self.run_helper("repair").returncode, 0)
+        nix = self.root / "nix-failing"
+        nix.write_text(f"#!{shutil.which('bash')}\nexit 1\n")
+        nix.chmod(0o755)
+        result = self.run_helper("status", nix=nix)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("daemon is not ready", result.stdout)
+
     def test_status_reports_repair_without_writing(self):
         original = "admin-setting = keep\n"
         self.custom_config.write_text(original)
@@ -187,10 +227,12 @@ class NixTrustScriptTests(unittest.TestCase):
     def test_ready_configuration_needs_no_sudo_or_write(self):
         self.assertEqual(self.run_helper("repair").returncode, 0)
         inode = self.custom_config.stat().st_ino
+        socket_path = self.root / "daemon.socket"
         self.root.chmod(0o500)
         try:
             result = self.run_helper(
-                "repair", environment={"ENVY_NIX_TRUST_SUDO": "missing-sudo"}
+                "repair", socket=socket_path,
+                environment={"ENVY_NIX_TRUST_SUDO": "missing-sudo"}
             )
         finally:
             self.root.chmod(0o700)
@@ -201,10 +243,14 @@ class NixTrustScriptTests(unittest.TestCase):
     @unittest.skipIf(os.geteuid() == 0, "root does not need sudo for the test directory")
     def test_missing_sudo_fails_explicitly_when_repair_needs_root(self):
         systemctl = self._systemctl()
+        socket_path = self.root / "daemon.socket"
+        listener = unix_socket.socket(unix_socket.AF_UNIX, unix_socket.SOCK_STREAM)
+        listener.bind(str(socket_path))
+        listener.close()
         self.root.chmod(0o500)
         try:
             result = self.run_helper(
-                "repair", systemctl=systemctl,
+                "repair", systemctl=systemctl, socket=socket_path,
                 environment={"ENVY_NIX_TRUST_SUDO": "missing-sudo"}
             )
         finally:
@@ -299,6 +345,16 @@ class NixTrustScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertTrue(self.custom_config.is_symlink())
         self.assertEqual(target.read_text(), "external-setting = keep\n")
+
+    def _nix(self) -> Path:
+        nix = self.bin_dir / "nix"
+        nix.write_text(
+            f"#!{shutil.which('bash')}\n"
+            'if [ "$1" = store ] && [ "$2" = info ] && [ "$4" = daemon ]; then exit 0; fi\n'
+            'exit 1\n'
+        )
+        nix.chmod(0o755)
+        return nix
 
     def _systemctl(self) -> Path:
         systemctl = self.root / "systemctl"

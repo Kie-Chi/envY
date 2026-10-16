@@ -1292,7 +1292,14 @@ def _run_trust_command(action: str, *, json_output: bool) -> None:
 
     capture = action == "status"
     quiet = json_output and action == "repair"
-    result = run_nix_trust(action, context=context, capture=capture, quiet=quiet)
+    trust_args = {
+        "context": context,
+        "capture": capture,
+        "quiet": quiet,
+    }
+    if action == "repair":
+        trust_args["reload"] = True
+    result = run_nix_trust(action, **trust_args)
     ready = result.returncode == 0
     state = "ready" if ready else ("repair-required" if action == "status" and result.returncode == 1 else "error")
     detail = (result.stderr or result.stdout or "").strip()

@@ -22,6 +22,9 @@ system_config="${ENVY_NIX_SYSTEM_CONFIG:-/etc/nix/nix.conf}"
 systemctl_command="${ENVY_NIX_TRUST_SYSTEMCTL:-systemctl}"
 launchctl_command="${ENVY_NIX_TRUST_LAUNCHCTL:-/bin/launchctl}"
 sudo_command="${ENVY_NIX_TRUST_SUDO:-sudo}"
+default_daemon_socket='/nix/var/nix/daemon-socket/socket'
+daemon_socket="${ENVY_NIX_TRUST_SOCKET:-$default_daemon_socket}"
+nix_command="${ENVY_NIX_TRUST_NIX:-nix}"
 elevated=0
 quiet=0
 force_reload=0
@@ -39,6 +42,7 @@ Options:
   --system-config PATH  Parent nix.conf (managed directly if no custom include)
   --quiet               Suppress successful/status output
   --reload              Reload the active daemon even when the block is unchanged
+  --socket PATH         Daemon socket path used for readiness checks
 EOF
 }
 
@@ -106,6 +110,11 @@ while [ "$#" -gt 0 ]; do
         --reload)
             force_reload=1
             shift
+            ;;
+        --socket)
+            [ "$#" -ge 2 ] || fail "--socket requires a value"
+            daemon_socket="$2"
+            shift 2
             ;;
         -h|--help)
             usage
@@ -269,6 +278,25 @@ is_ready() {
     return 1
 }
 
+daemon_socket_ready() {
+    local socket_path
+    if [ "$(uname -s)" = "Darwin" ] && [ "$daemon_socket" = "$default_daemon_socket" ]; then
+        for socket_path in /var/run/nix-daemon.socket "$default_daemon_socket"; do
+            if [ -S "$socket_path" ]; then
+                return 0
+            fi
+        done
+        return 1
+    fi
+    [ -S "$daemon_socket" ]
+}
+
+daemon_ready() {
+    daemon_socket_ready || return 1
+    command -v "$nix_command" >/dev/null 2>&1 || return 1
+    "$nix_command" store info --store daemon >/dev/null 2>&1
+}
+
 restart_active_daemon() {
     local service
     local attempt
@@ -282,11 +310,12 @@ restart_active_daemon() {
                 if "$launchctl_command" print "system/$service" >/dev/null 2>&1; then
                     "$launchctl_command" kickstart -k "system/$service" || return "$?"
                     # launchd can report the job before the restarted daemon
-                    # has registered its sockets. Wait briefly so the first
-                    # Nix call does not race the daemon reload.
+                    # has registered its socket. Wait for the socket itself so
+                    # the first Nix call cannot race the daemon reload.
                     attempt=1
-                    while [ "$attempt" -le 10 ]; do
-                        if "$launchctl_command" print "system/$service" >/dev/null 2>&1; then
+                    while [ "$attempt" -le 15 ]; do
+                        if "$launchctl_command" print "system/$service" >/dev/null 2>&1 \
+                            && daemon_ready; then
                             say "[OK] Restarted $service after updating Nix daemon trust."
                             return 0
                         fi
@@ -308,8 +337,9 @@ restart_active_daemon() {
         if "$systemctl_command" is-active --quiet "$service" 2>/dev/null; then
             "$systemctl_command" restart "$service" || return "$?"
             attempt=1
-            while [ "$attempt" -le 10 ]; do
-                if "$systemctl_command" is-active --quiet "$service" 2>/dev/null; then
+            while [ "$attempt" -le 15 ]; do
+                if "$systemctl_command" is-active --quiet "$service" 2>/dev/null \
+                    && daemon_ready; then
                     say "[OK] Restarted $service after updating Nix daemon trust."
                     return 0
                 fi
@@ -366,8 +396,18 @@ repair_as_current_user() {
 
 select_managed_config
 if is_ready && [ "$force_reload" -eq 0 ]; then
-    say "[OK] Nix daemon trust is ready: $managed_config"
-    exit 0
+    if daemon_ready; then
+        say "[OK] Nix daemon trust is ready: $managed_config"
+        exit 0
+    fi
+    if [ "$command_name" = "status" ]; then
+        say "[INFO] Nix daemon trust is configured but the daemon is not ready: $managed_config"
+        exit 1
+    fi
+    # Reuse the normal elevation path below. A user can inspect a ready
+    # configuration, but restarting a system daemon still needs root on
+    # Darwin and on most Linux installations.
+    force_reload=1
 fi
 
 if [ "$command_name" = "status" ]; then
@@ -397,6 +437,7 @@ if [ "$quiet" -eq 1 ] && [ "$force_reload" -eq 1 ]; then
         --system-config "$system_config" \
         --systemctl "$systemctl_command" \
         --launchctl "$launchctl_command" \
+        --socket "$daemon_socket" \
         --quiet --reload --elevated
 elif [ "$quiet" -eq 1 ]; then
     exec "$sudo_command" -- "$bash_command" "$0" repair \
@@ -406,6 +447,7 @@ elif [ "$quiet" -eq 1 ]; then
         --system-config "$system_config" \
         --systemctl "$systemctl_command" \
         --launchctl "$launchctl_command" \
+        --socket "$daemon_socket" \
         --quiet --elevated
 elif [ "$force_reload" -eq 1 ]; then
     exec "$sudo_command" -- "$bash_command" "$0" repair \
@@ -415,6 +457,7 @@ elif [ "$force_reload" -eq 1 ]; then
         --system-config "$system_config" \
         --systemctl "$systemctl_command" \
         --launchctl "$launchctl_command" \
+        --socket "$daemon_socket" \
         --reload --elevated
 fi
 exec "$sudo_command" -- "$bash_command" "$0" repair \
@@ -424,4 +467,5 @@ exec "$sudo_command" -- "$bash_command" "$0" repair \
     --system-config "$system_config" \
     --systemctl "$systemctl_command" \
     --launchctl "$launchctl_command" \
+    --socket "$daemon_socket" \
     --elevated

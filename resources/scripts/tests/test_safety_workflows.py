@@ -39,6 +39,81 @@ class SafetyWorkflowTests(unittest.TestCase):
                 config.write_secrets_yaml({})
         self.assertEqual(captured["custom"]["keep"], "yes")
 
+    def test_secret_set_replace_initializes_new_device_recipient_atomically(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sops = root / ".sops.yaml"
+            secret = root / "secrets.yaml"
+            age_key = root / "keys.txt"
+            device = root / ".device-label"
+            sops.write_text("keys:\n  - &old age1old\n")
+            secret.write_text("old ciphertext\n")
+            captured = {}
+
+            with patch.object(config, "SOPS_YAML", sops), patch.object(
+                config, "SECRETS_FILE", secret
+            ), patch.object(config, "AGE_KEY_FILE", age_key), patch.object(
+                config, "DEVICE_LABEL_FILE", device
+            ), patch("envy.keys.storage.AGE_KEY_FILE", age_key), patch(
+                "envy.keys.storage.generate_device_age_key", side_effect=lambda: age_key.write_text("AGE-SECRET-KEY-TEST\n") or "age1new"
+            ), patch("envy.keys.storage.current_device_public_key", return_value="age1new"), patch(
+                "envy.keys.identity.ensure_sops_label", return_value="new_device"
+            ), patch("envy.keys.storage.read_sops_yaml_keys", return_value={"old": "age1old"}), patch(
+                "envy.keys.storage.write_sops_yaml_keys", side_effect=lambda keys: captured.update(keys)
+            ), patch.object(config, "write_secrets_data", side_effect=lambda data: captured.update(data)):
+                config.set_secret_value("llm/steps/apikey", "new-secret", replace=True)
+
+            self.assertEqual(captured["new_device"], "age1new")
+            self.assertEqual(captured["llm"]["steps"]["apikey"], "new-secret")
+
+    def test_secret_set_without_replace_requires_decryption(self):
+        with patch.object(config, "read_secrets_data", return_value=({}, False)):
+            with self.assertRaises(RuntimeError):
+                config.set_secret_value("llm/steps/apikey", "new-secret")
+
+    def test_secret_set_replace_rolls_back_key_and_recipients_on_encryption_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sops = root / ".sops.yaml"
+            secret = root / "secrets.yaml"
+            age_key = root / "keys.txt"
+            device = root / ".device-label"
+            sops.write_text("keys:\n  - &device age1old\n  - &recovery age1recovery\n")
+            secret.write_text("old ciphertext\n")
+            device.write_text('version = 1\n\n[device]\nsops_label = "device"\n')
+            original = {
+                path: path.read_bytes()
+                for path in (sops, secret, device)
+            }
+
+            def write_keys(keys):
+                sops.write_text("\n".join(f"{label}: {value}" for label, value in keys.items()))
+
+            with patch.object(config, "SOPS_YAML", sops), patch.object(
+                config, "SECRETS_FILE", secret
+            ), patch.object(config, "AGE_KEY_FILE", age_key), patch.object(
+                config, "DEVICE_LABEL_FILE", device
+            ), patch.object(
+                config, "read_secrets_data", side_effect=AssertionError("old secrets must not be read")
+            ), patch("envy.keys.storage.AGE_KEY_FILE", age_key), patch(
+                "envy.keys.storage.generate_device_age_key",
+                side_effect=lambda: age_key.write_text("AGE-SECRET-KEY-NEW\n") or "age1new",
+            ), patch("envy.keys.storage.current_device_public_key", return_value="age1new"), patch(
+                "envy.keys.identity.ensure_sops_label", return_value="new_device"
+            ), patch(
+                "envy.keys.storage.read_sops_yaml_keys",
+                return_value={"device": "age1old", "recovery": "age1recovery"},
+            ), patch("envy.keys.storage.write_sops_yaml_keys", side_effect=write_keys), patch.object(
+                config, "write_secrets_data", side_effect=RuntimeError("encrypt failed")
+            ):
+                with self.assertRaises(RuntimeError):
+                    config.set_secret_value("llm/steps/apikey", "secret-value", replace=True)
+
+            self.assertEqual(sops.read_bytes(), original[sops])
+            self.assertEqual(secret.read_bytes(), original[secret])
+            self.assertEqual(device.read_bytes(), original[device])
+            self.assertFalse(age_key.exists())
+
     def test_failed_secret_encryption_preserves_previous_ciphertext(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

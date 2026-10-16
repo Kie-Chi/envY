@@ -741,7 +741,7 @@ def save_all(
             f"machine configuration changed while setup was open: {target}"
         )
 
-    existing_secrets, _ = read_secrets_yaml()
+    existing_secrets = {} if replace_secrets else read_secrets_yaml()[0]
     transaction_paths = [
         target,
         SOPS_YAML,
@@ -846,18 +846,44 @@ def ensure_machine_configuration(machine_id: str) -> bool:
         return False
 
 def main() -> int:
-    # Persist the existing device identity even when the user opens setup and
-    # exits without changing any config fields. Newly generated/imported keys
-    # are handled again in save_all after key setup completes.
-    if AGE_KEY_FILE.exists():
-        ensure_sops_label()
-
     machine_id = current_machine_id()
     if not ensure_machine_configuration(machine_id):
         return 2
 
     selected_machine_file = machine_file(machine_id)
     original_machine_source = selected_machine_file.read_text()
+    reset_secrets = os.environ.get("ENVY_SETUP_RESET_SECRETS", "0") == "1"
+    if reset_secrets:
+        existing_secrets, decrypt_ok = {}, True
+        replace_secrets = True
+        log.warn("setup", "secret reset requested; existing secret values will not be loaded")
+    else:
+        existing_secrets, decrypt_ok = read_secrets_yaml()
+        replace_secrets = False
+
+        # Decide whether to restore the old encrypted file before generating a
+        # new local key. Otherwise a new key would cause a second overwrite
+        # prompt when the user chooses to import the old device key.
+        if not decrypt_ok and SECRETS_FILE.exists():
+            restored_secrets, replace_secrets = handle_decrypt_failure()
+            if restored_secrets:
+                existing_secrets = restored_secrets
+
+    # Establish the local age identity before the first manifest evaluation.
+    # Evaluation may download flake inputs, and a network failure should not
+    # leave a new device without the key needed for a later secret init.
+    try:
+        setup_age_key()
+    except (CommandError, OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
+        log.error("key", f"unable to initialize the local age key: {exc}")
+        return 1
+
+    # Persist the existing device identity even when the user opens setup and
+    # exits without changing any config fields. Newly generated/imported keys
+    # are handled again in save_all after key setup completes.
+    if AGE_KEY_FILE.exists():
+        ensure_sops_label()
+
     manifest = machine_manifest()
     policy_groups = groups_for_manifest(manifest, include_empty=True)
     try:
@@ -869,23 +895,11 @@ def main() -> int:
 
     existing_config = read_machine_nix()
     evaluated_config = manifest_settings(manifest)
-    reset_secrets = os.environ.get("ENVY_SETUP_RESET_SECRETS", "0") == "1"
-    if reset_secrets:
-        existing_secrets, decrypt_ok = {}, True
-        replace_secrets = True
-        log.warn("setup", "secret reset requested; existing secret values will not be loaded")
-    else:
-        existing_secrets, decrypt_ok = read_secrets_yaml()
-        replace_secrets = False
 
-        # Layered guidance for new device: if decryption failed, choose whether
-        # to import an old key or replace the encrypted secrets.
-        if not decrypt_ok and SECRETS_FILE.exists():
-            restored_secrets, replace_secrets = handle_decrypt_failure()
-            if restored_secrets:
-                existing_secrets = restored_secrets
-
-    # Build initial values from config + (possibly restored) secrets
+    # Build initial values from config + (possibly restored) secrets. When
+    # secrets are explicitly reset, do not refill them from field defaults
+    # such as the local username; every secret must be entered again.
+    empty_secrets = reset_secrets or replace_secrets
     values = {}
     for f in ALL_FIELDS:
         if f.condition and not f.condition(values):
@@ -894,8 +908,10 @@ def main() -> int:
             values[f.path] = evaluated_config[f.path]
         elif f.dest == "machine" and f.path in existing_config:
             values[f.path] = existing_config[f.path]
-        elif f.dest == "secret" and f.path in existing_secrets:
+        elif f.dest == "secret" and not empty_secrets and f.path in existing_secrets:
             values[f.path] = existing_secrets[f.path]
+        elif f.dest == "secret" and empty_secrets:
+            values[f.path] = ""
         else:
             values[f.path] = f.default_fn()
     old_values = dict(values)

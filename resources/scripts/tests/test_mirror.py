@@ -32,6 +32,21 @@ from envy.mirror import (
 
 
 class MirrorTests(unittest.TestCase):
+    def test_trust_repair_forces_reload(self):
+        context = SimpleNamespace(mode="china", user="policy-user")
+        with patch("envy.nix_trust.sys.platform", "darwin"), patch(
+            "envy.mirror.current_nix_trust_context", return_value=context
+        ), patch(
+            "envy.mirror.run_nix_trust",
+            return_value=subprocess.CompletedProcess([], 0, "", ""),
+        ) as run:
+            result = CliRunner().invoke(main.cli, ["mirror", "trust", "repair", "--json"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        run.assert_called_once_with(
+            "repair", context=context, capture=False, quiet=True, reload=True
+        )
+
     def test_trust_status_checks_the_daemon_on_both_platforms(self):
         context = SimpleNamespace(mode="china", user="policy-user")
         for platform in ("darwin", "linux"):

@@ -113,7 +113,13 @@ Each agent gets an adapter module (`codex.nix`, `claude.nix`, and generic adapte
 
 Each adapter receives the shared prompt from `prompts/common.md` and may append provider-specific instructions from `prompts/claude.md`, `prompts/pi.md`, or `prompts/codex.md`. Claude uses `--system-prompt` and preserves the `CCLI_SYSTEM_PROMPT` and `~/.config/ccli/prompt` overrides. Pi uses `--append-system-prompt`, so Pi's built-in system prompt and project context remain available. Codex receives the same rules through `developer_instructions` in its configuration override.
 
-Pi enables `+codemode` in its adapter defaults. This preserves the normal `read`, `bash`, `edit`, and `write` tools and adds codemode; a machine can override the complete `defaultTools` list through `envy.agents.pi.additionalSettings`. The Pi prompt recommends codemode for repository-scale, parallel, and multi-step work.
+Pi enables `+codemode` in its adapter defaults and sets `codemode.mode = "only"`.
+This keeps the normal `read`, `bash`, `edit`, and `write` tools callable from
+scripts while routing active Pi tool calls through codemode. A machine can
+override the complete `defaultTools` list or `codemode.mode` through
+`envy.agents.pi.additionalSettings`. The Pi prompt keeps pure conversational
+replies tool-free and requires codemode for repository-scale, parallel, and
+multi-step work.
 
 Machine-owned agent selections live under `envy.agents`. Provider-specific settings that are outside the fixed schema belong in `additionalSettings`:
 
@@ -127,6 +133,7 @@ envy.agents.codex = {
 
 envy.agents.pi.additionalSettings = {
   defaultTools = [ "+codemode" ];
+  codemode.mode = "only";
 };
 ```
 
@@ -134,7 +141,8 @@ envy.agents.pi.additionalSettings = {
 user configuration file. Existing application fields are retained, nested
 attribute sets merge by key, declared values win on conflicts, and lists are
 replaced as a whole while preserving their declared order. For example, the
-Pi setting above enables Codemode while retaining Pi's other default tools.
+Pi setting above enables Codemode while retaining Pi's other default tools and
+routing their model-facing calls through the Codemode script runner.
 The same option is available to every adapter that declares a settings file. Adapter modules provide the file format and path; an agent may override that metadata with `additionalSettingsFile`. The provider model files are merged with the same rules, so runtime-added
 providers survive a reapply. Object containment helpers used by module checks
 compare nested attribute sets by key/value and ignore key order; lists remain

@@ -166,14 +166,20 @@ render_block() {
     local trusted_substituters="$THALHEIM_URL"
     local keys="$THALHEIM_KEY"
     if [ "$mirror_mode" = "china" ]; then
-        extra_substituters="$extra_substituters $USTC_URL"
+        # Replace the installer's default substituter so the China mirror is
+        # tried first, then append the remaining trusted caches in order.
+        extra_substituters="$THALHEIM_URL $NIXOS_URL"
         trusted_substituters="$trusted_substituters $NIXOS_URL $USTC_URL"
         keys="$keys $NIXOS_KEY"
     fi
 
     printf '%s\n' \
         "$BEGIN_MARKER" \
-        'extra-experimental-features = nix-command flakes' \
+        'extra-experimental-features = nix-command flakes'
+    if [ "$mirror_mode" = "china" ]; then
+        printf '%s\n' "substituters = $USTC_URL"
+    fi
+    printf '%s\n' \
         "extra-substituters = $extra_substituters" \
         "extra-trusted-substituters = $trusted_substituters" \
         "extra-trusted-public-keys = $keys" \

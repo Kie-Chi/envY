@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """envY setup CLI for the selected machine file and sops secrets."""
 
+import atexit
 import os
 import subprocess
 from dataclasses import dataclass
@@ -24,14 +25,18 @@ from prompt_toolkit import prompt as pt_prompt
 from envy import log
 from envy.key import (
     AGE_KEY_DIR, AGE_KEY_FILE, SECRETS_FILE, SOPS_YAML, RECOVERY_KEY_FILE,
-    read_sops_yaml_keys, write_sops_yaml_keys,
-    get_current_device_public_key, ensure_sops_label,
+    read_sops_yaml_keys,
+    write_sops_yaml_keys,
+    get_current_device_public_key,
     run_sops_updatekeys, git_commit_setup_files, key_import,
-    generate_device_age_key, store_device_age_key,
-    warn_if_device_key_is_recovery,
+    register_device_key,
+    prepare_device_age_key, prepare_generated_device_age_key,
+    commit_prepared_device_age_key,
+    PreparedDeviceKey,
 )
 from envy.config import (
-    read_machine_nix, read_secrets_yaml, write_machine_nix, write_secrets_yaml,
+    read_machine_nix, read_secrets_yaml, read_secrets_data,
+    write_machine_nix, write_secrets_yaml,
     RefineReport, _validate_field,
 )
 from envy.evaluation import machine_manifest, manifest_settings
@@ -50,16 +55,17 @@ from envy.software import (
     write_and_validate_exclusions,
 )
 from envy.utils import (
+    ENVY_ROOT,
     DEVICE_LABEL_FILE,
     HOME_DIR,
-    PLATFORM,
-    backup_sensitive_file,
     current_machine_id,
     run_cmd,
     set_device_machine_id,
 )
 from envy.secure_io import ensure_private_directory
-from envy.transaction import FileTransaction
+from envy.transaction import FileTransaction, transaction_lock
+from envy.keys.identity import get_sops_label
+from envy.keys.recovery import generate_keypair, write_encrypted_recovery_key
 from envy.process import CommandError, render_command_error
 
 
@@ -68,50 +74,24 @@ from envy.process import CommandError, render_command_error
 # ==========================================
 
 
-def setup_age_key() -> str:
-    """Ensure the current device has an age key. Detects SSH rotation mismatches."""
+def prepare_setup_age_key() -> PreparedDeviceKey:
+    """Prepare the identity setup needs without changing the active key file."""
     ensure_private_directory(AGE_KEY_DIR)
-
     if AGE_KEY_FILE.exists():
         current_pub = get_current_device_public_key()
         if current_pub:
-            keys = read_sops_yaml_keys()
-            if current_pub in keys.values():
-                warn_if_device_key_is_recovery(current_pub, keys)
-                return current_pub
+            from envy.keys.storage import prepare_device_age_key
+            return prepare_device_age_key(AGE_KEY_FILE.read_text())
 
-            # Key exists but not in .sops.yaml — detect SSH rotation
-            ssh_key = HOME_DIR / ".ssh" / "id_ed25519"
-            if ssh_key.exists():
-                try:
-                    ssh_pub_input = ssh_key.with_suffix(".pub").read_text()
-                    ssh_derived_pub = run_cmd(["ssh-to-age"], stdin_data=ssh_pub_input, capture=True)
-                    if ssh_derived_pub == current_pub:
-                        log.warn("setup", "age key was derived from SSH and doesn't match .sops.yaml")
-                        log.hint("This usually means your SSH key was rotated on a new device.")
-                except subprocess.CalledProcessError:
-                    pass
-
-            log.warn("setup", "age key exists but is not in .sops.yaml for this device")
-            log.hint("It will be added during save.")
-            return current_pub
-
-    # No age key file — try SSH derivation or generate new
     ssh_key = HOME_DIR / ".ssh" / "id_ed25519"
     if ssh_key.exists():
         try:
             result = run_cmd(["ssh-to-age", "-private-key", "-i", str(ssh_key)], capture=True)
-            store_device_age_key(result)
-            with open(str(ssh_key) + ".pub") as f:
-                pub_input = f.read()
-            public_key = run_cmd(["ssh-to-age"], stdin_data=pub_input, capture=True)
-            if public_key:
-                return public_key
-        except subprocess.CalledProcessError:
+            return prepare_device_age_key(result)
+        except (subprocess.CalledProcessError, ValueError, RuntimeError):
             pass
 
-    backup_sensitive_file(AGE_KEY_FILE)
-    return generate_device_age_key()
+    return prepare_generated_device_age_key()
 
 
 # setup/key Git helpers are imported from key.py
@@ -126,6 +106,21 @@ def setup_age_key() -> str:
 class SetupResult:
     values: dict
     exclusions: dict[str, list[str]]
+
+
+def secret_values_from_data(data: dict | None) -> dict:
+    """Project raw decrypted YAML into the field map used by setup UI."""
+    result = {}
+    source = data if isinstance(data, dict) else {}
+    for field in SECRET_FIELDS:
+        current = source
+        for part in field.yaml_path.split("/") if field.yaml_path else []:
+            if not isinstance(current, dict) or part not in current:
+                current = ""
+                break
+            current = current[part]
+        result[field.path] = "" if isinstance(current, (dict, list)) else current
+    return result
 
 
 class AppState:
@@ -174,31 +169,55 @@ def init_values() -> dict:
     return values
 
 
-def handle_decrypt_failure() -> tuple[dict, bool]:
-    """Choose between restoring existing secrets and starting with empty ones."""
+def prompt_secret_recovery_choice() -> str:
+    """Choose how setup should handle an existing ciphertext it cannot read."""
     log.console.print(Panel(
-        "[bold red]sops decryption failed[/bold red]\n\n"
-        "This usually means you're on a [bold]new device[/bold] and the age key\n"
-        "doesn't match the one that encrypted secrets.yaml.\n\n"
-        "Choose whether to import an old device key or replace the encrypted\n"
-        "secrets with values entered on this device.",
+        "[bold red]Existing secrets.yaml cannot be decrypted by this device.[/bold red]\n\n"
+        "1. Import an existing age key and restore the old secrets\n"
+        "2. Create a new age key and discard the old secret values\n"
+        "3. Exit without changing keys or secrets",
         title="New Device Secrets", border_style="red"))
+    while True:
+        try:
+            answer = pt_prompt("? Choose 1, 2, or 3: ").strip()
+        except (EOFError, KeyboardInterrupt, OSError):
+            return "cancel"
+        if answer in {"1", "2", "3"}:
+            return {"1": "import", "2": "reset", "3": "cancel"}[answer]
+        log.warn("input", "please choose 1, 2, or 3")
 
-    if not prompt_yes_no("Import an existing age key to restore the old secrets?"):
-        log.warn("setup", "starting with empty secrets; the next save will replace secrets.yaml")
-        return {}, True
 
-    pub = key_import(register=False)  # setup registers/re-encrypts only after save confirmation
-    if pub:
-        secrets, ok = read_secrets_yaml()
-        if ok:
-            log.ok("setup", "decryption successful — existing secrets restored")
-            return secrets, False
-        else:
-            log.warn("setup", "key imported but decryption still failed, try another key")
+def prepare_import_for_setup() -> tuple[PreparedDeviceKey | None, dict, str]:
+    """Stage candidate keys and verify them against the existing ciphertext."""
+    try:
+        staged = key_import(register=False)
+    except (CommandError, OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
+        log.warn("setup", f"key import failed: {exc}")
+        return None, {}, "retry"
+    if staged is None:
+        return None, {}, "retry"
+    secrets, ok = read_secrets_data(age_key_file=staged.path)
+    if ok:
+        log.ok("setup", "imported key can decrypt existing secrets")
+        return staged, secrets or {}, "import"
+    staged.cleanup()
+    log.warn("setup", "that key cannot decrypt existing secrets")
+    return None, {}, "retry"
 
-    log.warn("setup", "proceeding with empty secrets; the next save will replace secrets.yaml")
-    return {}, True
+
+def handle_decrypt_failure() -> tuple[PreparedDeviceKey | None, dict, bool, bool]:
+    """Return staged identity, values, replace mode, and cancellation state."""
+    while True:
+        choice = prompt_secret_recovery_choice()
+        if choice == "cancel":
+            return None, {}, False, True
+        if choice == "reset":
+            if not prompt_yes_no("Discard old secret values and create a new age key?"):
+                continue
+            return prepare_generated_device_age_key(), {}, True, False
+        staged, secrets, result = prepare_import_for_setup()
+        if result == "import":
+            return staged, secrets, False, False
 
 
 def get_visible_fields(values: dict) -> list:
@@ -734,6 +753,9 @@ def save_all(
     *,
     replace_secrets: bool = False,
     groups=None,
+    prepared_key: PreparedDeviceKey | None = None,
+    provided_secrets: dict | None = None,
+    machine_created_for_setup: bool = False,
 ) -> None:
     target = machine_file(current_machine_id())
     if source_digest(target.read_text()) != source_digest(original_machine_source):
@@ -741,75 +763,136 @@ def save_all(
             f"machine configuration changed while setup was open: {target}"
         )
 
-    existing_secrets = {} if replace_secrets else read_secrets_yaml()[0]
+    existing_secrets = (
+        {} if replace_secrets
+        else (
+            secret_values_from_data(provided_secrets)
+            if provided_secrets is not None
+            else read_secrets_yaml()[0]
+        )
+    )
     transaction_paths = [
-        target,
-        SOPS_YAML,
-        SECRETS_FILE,
-        RECOVERY_KEY_FILE,
-        AGE_KEY_FILE,
-        DEVICE_LABEL_FILE,
+        target, SOPS_YAML, SECRETS_FILE, RECOVERY_KEY_FILE,
+        AGE_KEY_FILE, DEVICE_LABEL_FILE,
     ]
+    machine_was_created_for_setup = machine_created_for_setup
 
     log.step("setup", "preparing transactional machine, key, and secret update")
-    with FileTransaction(transaction_paths) as transaction:
-        write_machine_nix(values)
-        write_and_validate_exclusions(exclusions, target, groups=groups)
-        log.ok("machine", "machine configuration evaluated successfully", path=str(target))
+    try:
+        with transaction_lock(ENVY_ROOT / ".envy-key.lock"):
+            with FileTransaction(
+                transaction_paths,
+                missing_paths=(target,) if machine_was_created_for_setup else (),
+            ) as transaction:
+                if prepared_key is not None:
+                    public_key = commit_prepared_device_age_key(prepared_key)
+                else:
+                    public_key = get_current_device_public_key()
+                    if not public_key:
+                        prepared = prepare_setup_age_key()
+                        try:
+                            public_key = commit_prepared_device_age_key(prepared)
+                        finally:
+                            prepared.cleanup()
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=log.console,
-        ) as progress:
+                write_machine_nix(values, machine_id=target.stem)
+                write_and_validate_exclusions(exclusions, target, groups=groups)
+                log.ok("machine", "machine configuration evaluated successfully", path=str(target))
 
-            t1 = progress.add_task("Setting up age key...", total=None)
-            public_key = setup_age_key()
-            progress.update(t1, completed=True, description=f"Age key: [green]{public_key[:20]}...[/green]")
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    console=log.console,
+                ) as progress:
+                    t1 = progress.add_task("Setting up age key...", total=None)
+                    progress.update(
+                        t1, completed=True,
+                        description=f"Age key: [green]{public_key[:20]}...[/green]",
+                    )
 
-            t2 = progress.add_task("Updating .sops.yaml...", total=None)
-            keys = read_sops_yaml_keys()
-            label = ensure_sops_label()
-            sops_updated = label not in keys or keys[label] != public_key
-            if sops_updated:
-                keys[label] = public_key
-                write_sops_yaml_keys(keys)
+                    t2 = progress.add_task("Updating .sops.yaml...", total=None)
+                    before_keys = read_sops_yaml_keys()
+                    label = register_device_key(public_key)
+                    keys = read_sops_yaml_keys()
+                    sops_updated = before_keys.get(label) != public_key
+                    if "recovery" not in keys:
+                        from envy.key import key_add_recovery
+                        key_add_recovery(reencrypt_secrets=False)
+                        keys = read_sops_yaml_keys()
+                        sops_updated = True
+                    elif replace_secrets:
+                        # Reset deliberately abandons the old recovery identity
+                        # together with the old secret values. Keep every
+                        # active device recipient and issue a fresh recovery
+                        # identity that is encrypted for the new device, all
+                        # existing devices, and itself.
+                        recovery_private, recovery_public = generate_keypair()
+                        reset_keys = {
+                            key_label: key_value
+                            for key_label, key_value in keys.items()
+                            if key_label != "recovery_new"
+                            and not key_label.startswith("envy_rotation_old_")
+                        }
+                        reset_keys["recovery"] = recovery_public
+                        write_encrypted_recovery_key(
+                            recovery_private,
+                            [*reset_keys.values(), recovery_public],
+                        )
+                        write_sops_yaml_keys(reset_keys)
+                        keys = reset_keys
+                        sops_updated = True
+                    elif sops_updated and RECOVERY_KEY_FILE.exists():
+                        # Re-seal recovery only when this setup session has a
+                        # verified plaintext source or the active identity can
+                        # decrypt the old recovery document. A device can be
+                        # authorized for secrets without being authorized for
+                        # the offline recovery document.
+                        try:
+                            from envy.key import reencrypt_recovery_key
+                            reencrypt_recovery_key(keys)
+                        except (CommandError, OSError, RuntimeError, ValueError):
+                            if provided_secrets is None:
+                                raise
+                            log.warn(
+                                "key",
+                                "kept existing recovery-key.age; this device cannot decrypt it",
+                            )
+                    progress.update(
+                        t2, completed=True,
+                        description="[green].sops.yaml updated[/green]" if sops_updated
+                        else "[dim].sops.yaml up-to-date (skipped)[/dim]",
+                    )
 
-            if "recovery" not in read_sops_yaml_keys():
-                from envy.key import key_add_recovery
-                key_add_recovery(reencrypt_secrets=False)
-                sops_updated = True
+                    secrets_changed = (
+                        not SECRETS_FILE.exists() or replace_secrets or any(
+                            str(values.get(f.path, "")) != str(existing_secrets.get(f.path, ""))
+                            for f in SECRET_FIELDS
+                        )
+                    )
+                    if secrets_changed:
+                        task = progress.add_task("Encrypting secrets.yaml...", total=None)
+                        write_secrets_yaml(values, replace=replace_secrets)
+                        progress.update(task, completed=True, description="[green]secrets.yaml encrypted[/green]")
+                    elif sops_updated:
+                        task = progress.add_task("Re-encrypting secrets with updated keys...", total=None)
+                        if provided_secrets is not None:
+                            # The imported identity was verified against this
+                            # plaintext before activation, so it can publish
+                            # a new ciphertext even when it cannot decrypt the
+                            # old recipient set itself.
+                            from envy.config import write_secrets_data
+                            write_secrets_data(provided_secrets)
+                        else:
+                            run_sops_updatekeys()
+                        progress.update(task, completed=True)
+                    else:
+                        progress.add_task("[dim]secrets.yaml unchanged (skipped)[/dim]")
 
-            progress.update(
-                t2,
-                completed=True,
-                description=(
-                    "[green].sops.yaml updated[/green]"
-                    if sops_updated else "[dim].sops.yaml up-to-date (skipped)[/dim]"
-                ),
-            )
-
-            secrets_changed = (
-                not SECRETS_FILE.exists()
-                or replace_secrets
-                or any(
-                    str(values.get(f.path, "")) != str(existing_secrets.get(f.path, ""))
-                    for f in SECRET_FIELDS
-                )
-            )
-
-            if secrets_changed:
-                t4 = progress.add_task("Encrypting secrets.yaml...", total=None)
-                write_secrets_yaml(values, replace=replace_secrets)
-                progress.update(t4, completed=True, description="[green]secrets.yaml encrypted[/green]")
-            elif sops_updated:
-                t5 = progress.add_task("Re-encrypting secrets with updated keys...", total=None)
-                run_sops_updatekeys()
-                progress.update(t5, completed=True)
-            else:
-                progress.add_task("[dim]secrets.yaml unchanged (skipped)[/dim]")
-
-        transaction.commit()
+                set_device_machine_id(target.stem)
+                transaction.commit()
+    finally:
+        if prepared_key is not None:
+            prepared_key.cleanup()
 
     log.step("setup", "checking managed files for a Git commit")
     git_commit_setup_files(target)
@@ -825,7 +908,6 @@ def ensure_machine_configuration(machine_id: str) -> bool:
     selected = validate_machine_id(machine_id)
     target = machine_file(selected)
     if target.exists():
-        set_device_machine_id(selected)
         return True
 
     log.warn("host", "machine configuration is missing", path=str(target))
@@ -839,7 +921,7 @@ def ensure_machine_configuration(machine_id: str) -> bool:
             if mode in {"import", "copy"}:
                 break
             log.error("host", "creation mode must be import or copy")
-        initialize_machine(selected, mode)
+        initialize_machine(selected, mode, select=False)
         return True
     except (EOFError, KeyboardInterrupt, OSError):
         log.hint(f"Create it later with: envy host init {selected}")
@@ -847,48 +929,71 @@ def ensure_machine_configuration(machine_id: str) -> bool:
 
 def main() -> int:
     machine_id = current_machine_id()
+    selected_machine_was_present = machine_file(machine_id).exists()
+    machine_created_for_setup = False
+    reset_secrets = os.environ.get("ENVY_SETUP_RESET_SECRETS", "0") == "1"
+    prepared_key: PreparedDeviceKey | None = None
+    replace_secrets = reset_secrets
+    existing_secrets: dict = {}
+    existing_secret_data: dict = {}
+
+    try:
+        if reset_secrets:
+            log.warn("setup", "reset requested: old secret values will be discarded")
+            prepared_key = prepare_generated_device_age_key()
+            atexit.register(prepared_key.cleanup)
+        else:
+            existing_secret_data, decrypt_ok = read_secrets_data()
+            existing_secrets = secret_values_from_data(existing_secret_data)
+            if SECRETS_FILE.exists() and not decrypt_ok:
+                prepared_key, existing_secret_data, replace_secrets, cancelled = handle_decrypt_failure()
+                existing_secrets = secret_values_from_data(existing_secret_data)
+                if prepared_key is not None:
+                    atexit.register(prepared_key.cleanup)
+                if cancelled:
+                    if prepared_key is not None:
+                        prepared_key.cleanup()
+                    log.hint("Setup cancelled; no key or secret files were changed.")
+                    return 2
+            else:
+                prepared_key = prepare_setup_age_key()
+                atexit.register(prepared_key.cleanup)
+    except (CommandError, OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
+        if prepared_key is not None:
+            prepared_key.cleanup()
+        log.error("key", f"unable to prepare the local age key: {exc}")
+        return 1
+
     if not ensure_machine_configuration(machine_id):
+        if prepared_key is not None:
+            prepared_key.cleanup()
         return 2
 
     selected_machine_file = machine_file(machine_id)
+    machine_created_for_setup = not selected_machine_was_present
     original_machine_source = selected_machine_file.read_text()
-    reset_secrets = os.environ.get("ENVY_SETUP_RESET_SECRETS", "0") == "1"
-    if reset_secrets:
-        existing_secrets, decrypt_ok = {}, True
-        replace_secrets = True
-        log.warn("setup", "secret reset requested; existing secret values will not be loaded")
-    else:
-        existing_secrets, decrypt_ok = read_secrets_yaml()
-        replace_secrets = False
+    cleanup_state = {"active": machine_created_for_setup}
 
-        # Decide whether to restore the old encrypted file before generating a
-        # new local key. Otherwise a new key would cause a second overwrite
-        # prompt when the user chooses to import the old device key.
-        if not decrypt_ok and SECRETS_FILE.exists():
-            restored_secrets, replace_secrets = handle_decrypt_failure()
-            if restored_secrets:
-                existing_secrets = restored_secrets
+    def discard_created_machine() -> None:
+        if cleanup_state["active"] and selected_machine_file.exists():
+            selected_machine_file.unlink()
+            cleanup_state["active"] = False
 
-    # Establish the local age identity before the first manifest evaluation.
-    # Evaluation may download flake inputs, and a network failure should not
-    # leave a new device without the key needed for a later secret init.
-    try:
-        setup_age_key()
-    except (CommandError, OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
-        log.error("key", f"unable to initialize the local age key: {exc}")
-        return 1
+    def cleanup_created_machine_at_exit() -> None:
+        if cleanup_state["active"]:
+            selected_machine_file.unlink(missing_ok=True)
 
-    # Persist the existing device identity even when the user opens setup and
-    # exits without changing any config fields. Newly generated/imported keys
-    # are handled again in save_all after key setup completes.
-    if AGE_KEY_FILE.exists():
-        ensure_sops_label()
+    if machine_created_for_setup:
+        atexit.register(cleanup_created_machine_at_exit)
 
     manifest = machine_manifest()
     policy_groups = groups_for_manifest(manifest, include_empty=True)
     try:
         original_exclusions = read_managed_exclusions(selected_machine_file, policy_groups)
     except SoftwarePolicyError as exc:
+        if prepared_key is not None:
+            prepared_key.cleanup()
+        discard_created_machine()
         log.error("software", str(exc))
         log.hint("Fix the managed exclusions block, then reopen envy setup.")
         return 1
@@ -919,11 +1024,17 @@ def main() -> int:
     try:
         result = menuconfig_loop(old_values, manifest, original_exclusions)
     except (EOFError, KeyboardInterrupt, OSError):
+        if prepared_key is not None:
+            prepared_key.cleanup()
+        discard_created_machine()
         log.hint("Setup needs an interactive terminal. Run it again from a real terminal, or create the machine with: envy host init")
         return 2
 
     if result is None:
         log.hint("Quit without saving.")
+        if prepared_key is not None:
+            prepared_key.cleanup()
+        discard_created_machine()
         return 2
 
     new_values = result.values
@@ -939,6 +1050,11 @@ def main() -> int:
     )
 
     if not has_changes:
+        current_public = prepared_key.public_key if prepared_key is not None else get_current_device_public_key()
+        key_needs_save = bool(
+            prepared_key is not None
+            and (not AGE_KEY_FILE.exists() or prepared_key.public_key != current_public)
+        ) or bool(current_public and current_public not in read_sops_yaml_keys().values())
         missing_machine_fields = [
             field.path for field in MACHINE_FIELDS if field.path not in existing_config
         ]
@@ -949,8 +1065,14 @@ def main() -> int:
                 fields=len(missing_machine_fields),
             )
             has_changes = True
+        elif key_needs_save:
+            log.hint("Local age key state needs to be registered; continuing setup save.")
+            has_changes = True
         else:
             log.hint("No changes to apply.")
+            if prepared_key is not None:
+                prepared_key.cleanup()
+            discard_created_machine()
             return 0
 
     # Catch empty/invalid required fields before the destructive save. Otherwise
@@ -959,10 +1081,16 @@ def main() -> int:
     # discarding the user's edits with only a cryptic `""` from the evaluator.
     if not validate_required_fields(new_values):
         log.hint("Fix the fields above, then reopen envy setup.")
+        if prepared_key is not None:
+            prepared_key.cleanup()
+        discard_created_machine()
         return 1
 
     if not confirm_save():
         log.warn("setup", "changes cancelled")
+        if prepared_key is not None:
+            prepared_key.cleanup()
+        discard_created_machine()
         return 2
 
     log.console.print()
@@ -973,15 +1101,21 @@ def main() -> int:
             original_machine_source,
             replace_secrets=replace_secrets,
             groups=policy_groups,
+            prepared_key=prepared_key,
+            provided_secrets=existing_secret_data,
+            machine_created_for_setup=machine_created_for_setup,
         )
     except CommandError as exc:
+        discard_created_machine()
         render_command_error(exc)
         log.error("setup", "transaction failed; managed files were restored")
         return exc.returncode or 1
     except (OSError, RuntimeError, ValueError, SoftwarePolicyError, ConcurrentMachineEdit) as exc:
+        discard_created_machine()
         log.error("setup", str(exc))
         log.error("setup", "transaction failed; managed files were restored")
         return 1
+    cleanup_state["active"] = False
     log.console.print()
     log.console.print(Panel("[bold green]All files saved successfully![/bold green]", border_style="green"))
 

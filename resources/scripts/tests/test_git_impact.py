@@ -58,10 +58,11 @@ class GitImpactTests(unittest.TestCase):
             system_workflow,
             "refine_all",
             side_effect=lambda **_: (events.append("refine"), report)[1],
-        ):
+        ), patch.object(system_workflow, "verify_apply_identity") as verify:
             system_workflow.refine_before_apply()
 
         trust.assert_called_once_with(platform="linux")
+        verify.assert_called_once_with()
         self.assertEqual(events, ["trust", "refine"])
 
     def test_changed_paths_preserve_first_character_spaces_and_rename_destination(self):

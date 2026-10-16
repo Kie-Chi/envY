@@ -10,10 +10,13 @@ import typer
 
 from envy import log
 from envy.config import refine_all
+from envy.evaluation import machine_manifest, manifest_settings
+from envy.keys.storage import device_public_keys, read_sops_yaml_keys
+from envy.utils import AGE_KEY_FILE, SECRETS_FILE, age_key_file_for_home, run_cmd
 from envy.host import current_machine_file, initialize_machine, require_current_machine_file
 from envy.journal import record_operation
 from envy.nix_trust import ensure_nix_daemon_trust
-from envy.process import run_process
+from envy.process import CommandError, run_process
 from envy.utils import (
     ENVY_ROOT,
     PLATFORM,
@@ -24,6 +27,20 @@ from envy.utils import (
     run_apply,
     run_hm,
 )
+
+
+def verify_apply_identity() -> None:
+    """Ensure the configured identity is an active secrets recipient."""
+    settings = manifest_settings(machine_manifest(refresh=True, write_cache=False))
+    configured_home = Path(settings.get("envy.user.home", str(Path.home())))
+    configured_key = age_key_file_for_home(configured_home)
+    key_file = configured_key if configured_key.exists() else AGE_KEY_FILE
+    local_public_keys = device_public_keys(key_file)
+    recipients = read_sops_yaml_keys()
+    if not local_public_keys or not any(key in recipients.values() for key in local_public_keys):
+        raise RuntimeError("local age key is not an active secrets recipient")
+    if SECRETS_FILE.exists():
+        run_cmd(["sops", "--decrypt", str(SECRETS_FILE)], age_key_file=key_file)
 
 
 def refine_before_apply() -> None:
@@ -38,9 +55,23 @@ def refine_before_apply() -> None:
         mode = typer.prompt("Creation mode (import/copy)", default="import")
         initialize_machine(machine_path.stem, mode)
     ensure_nix_daemon_trust(platform=PLATFORM)
+    secrets_already_present = SECRETS_FILE.exists()
+    try:
+        # Validate the identity before refine can publish a new or existing
+        # encrypted document.
+        verify_apply_identity()
+    except (CommandError, OSError, RuntimeError, ValueError) as exc:
+        log.error("secrets", str(exc))
+        raise typer.Exit(code=1) from exc
     report = refine_all(write=True, strict=True, include_secrets=True)
     if not report.ok:
         raise typer.Exit(code=1)
+    if not secrets_already_present and SECRETS_FILE.exists():
+        try:
+            verify_apply_identity()
+        except (CommandError, OSError, RuntimeError, ValueError) as exc:
+            log.error("secrets", str(exc))
+            raise typer.Exit(code=1) from exc
 
 
 @record_operation("apply")

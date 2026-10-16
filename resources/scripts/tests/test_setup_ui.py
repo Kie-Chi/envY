@@ -2,6 +2,7 @@ import importlib.util
 import os
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -59,12 +60,39 @@ class SetupUiTests(unittest.TestCase):
         with patch.object(setup, "pt_prompt", side_effect=OSError(22, "Invalid argument")):
             self.assertFalse(setup.prompt_yes_no("Continue?"))
 
-    def test_decrypt_failure_can_start_with_empty_secrets(self):
+    def test_decrypt_failure_can_cancel_without_preparing_a_key(self):
         setup = _load_setup_module()
-        with patch.object(setup, "prompt_yes_no", return_value=False):
-            values, replace = setup.handle_decrypt_failure()
+        with patch.object(setup, "prompt_secret_recovery_choice", return_value="cancel"):
+            staged, values, replace, cancelled = setup.handle_decrypt_failure()
+        self.assertIsNone(staged)
+        self.assertEqual(values, {})
+        self.assertFalse(replace)
+        self.assertTrue(cancelled)
+
+    def test_decrypt_failure_reset_prepares_a_key_without_writing_active_key(self):
+        setup = _load_setup_module()
+        staged = object()
+        with patch.object(setup, "prompt_secret_recovery_choice", return_value="reset"), patch.object(
+            setup, "prompt_yes_no", return_value=True
+        ), patch.object(setup, "prepare_generated_device_age_key", return_value=staged):
+            prepared, values, replace, cancelled = setup.handle_decrypt_failure()
+        self.assertIs(prepared, staged)
         self.assertEqual(values, {})
         self.assertTrue(replace)
+        self.assertFalse(cancelled)
+
+    def test_decrypt_failure_import_rejects_a_key_without_writing_active_key(self):
+        setup = _load_setup_module()
+        staged = SimpleNamespace(path=Path("/private/staged"), cleanup=lambda: None)
+        with patch.object(setup, "prompt_secret_recovery_choice", side_effect=["import", "cancel"]), patch.object(
+            setup, "key_import", return_value=staged
+        ), patch.object(setup, "read_secrets_data", return_value=({}, False)) as read:
+            prepared, values, replace, cancelled = setup.handle_decrypt_failure()
+        read.assert_called_once_with(age_key_file=staged.path)
+        self.assertIsNone(prepared)
+        self.assertEqual(values, {})
+        self.assertFalse(replace)
+        self.assertTrue(cancelled)
 
     def test_changes_summary_never_prints_secret_values(self):
         setup = _load_setup_module()

@@ -2,7 +2,12 @@
 
 from envy.keys.storage import (
     current_device_public_key,
+    device_public_keys,
     generate_device_age_key,
+    prepare_device_age_key,
+    prepare_generated_device_age_key,
+    commit_prepared_device_age_key,
+    validate_device_label,
     read_sops_yaml_keys,
     store_device_age_key,
     write_sops_yaml_keys,
@@ -24,7 +29,12 @@ from envy.keys.recovery import (
 
 __all__ = [
     "current_device_public_key",
+    "device_public_keys",
     "generate_device_age_key",
+    "prepare_device_age_key",
+    "prepare_generated_device_age_key",
+    "commit_prepared_device_age_key",
+    "validate_device_label",
     "read_sops_yaml_keys",
     "store_device_age_key",
     "write_sops_yaml_keys",

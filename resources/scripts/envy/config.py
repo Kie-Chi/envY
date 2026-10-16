@@ -1,6 +1,7 @@
 """Config engine for versioned machine policy and sops secrets."""
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -38,7 +39,7 @@ from envy.secure_io import (
 )
 from envy.process import run_process
 from envy.mutation import offer_mutation_commit
-from envy.transaction import FileTransaction
+from envy.transaction import FileTransaction, transaction_lock
 from envy.utils import (
     AGE_KEY_FILE,
     AGE_KEY_DIR,
@@ -354,9 +355,9 @@ def write_mirror_overrides(
     invalidate_machine_manifest()
 
 
-def read_secrets_yaml() -> tuple[dict, bool]:
+def read_secrets_yaml(*, age_key_file: Path | None = None) -> tuple[dict, bool]:
     values = {}
-    data, ok = read_secrets_data()
+    data, ok = read_secrets_data(age_key_file=age_key_file)
     if data is None:
         return values, False
     if not ok and is_sops_encrypted(SECRETS_FILE):
@@ -368,11 +369,11 @@ def read_secrets_yaml() -> tuple[dict, bool]:
     return values, ok
 
 
-def read_secrets_data() -> tuple[dict | None, bool]:
+def read_secrets_data(*, age_key_file: Path | None = None) -> tuple[dict | None, bool]:
     if not SECRETS_FILE.exists():
         return {}, False
     try:
-        plain = run_cmd(["sops", "--decrypt", str(SECRETS_FILE)])
+        plain = run_cmd(["sops", "--decrypt", str(SECRETS_FILE)], age_key_file=age_key_file)
         return yaml.safe_load(plain) or {}, True
     except subprocess.CalledProcessError as exc:
         log.debug("secrets", "sops decrypt failed", stderr=(exc.stderr or "").strip())
@@ -424,7 +425,8 @@ def write_secrets_data(data: dict) -> None:
     plaintext = yaml.dump(data, default_flow_style=False, allow_unicode=True)
     try:
         with secure_temporary_path(
-            SECRETS_DIR, prefix=".secrets-plain-", suffix=".yaml"
+            Path(os.environ.get("TMPDIR", "/tmp")),
+            prefix=".envy-secrets-plain-", suffix=".yaml",
         ) as plain_path, secure_temporary_path(
             SECRETS_DIR, prefix=".secrets-encrypted-", suffix=".yaml"
         ) as encrypted_path:
@@ -436,6 +438,16 @@ def write_secrets_data(data: dict) -> None:
     except Exception:
         log.error("secrets", "sops encryption failed; previous encrypted file was preserved")
         raise
+
+
+def assert_no_plaintext_secret_artifacts() -> None:
+    """Fail closed when a crashed encryption left plaintext in the checkout."""
+    leftovers = sorted(SECRETS_DIR.glob(".secrets-plain-*.yaml")) if SECRETS_DIR.exists() else []
+    if leftovers:
+        raise RuntimeError(
+            "plaintext secret temporary files remain; remove them securely before continuing: "
+            + ", ".join(str(path) for path in leftovers)
+        )
 
 
 def _validate_field(field_def: FieldDef, value: str, report: RefineReport, scope: str) -> None:
@@ -737,6 +749,12 @@ def refine_software_policy(*, write: bool = True, strict: bool = False) -> Refin
 
 def refine_secrets(*, write: bool = True, strict: bool = False, prune: bool = False) -> RefineReport:
     report = RefineReport()
+    try:
+        assert_no_plaintext_secret_artifacts()
+    except RuntimeError as exc:
+        report.errors.append("plaintext-secret-artifact")
+        log.error("secrets", str(exc))
+        return report
     data, decrypt_ok = read_secrets_data()
     if data is None:
         report.errors.append("secrets.yaml")
@@ -806,6 +824,9 @@ def refine_secrets(*, write: bool = True, strict: bool = False, prune: bool = Fa
         _validate_field(f, values.get(f.path, ""), report, "secrets")
 
     changed = yaml.dump(data, sort_keys=True) != original
+    if strict and report.errors:
+        log.error("secrets", "secret refinement blocked by validation errors")
+        return report
     if write and changed:
         write_secrets_data(data)
         report.changed = True
@@ -881,6 +902,7 @@ def set_config_value(path: str, value: str, *, quiet: bool = False) -> None:
 
 def set_secret_value(yaml_path: str, value: str, *, replace: bool = False) -> None:
     if not replace:
+        assert_no_plaintext_secret_artifacts()
         data, decrypt_ok = read_secrets_data()
         if data is None or not decrypt_ok:
             raise RuntimeError(
@@ -900,22 +922,24 @@ def set_secret_value(yaml_path: str, value: str, *, replace: bool = False) -> No
         write_sops_yaml_keys,
     )
 
-    with FileTransaction([SOPS_YAML, SECRETS_FILE, AGE_KEY_FILE, DEVICE_LABEL_FILE]) as transaction:
-        if not AGE_KEY_FILE.exists():
-            generate_device_age_key()
-        public_key = current_device_public_key()
-        if not public_key:
-            raise RuntimeError("cannot initialize secrets: current age key is unavailable")
-        keys = read_sops_yaml_keys()
-        label = ensure_sops_label()
-        if label == "recovery":
-            raise RuntimeError("device sops label cannot be recovery")
-        keys[label] = public_key
-        data: dict = {}
-        _set_nested(data, yaml_path, value)
-        write_sops_yaml_keys(keys)
-        write_secrets_data(data)
-        transaction.commit()
+    assert_no_plaintext_secret_artifacts()
+    with transaction_lock(ENVY_ROOT / ".envy-key.lock"):
+        with FileTransaction([SOPS_YAML, SECRETS_FILE, AGE_KEY_FILE, DEVICE_LABEL_FILE]) as transaction:
+            if not AGE_KEY_FILE.exists():
+                generate_device_age_key()
+            public_key = current_device_public_key()
+            if not public_key:
+                raise RuntimeError("cannot initialize secrets: current age key is unavailable")
+            keys = read_sops_yaml_keys()
+            label = ensure_sops_label(public_key=public_key)
+            if label == "recovery":
+                raise RuntimeError("device sops label cannot be recovery")
+            keys[label] = public_key
+            data: dict = {}
+            _set_nested(data, yaml_path, value)
+            write_sops_yaml_keys(keys)
+            write_secrets_data(data)
+            transaction.commit()
     log.ok("secrets", "secret value replaced", key=yaml_path)
 
 

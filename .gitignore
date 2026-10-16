@@ -9,3 +9,7 @@ result
 /secrets.nix
 __pycache__
 target/
+.envy-key.lock
+.envy-transaction.lock
+secrets/.secrets-plain-*.yaml
+secrets/.secrets-encrypted-*.yaml

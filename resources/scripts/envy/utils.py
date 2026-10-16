@@ -68,6 +68,15 @@ AGE_KEY_DIR = (
     else HOME_DIR / ".config" / "sops" / "age"
 )
 AGE_KEY_FILE = AGE_KEY_DIR / "keys.txt"
+
+
+def age_key_file_for_home(home: Path) -> Path:
+    """Return the age identity path used by sops-nix for a configured home."""
+    return (
+        home / "Library" / "Application Support" / "sops" / "age" / "keys.txt"
+        if PLATFORM == "darwin"
+        else home / ".config" / "sops" / "age" / "keys.txt"
+    )
 SOPS_YAML = ENVY_ROOT / ".sops.yaml"
 SECRETS_DIR = ENVY_ROOT / "secrets"
 SECRETS_FILE = SECRETS_DIR / "secrets.yaml"
@@ -183,8 +192,8 @@ def current_machine_id() -> str:
             if match:
                 candidates.append(match.group(1))
 
-    candidates.append(metadata.get("sops_label", ""))
-
+    # A sops label identifies an encryption recipient, not a machine target.
+    # Never let a copied key or stale label select another host configuration.
     hostname = subprocess.getoutput("hostname -s").strip() or "machine"
     candidates.append(re.sub(r"[^A-Za-z0-9_-]", "_", hostname))
     for candidate in candidates:
@@ -247,11 +256,18 @@ def run_cmd(
     cwd: Path | None = None,
     capture: bool = True,
     activity: str | None = None,
+    age_key_file: Path | None = None,
 ) -> str | None:
     """Run subprocess command. capture=True returns stdout as string; capture=False streams live."""
     env = os.environ.copy()
-    if AGE_KEY_FILE.exists():
-        env["SOPS_AGE_KEY_FILE"] = str(AGE_KEY_FILE)
+    env.pop("SOPS_AGE_KEY", None)
+    env.pop("SOPS_AGE_KEY_FILE", None)
+    env.pop("SOPS_AGE_SSH_PRIVATE_KEY_FILE", None)
+    selected_age_key = age_key_file or AGE_KEY_FILE
+    # Always pin sops to the selected identity path. When the file is absent,
+    # sops must fail instead of falling back to an ambient SSH identity or a
+    # different default age file.
+    env["SOPS_AGE_KEY_FILE"] = str(selected_age_key)
 
     effective_cwd = str(cwd or ENVY_ROOT)
 
@@ -276,10 +292,14 @@ def _get_sudo_passwd() -> str | None:
     if not SECRETS_FILE.exists() or not AGE_KEY_FILE.exists():
         return None
     try:
+        child_env = os.environ.copy()
+        for variable in ("SOPS_AGE_KEY", "SOPS_AGE_KEY_FILE", "SOPS_AGE_SSH_PRIVATE_KEY_FILE"):
+            child_env.pop(variable, None)
+        child_env["SOPS_AGE_KEY_FILE"] = str(AGE_KEY_FILE)
         result = subprocess.run(
             ["sops", "-d", "--extract", '["home"]["passwd"]', str(SECRETS_FILE)],
             capture_output=True, text=True,
-            env={**os.environ, "SOPS_AGE_KEY_FILE": str(AGE_KEY_FILE)},
+            env=child_env,
             check=False,
         )
         if result.returncode == 0 and result.stdout.strip():

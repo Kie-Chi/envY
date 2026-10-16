@@ -29,11 +29,17 @@ from envy.secure_io import (
     atomic_write_text,
     ensure_private_directory,
 )
-from envy.transaction import FileTransaction
+from envy.transaction import FileTransaction, transaction_lock
 from envy.git_commit import commit_staged_files, stage_repo_files
+from envy.process import CommandError
 from envy.keys.storage import (
     current_device_public_key as get_current_device_public_key,
+    device_public_keys,
     generate_device_age_key,
+    prepare_device_age_key,
+    prepare_generated_device_age_key,
+    commit_prepared_device_age_key,
+    PreparedDeviceKey,
     read_sops_yaml_keys,
     store_device_age_key,
     write_sops_yaml_keys,
@@ -70,10 +76,11 @@ def _transactional_key_files(function):
             AGE_KEY_FILE,
             DEVICE_LABEL_FILE,
         ]
-        with FileTransaction(paths) as transaction:
-            result = function(*args, **kwargs)
-            transaction.commit()
-        return result
+        with transaction_lock(ENVY_ROOT / ".envy-key.lock"):
+            with FileTransaction(paths) as transaction:
+                result = function(*args, **kwargs)
+                transaction.commit()
+            return result
 
     return wrapped
 
@@ -88,12 +95,12 @@ def _set_yes_flag(yes: bool):
 
 
 def complete_sops_labels(ctx, incomplete):
-    """Complete key labels from .sops.yaml for envy key remove."""
-    if not SOPS_YAML.exists():
+    """Complete key labels from the parsed managed recipient list."""
+    del ctx
+    try:
+        labels = read_sops_yaml_keys()
+    except (OSError, ValueError):
         return []
-    text = SOPS_YAML.read_text()
-    pattern = re.compile(r'- &(\S+)\s+(age1\S+)')
-    labels = [match.group(1) for match in pattern.finditer(text)]
     return [name for name in labels if name.startswith(incomplete)]
 
 
@@ -117,15 +124,15 @@ def confirm(prompt_text: str) -> bool:
         return True
     return Confirm.ask(prompt_text, console=log.console)
 
-def run_sops_updatekeys() -> None:
-    """Re-encrypt secrets with the current .sops.yaml recipients, or fail closed."""
+def run_sops_updatekeys(*, age_key_file: Path | None = None) -> None:
+    """Re-encrypt secrets with the current recipients, or fail closed."""
     if not SECRETS_FILE.exists():
         log.warn("key", "no secrets file to updatekeys")
         return
     if not is_sops_encrypted(SECRETS_FILE):
         raise SecretSafetyError("refusing updatekeys: secrets/secrets.yaml is not sops-encrypted")
     from envy.config import read_secrets_data, write_secrets_data
-    data, decrypt_ok = read_secrets_data()
+    data, decrypt_ok = read_secrets_data(age_key_file=age_key_file)
     if data is None or not decrypt_ok:
         raise SecretSafetyError("refusing updatekeys: cannot decrypt secrets/secrets.yaml")
     write_secrets_data(data)
@@ -189,7 +196,11 @@ def _key_repo_snapshot() -> tuple[tuple[bool, bytes], ...]:
 def _run_key_operation(operation: str, function, *args, **kwargs):
     """Commit only repository files changed by one successful key transaction."""
     before = _key_repo_snapshot()
-    result = function(*args, **kwargs)
+    try:
+        result = function(*args, **kwargs)
+    except (OSError, RuntimeError, ValueError, SecretSafetyError, subprocess.SubprocessError) as exc:
+        log.error("key", str(exc))
+        raise typer.Exit(code=1) from exc
     if _key_repo_snapshot() != before:
         git_commit_sops_files(operation)
     return result
@@ -220,6 +231,45 @@ def git_commit_setup_files(machine_path: Path) -> None:
 def reencrypt_recovery_key(keys: dict[str, str]) -> None:
     """Re-encrypt recovery-key.age with all current device keys from .sops.yaml."""
     _reencrypt_recovery_key_with(keys)
+
+
+def register_device_key(public_key: str, label: str | None = None) -> str:
+    """Register a device recipient without requiring access to old ciphertext."""
+    keys = read_sops_yaml_keys()
+    matching = [
+        name for name, value in keys.items()
+        if value == public_key and name != "recovery" and not name.startswith("envy_rotation_old_")
+    ]
+    if matching:
+        if len(matching) != 1:
+            raise RuntimeError("device public key is registered under multiple labels")
+        set_sops_label(matching[0])
+        return matching[0]
+
+    if label:
+        resolved = sanitize_label(label)
+        if not resolved:
+            raise ValueError("device sops label cannot be empty")
+    else:
+        try:
+            resolved = ensure_sops_label(public_key=public_key)
+        except ValueError:
+            # A stale ignored label must not select or overwrite another
+            # device. Derive a fresh label from the current host instead.
+            resolved = sanitize_label(run_cmd(["hostname", "-s"], check=False, capture=True) or "device")
+            suffix = 2
+            original = resolved
+            while resolved in keys and keys[resolved] != public_key:
+                resolved = f"{original}_{suffix}"
+                suffix += 1
+    if resolved in {"recovery", "recovery_new"} or resolved.startswith("envy_rotation_old_"):
+        raise ValueError("device sops label is reserved")
+    if resolved in keys and keys[resolved] != public_key:
+        raise ValueError(f"sops key label '{resolved}' belongs to another age key")
+    keys[resolved] = public_key
+    write_sops_yaml_keys(keys)
+    set_sops_label(resolved)
+    return resolved
 
 # ==========================================
 # INTERACTIVE MENU (prompt_toolkit)
@@ -419,9 +469,18 @@ def key_repair() -> None:
             backup.chmod(0o600)
 
     keys = read_sops_yaml_keys()
-    current_pub = get_current_device_public_key()
-    if not current_pub or current_pub not in keys.values():
+    local_public_keys = device_public_keys()
+    current_pub = local_public_keys[-1] if local_public_keys else None
+    if not current_pub:
         raise RuntimeError("current device key is not registered in .sops.yaml")
+    if current_pub not in keys.values():
+        label = get_sops_label()
+        old_pub = keys.get(label)
+        if not old_pub or old_pub not in local_public_keys:
+            raise RuntimeError("current device key is not registered in .sops.yaml")
+        keys[f"envy_rotation_old_{label}"] = old_pub
+        keys[label] = current_pub
+        log.fix("key", "recovered interrupted device rotation marker", label=label)
     if "recovery" not in keys or not RECOVERY_KEY_FILE.exists():
         raise RuntimeError("recovery key metadata or recovery-key.age is missing")
 
@@ -441,7 +500,12 @@ def key_repair() -> None:
             raise RuntimeError("recovery-key.age matches neither recovery nor recovery_new")
         keys.pop("recovery_new", None)
 
-    old_labels = [label for label in keys if label.endswith("_old")]
+    old_labels = [
+        label for label in keys
+        if label.startswith("envy_rotation_old_")
+        and label.removeprefix("envy_rotation_old_") in keys
+        and keys[label.removeprefix("envy_rotation_old_")] != keys[label]
+    ]
     for label in old_labels:
         keys.pop(label)
         log.fix("key", "removed completed device-rotation compatibility key", label=label)
@@ -458,13 +522,8 @@ def key_repair() -> None:
 
 @_transactional_key_files
 def key_add(pubkey: str, label: Optional[str] = None) -> None:
-    if not pubkey.startswith("age1"):
-        log.error("key", "invalid age public key (must start with 'age1')")
-        return
-
-    if len(pubkey) < 58:
-        log.error("key", f"invalid age public key (too short: {len(pubkey)} chars, expected ~58-62)")
-        return
+    if not re.fullmatch(r"age1[0-9a-z]+", pubkey):
+        raise ValueError("invalid age public key")
 
     keys = read_sops_yaml_keys()
     if pubkey in keys.values():
@@ -474,16 +533,16 @@ def key_add(pubkey: str, label: Optional[str] = None) -> None:
     if label is None:
         label = f"device_{len(keys)}"
     label = sanitize_label(label)
+    if label in {"recovery", "recovery_new"} or label.startswith("envy_rotation_old_"):
+        raise ValueError(f"label '{label}' is reserved")
 
     if label in keys:
-        log.error("key", f"label '{label}' already used, choose a different label")
-        return
+        raise ValueError(f"label '{label}' already used, choose a different label")
 
     try:
         run_cmd(["age", "--encrypt", "-r", pubkey, "-o", "/dev/null"], stdin_data="test", capture=True)
     except subprocess.CalledProcessError:
-        log.error("key", "key rejected by age — not a valid recipient")
-        return
+        raise ValueError("key rejected by age — not a valid recipient")
 
     new_keys = dict(keys)
     new_keys[label] = pubkey
@@ -504,13 +563,13 @@ def key_remove(label: str, force: bool = False) -> None:
     keys = read_sops_yaml_keys()
     current_pub = get_current_device_public_key()
 
+    if label == "recovery_new" or label.startswith("envy_rotation_old_"):
+        raise ValueError("cannot remove a rotation marker directly")
     if label not in keys:
-        log.error("key", f"label '{label}' not found in .sops.yaml")
-        return
+        raise ValueError(f"label '{label}' not found in .sops.yaml")
 
     if label == "recovery":
-        log.error("key", "cannot remove the recovery key — it ensures decryptability during rotation")
-        return
+        raise ValueError("cannot remove the recovery key — it ensures decryptability during rotation")
 
     if keys[label] == current_pub:
         if not force and not confirm("This is your CURRENT device key! Removing it will make secrets inaccessible here. Remove anyway?"):
@@ -519,8 +578,9 @@ def key_remove(label: str, force: bool = False) -> None:
 
     remaining = len(keys) - 1
     if remaining < 2:
-        log.error("key", "cannot remove — at least one device key and the recovery key must remain")
-        return
+        raise RuntimeError(
+            "cannot remove — at least one device key and the recovery key must remain"
+        )
 
     removed_pub = keys.pop(label)
     write_sops_yaml_keys(keys)
@@ -537,8 +597,9 @@ def key_remove(label: str, force: bool = False) -> None:
 
 def key_export(format: str = "age", output: Optional[str] = None) -> None:
     if not AGE_KEY_FILE.exists():
-        log.error("key", "no age key on this device to export")
-        return
+        raise RuntimeError("no age key on this device to export")
+    if format not in {"age", "ssh"}:
+        raise ValueError(f"unsupported key export format: {format}")
 
     content = AGE_KEY_FILE.read_text().strip()
     pub = get_current_device_public_key()
@@ -572,12 +633,14 @@ def key_import(
     generate: bool = False,
     label: Optional[str] = None,
     register: bool = True,
+    prepared: bool = False,
 ) -> Optional[str]:
     """Import a key for the current device. Returns public key on success."""
     pub = None
+    staged_key = None
 
     # If AGE_KEY_FILE already exists, confirm overwrite and backup before any write path
-    if AGE_KEY_FILE.exists() and (age_path or ssh_path or generate):
+    if register and not prepared and AGE_KEY_FILE.exists() and (age_path or ssh_path or generate):
         if not confirm(f"AGE_KEY_FILE already exists at {AGE_KEY_FILE}. Overwrite?"):
             log.warn("key", "import cancelled")
             return None
@@ -589,11 +652,12 @@ def key_import(
             log.error("key", "file not found", path=str(src))
             return None
         content = src.read_text().strip()
-        if not content.startswith("AGE-SECRET-KEY"):
-            log.error("key", "file does not appear to be an age key (missing AGE-SECRET-KEY prefix)")
+        try:
+            staged_key = prepare_device_age_key(content)
+        except (ValueError, RuntimeError) as exc:
+            log.error("key", str(exc))
             return None
-        store_device_age_key(content)
-        pub = run_cmd(["age-keygen", "-y", str(AGE_KEY_FILE)], capture=True)
+        pub = staged_key.public_key
         if pub:
             log.ok("key", "age key imported", pubkey=pub[:20] + "...")
     elif ssh_path:
@@ -603,18 +667,15 @@ def key_import(
             return None
         ensure_private_directory(AGE_KEY_DIR)
         result = run_cmd(["ssh-to-age", "-private-key", "-i", str(src)], capture=True)
-        store_device_age_key(result)
-        pub_path = src.with_suffix(".pub")
-        if pub_path.exists():
-            pub_input = pub_path.read_text()
-        else:
-            log.warn("key", "no public key found, enter it manually", path=str(pub_path))
-            pub_input = pt_prompt("SSH public key: ")
-        pub = run_cmd(["ssh-to-age"], stdin_data=pub_input, capture=True)
+        staged_key = prepare_device_age_key(result)
+        # Derive the public key from the converted private identity. The SSH
+        # .pub file is optional and may be stale or absent on a new machine.
+        pub = staged_key.public_key
         if pub:
             log.ok("key", "age key derived from SSH", pubkey=pub[:20] + "...")
     elif generate:
-        pub = generate_device_age_key()
+        staged_key = prepare_generated_device_age_key()
+        pub = staged_key.public_key
         if pub:
             log.ok("key", "new age key generated", pubkey=pub[:20] + "...")
     else:
@@ -637,7 +698,7 @@ def key_import(
 
         action, data = result
         if action == "usb":
-            return key_import(age_path=data, label=label, register=register)
+            return key_import(age_path=data, label=label, register=register, prepared=prepared)
         elif action == "age_manual":
             default_path = "~/Library/Application Support/sops/age/keys.txt"
             try:
@@ -646,7 +707,7 @@ def key_import(
                 return None
             if not path:
                 path = default_path
-            return key_import(age_path=path, label=label, register=register)
+            return key_import(age_path=path, label=label, register=register, prepared=prepared)
         elif action == "ssh_manual":
             default_ssh = "~/.ssh/id_ed25519"
             try:
@@ -655,40 +716,69 @@ def key_import(
                 return None
             if not path:
                 path = default_ssh
-            return key_import(ssh_path=path, label=label, register=register)
+            return key_import(ssh_path=path, label=label, register=register, prepared=prepared)
         elif action == "generate":
-            return key_import(generate=True, label=label, register=register)
+            return key_import(generate=True, label=label, register=register, prepared=prepared)
 
     if not pub:
         log.error("key", "key import failed")
         return None
 
+    previous_secrets = None
+    previous_recovery_private = None
+    if register:
+        if SECRETS_FILE.exists():
+            from envy.config import read_secrets_data
+            old_data, old_ok = read_secrets_data()
+            if old_ok:
+                previous_secrets = old_data
+        if RECOVERY_KEY_FILE.exists() and AGE_KEY_FILE.exists():
+            try:
+                previous_recovery_private = run_cmd(
+                    ["age", "--decrypt", "-i", str(AGE_KEY_FILE), str(RECOVERY_KEY_FILE)],
+                    capture=True,
+                )
+            except (CommandError, OSError, RuntimeError, ValueError):
+                pass
+
     if not register:
         log.ok("key", "device key prepared for setup", pubkey=pub[:20] + "...")
-        return pub
+        return staged_key
+
+    if staged_key is not None:
+        try:
+            commit_prepared_device_age_key(staged_key)
+        finally:
+            # The private staging file must not survive a failed registration,
+            # recipient update, or later sops operation.
+            staged_key.cleanup()
 
     # Set the sops key label in shared device metadata.
-    if label:
-        set_sops_label(sanitize_label(label))
-    else:
-        default_label = get_sops_label()
-        try:
-            user_label = pt_prompt(f"Sops key label [{default_label}]: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            user_label = ""
-        set_sops_label(sanitize_label(user_label) if user_label else default_label)
-
-    # Add to .sops.yaml
+    # Register the recipient after the private identity is active. Re-encrypt
+    # old ciphertext only when this identity can actually decrypt it; a new
+    # device may be registering with an old ciphertext that must be resealed by
+    # an already-authorized device.
+    current_label = register_device_key(pub, label)
     keys = read_sops_yaml_keys()
-    current_label = get_sops_label()
-    keys[current_label] = pub
-    write_sops_yaml_keys(keys)
-
-    # Re-encrypt recovery key to include new device
-    reencrypt_recovery_key(keys)
-
-    if SECRETS_FILE.exists():
-        run_sops_updatekeys()
+    if previous_recovery_private is not None:
+        from envy.keys.recovery import write_encrypted_recovery_key
+        write_encrypted_recovery_key(previous_recovery_private, keys.values())
+    elif RECOVERY_KEY_FILE.exists():
+        try:
+            decrypt_recovery_key()
+            reencrypt_recovery_key(keys)
+        except (CommandError, OSError, RuntimeError, ValueError):
+            log.warn("key", "registered device cannot decrypt existing recovery-key.age; left it unchanged")
+    if previous_secrets is not None:
+        from envy.config import write_secrets_data
+        write_secrets_data(previous_secrets)
+    elif SECRETS_FILE.exists():
+        from envy.config import read_secrets_data
+        _, secrets_accessible = read_secrets_data()
+        if secrets_accessible:
+            run_sops_updatekeys()
+        else:
+            log.warn("key", "registered device cannot decrypt existing secrets.yaml; left it unchanged")
     log.ok("key", f"key imported and added to .sops.yaml as '{current_label}'")
     log.hint(f"Public key: {pub}")
 
@@ -725,9 +815,16 @@ def key_add_recovery(*, reencrypt_secrets: bool = True) -> None:
         log.warn("key", "recovery key already exists")
         log.hint("Run: envy key rotate --recovery")
         return
+    current_pub = get_current_device_public_key()
+    device_recipients = [
+        public_key for label, public_key in keys.items()
+        if label not in {"recovery", "recovery_new"} and not label.startswith("envy_rotation_old_")
+    ]
+    if not current_pub or current_pub not in device_recipients:
+        raise RuntimeError("an authorized local device key is required before adding recovery")
 
     priv_line, recovery_pub = generate_keypair()
-    _write_encrypted_recovery_key(priv_line, list(keys.values()) + [recovery_pub])
+    _write_encrypted_recovery_key(priv_line, [*device_recipients, recovery_pub])
 
     keys["recovery"] = recovery_pub
     write_sops_yaml_keys(keys)
@@ -746,9 +843,7 @@ def key_seal_recovery(priv_path: Optional[str] = None) -> None:
     """Encrypt a recovery private key into secrets/recovery-key.age."""
     keys = read_sops_yaml_keys()
     if "recovery" not in keys:
-        log.error("key", "no recovery key in .sops.yaml")
-        log.hint("Run: envy key add-recovery")
-        return
+        raise RuntimeError("no recovery key in .sops.yaml; run: envy key add-recovery")
 
     if RECOVERY_KEY_FILE.exists():
         log.warn("key", "recovery-key.age already exists, re-encrypting with updated key list")
@@ -758,34 +853,25 @@ def key_seal_recovery(priv_path: Optional[str] = None) -> None:
     if priv_path:
         src = Path(priv_path).expanduser()
         if not src.exists():
-            log.error("key", "file not found", path=str(src))
-            return
+            raise FileNotFoundError(f"recovery key file not found: {src}")
         recovery_priv = src.read_text().strip()
     else:
         current_pub = get_current_device_public_key()
         if not current_pub:
-            log.error("key", "no current device key")
-            log.hint("Run: envy key seal-recovery <path>")
-            return
+            raise RuntimeError("no current device key; provide a recovery key path")
         if current_pub != keys["recovery"]:
-            log.error("key", "current device key is not the recovery key")
-            log.hint("Run: envy key seal-recovery <path>")
-            return
+            raise RuntimeError("current device key is not the recovery key; provide a recovery key path")
         recovery_priv = AGE_KEY_FILE.read_text().strip()
 
     priv_lines = [l for l in recovery_priv.split("\n") if l.startswith("AGE-SECRET-KEY")]
     if not priv_lines:
-        log.error("key", "provided key does not contain AGE-SECRET-KEY")
-        return
+        raise ValueError("provided key does not contain AGE-SECRET-KEY")
 
     priv_line = priv_lines[0]
     derived_pub = _public_key_from_private(priv_line)
 
     if derived_pub != keys["recovery"]:
-        log.error("key", "derived public key does not match recovery key in .sops.yaml")
-        log.hint(f"Expected: {keys['recovery'][:30]}...")
-        log.hint(f"Got:      {derived_pub[:30]}...")
-        return
+        raise ValueError("derived public key does not match recovery key in .sops.yaml")
 
     _write_encrypted_recovery_key(priv_line, list(keys.values()))
 
@@ -798,13 +884,11 @@ def key_seal_recovery(priv_path: Optional[str] = None) -> None:
 def key_recover_recovery(output: Optional[str] = None) -> None:
     """Decrypt the stored recovery private key."""
     if not RECOVERY_KEY_FILE.exists():
-        log.error("key", "no recovery-key.age file found in repo")
-        return
+        raise FileNotFoundError("no recovery-key.age file found in repo")
 
     current_pub = get_current_device_public_key()
     if not current_pub:
-        log.error("key", "no age key on this device to decrypt recovery key")
-        return
+        raise RuntimeError("no age key on this device to decrypt recovery key")
 
     decrypted = decrypt_recovery_key()
 
@@ -825,14 +909,11 @@ def key_rotate(recovery: bool = False) -> None:
     if recovery:
         current_pub = get_current_device_public_key()
         if not current_pub or current_pub not in keys.values():
-            log.error("key", "current device key must be in .sops.yaml to rotate recovery key")
-            return
+            raise RuntimeError("current device key must be in .sops.yaml to rotate recovery key")
 
         old_recovery_pub = keys.get("recovery")
         if not old_recovery_pub:
-            log.error("key", "no recovery key to rotate")
-            log.hint("Run: envy key add-recovery")
-            return
+            raise RuntimeError("no recovery key to rotate; run: envy key add-recovery")
 
         log.step("key", "rotating recovery key")
         log.hint(f"Old recovery: {old_recovery_pub[:30]}...")
@@ -843,7 +924,7 @@ def key_rotate(recovery: bool = False) -> None:
         write_sops_yaml_keys(keys)
         run_sops_updatekeys()
 
-        recipients = [v for k, v in keys.items() if k != "recovery"]
+        recipients = [v for k, v in keys.items() if k not in {"recovery", "recovery_new"}]
         _write_encrypted_recovery_key(priv_line, recipients)
 
         keys.pop("recovery")
@@ -858,19 +939,18 @@ def key_rotate(recovery: bool = False) -> None:
     # Rotate device key
     current_pub = get_current_device_public_key()
     if not current_pub:
-        log.error("key", "no current key to rotate")
-        log.hint("Run: envy key import")
-        return
+        raise RuntimeError("no current key to rotate; run: envy key import")
 
     label = ensure_sops_label()
     if current_pub not in keys.values():
-        log.error("key", "current device key not in .sops.yaml, cannot rotate")
-        return
+        raise RuntimeError("current device key not in .sops.yaml, cannot rotate")
+    if label in {"recovery", "recovery_new"} or label.startswith("envy_rotation_old_"):
+        raise RuntimeError("device sops label is reserved")
+    if keys.get(label) != current_pub:
+        raise RuntimeError(f"sops key label '{label}' does not match the current device key")
 
     if "recovery" not in keys:
-        log.error("key", "no recovery key in .sops.yaml — rotation is unsafe without a recovery key")
-        log.hint("Run: envy key add-recovery")
-        return
+        raise RuntimeError("no recovery key in .sops.yaml; rotation requires recovery")
 
     log.step("key", f"rotating key for device '{label}'")
     log.hint(f"Old public key: {current_pub[:30]}...")
@@ -883,13 +963,17 @@ def key_rotate(recovery: bool = False) -> None:
 
     store_device_age_key(old_key_content + "\n" + new_key_content)
 
-    old_label_temp = f"{label}_old"
+    old_label_temp = f"envy_rotation_old_{label}"
     keys[old_label_temp] = current_pub
     keys[label] = new_pub
     write_sops_yaml_keys(keys)
     run_sops_updatekeys()
 
-    _reencrypt_recovery_key_with(keys)
+    # Remove the old device recipient before publishing the final recovery
+    # ciphertext. A retired device must not retain access through recovery.
+    final_keys = dict(keys)
+    final_keys.pop(old_label_temp)
+    _reencrypt_recovery_key_with(final_keys)
 
     keys.pop(old_label_temp)
     write_sops_yaml_keys(keys)
@@ -993,9 +1077,9 @@ def cmd_import(
         generate=generate,
         label=label,
     )
-    if result is None and not age and not ssh and not generate:
-        # Interactive mode returned None (user quit)
-        raise typer.Exit()
+    if result is None:
+        # Explicit failures are errors; an interactive quit is a cancellation.
+        raise typer.Exit(code=2 if not age and not ssh and not generate else 1)
 
 
 @app.command(name="add-recovery")

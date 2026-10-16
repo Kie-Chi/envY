@@ -17,6 +17,11 @@ case "$envy_mirror_mode" in
 esac
 
 export ENVY_MIRROR="$envy_mirror_mode"
+if [ "$envy_mirror_mode" = "china" ]; then
+    export ENVY_BOOTSTRAP_HOMEBREW_INSTALL_URL="${ENVY_BOOTSTRAP_HOMEBREW_INSTALL_URL:-https://mirrors.ustc.edu.cn/misc/brew-install.sh}"
+else
+    export ENVY_BOOTSTRAP_HOMEBREW_INSTALL_URL="${ENVY_BOOTSTRAP_HOMEBREW_INSTALL_URL:-https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh}"
+fi
 
 if [ "${ENVY_MIRROR_ENV_APPLIED:-}" != "$envy_mirror_mode" ]; then
     # Official Nix installs leave these disabled. Both bootstrap entry points
@@ -56,6 +61,23 @@ $envy_nix_config"
     fi
     export NIX_CONFIG
     export ENVY_MIRROR_ENV_APPLIED="$envy_mirror_mode"
+fi
+
+# Homebrew's installer reads these before cloning brew and bootstrapping Ruby.
+# Keep this outside the NIX_CONFIG guard: requires.sh may inherit that marker
+# from setup while still needing the Darwin-specific environment.
+if [ "$(uname -s)" = "Darwin" ]; then
+    if [ "$envy_mirror_mode" = "china" ]; then
+        export HOMEBREW_API_DOMAIN="${ENVY_HOMEBREW_API_DOMAIN:-${HOMEBREW_API_DOMAIN:-https://mirrors.ustc.edu.cn/homebrew-bottles/api}}"
+        export HOMEBREW_BOTTLE_DOMAIN="${ENVY_HOMEBREW_BOTTLE_DOMAIN:-${HOMEBREW_BOTTLE_DOMAIN:-https://mirrors.ustc.edu.cn/homebrew-bottles}}"
+        export HOMEBREW_BREW_GIT_REMOTE="${ENVY_HOMEBREW_BREW_GIT_REMOTE:-${HOMEBREW_BREW_GIT_REMOTE:-https://mirrors.ustc.edu.cn/brew.git}}"
+    else
+        export HOMEBREW_API_DOMAIN="${ENVY_HOMEBREW_API_DOMAIN:-${HOMEBREW_API_DOMAIN:-https://formulae.brew.sh/api}}"
+        export HOMEBREW_BOTTLE_DOMAIN="${ENVY_HOMEBREW_BOTTLE_DOMAIN:-${HOMEBREW_BOTTLE_DOMAIN:-https://ghcr.io/v2/homebrew/core}}"
+        export HOMEBREW_BREW_GIT_REMOTE="${ENVY_HOMEBREW_BREW_GIT_REMOTE:-${HOMEBREW_BREW_GIT_REMOTE:-https://github.com/Homebrew/brew}}"
+    fi
+    # USTC does not provide a core Git mirror; API-based installs do not need it.
+    export HOMEBREW_CORE_GIT_REMOTE="${ENVY_HOMEBREW_CORE_GIT_REMOTE:-${HOMEBREW_CORE_GIT_REMOTE:-https://github.com/Homebrew/homebrew-core}}"
 fi
 
 unset envy_mirror_mode envy_nix_config

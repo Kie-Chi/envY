@@ -9,7 +9,7 @@
 - macOS 或 Linux，具有 Bash、Git 和网络连接
 - 使用远程命令时需要 `curl`；已下载脚本可以直接用 Bash 执行
 - 运行交互式 setup 时需要真实终端。无 TTY 的 CI 环境应使用 `--no-setup`
-- 首次安装 Nix 可能要求 `sudo`。`setup.sh` 在 `china` 模式通过清华镜像运行官方 Nix 二进制安装脚本，在 `upstream` 模式使用 Determinate Nix Installer，然后运行最小化的 setup flake app
+- 首次安装 Nix 可能要求 `sudo`。`setup.sh` 在 `china` 模式通过清华镜像运行官方 Nix 二进制安装脚本，在 `upstream` 模式使用 Determinate Nix Installer。Darwin 还会在 setup 前检查 Homebrew：缺失时先下载完整 installer，China 默认使用 USTC，失败后回退官方地址；安装后立即恢复当前进程的 Homebrew PATH，然后运行最小化的 setup flake app
 
 envY 需要 Nix 的 `nix-command` 和 `flakes` 功能。官方 Nix 安装后默认未启用它们；
 setup 和仓库内的 `./envy` 入口会通过当前进程的 `NIX_CONFIG` 临时启用，并保留已有的
@@ -89,7 +89,8 @@ curl --proto '=https' --tlsv1.2 -fsSL \
 ```
 
 对应环境变量是 `ENVY_REPOSITORY_URL`、`ENVY_BRANCH`、`ENVY_ROOT`、`ENVY_MIRROR` 和
-`ENVY_GIT_MIRROR_URL`。`ENVY_NIX_INSTALLER_URL` 可以显式覆盖 Nix installer 下载地址；`--reset-secrets` 也可以通过
+`ENVY_GIT_MIRROR_URL`。`ENVY_NIX_INSTALLER_URL` 可以显式覆盖 Nix installer 下载地址；Darwin 的
+`ENVY_HOMEBREW_INSTALL_URL` 可以显式指定经过信任的 Homebrew 安装脚本地址。`--reset-secrets` 也可以通过
 `bash setup.sh --reset-secrets` 使用。它不会读取旧 secrets 的值，保存时会整体替换加密文件。
 
 如果该地址提供标准 Nix 安装脚本，可再设置 `ENVY_NIX_INSTALLER_ARGS='--daemon'`。
@@ -146,7 +147,7 @@ install.sh -> clone/reuse checkout -> setup.sh -> nix run path:.#setup -> setup.
 ```
 
 - `install.sh` 只负责 repository bootstrap 和终端交接。
-- `setup.sh` 只负责准备 Nix 和 setup runtime 并启动 setup。安装 Nix 后会在当前进程显式恢复 `/nix/var/nix/profiles/default/bin`，不要求重新登录才能继续 setup。
+- `setup.sh` 只负责准备 Nix、Darwin Homebrew 和 setup runtime 并启动 setup。安装 Nix 后会在当前进程显式恢复 `/nix/var/nix/profiles/default/bin`；Homebrew 安装后会恢复 `/opt/homebrew/bin` 或 `/usr/local/bin`，不要求重新登录才能继续 setup。China 模式先按 catalog 预取带锁定 `narHash` 的 GitHub Flake source；预取失败时保留锁定 URL 回退，不修改 `flake.nix` 或 `flake.lock`。
 - `setup.py` 创建或选择 host、编辑 machine 配置和 software exclusions，并管理 sops secrets。
 - setup 的列表、输入和变更摘要会遮罩 secret，只显示是否为空，不打印 secret 原文。
 

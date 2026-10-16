@@ -247,7 +247,13 @@ def require_current_machine_file() -> Path:
     raise typer.Exit(code=1)
 
 
-def initialize_machine(machine_id: str, mode: str, force: bool = False) -> Path:
+def initialize_machine(
+    machine_id: str,
+    mode: str,
+    force: bool = False,
+    *,
+    select: bool = True,
+) -> Path:
     machine_id = validate_machine_id(machine_id)
     mode = mode.strip().lower()
     if mode not in {"import", "copy"}:
@@ -293,8 +299,13 @@ def initialize_machine(machine_id: str, mode: str, force: bool = False) -> Path:
         )
         atomic_write_text(target, header + source)
 
-    set_device_machine_id(machine_id)
-    log.ok("host", "machine configuration created and selected", path=str(target), mode=mode)
+    if select:
+        set_device_machine_id(machine_id)
+    log.ok(
+        "host",
+        "machine configuration created" + (" and selected" if select else ""),
+        path=str(target), mode=mode,
+    )
     log.hint(f"Edit the file, then run: envy host check {machine_id}")
     return target
 

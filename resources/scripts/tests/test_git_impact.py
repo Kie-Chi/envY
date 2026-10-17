@@ -44,6 +44,19 @@ class GitImpactTests(unittest.TestCase):
         initialize.assert_not_called()
         refine.assert_not_called()
 
+    def test_verify_identity_populates_manifest_cache(self):
+        manifest = {"settings": {"envy.user.home": str(Path.home())}}
+        with patch.object(system_workflow, "machine_manifest", return_value=manifest) as evaluate, patch.object(
+            system_workflow, "device_public_keys", return_value=["age1-local"]
+        ), patch.object(
+            system_workflow, "read_sops_yaml_keys", return_value={"device": "age1-local"}
+        ), patch.object(
+            system_workflow, "SECRETS_FILE", Path("/tmp/envy-test-secrets-does-not-exist")
+        ):
+            system_workflow.verify_apply_identity()
+
+        evaluate.assert_called_once_with(refresh=True)
+
     def test_linux_trust_preflight_runs_before_refine(self):
         machine = Path(__file__).resolve()
         events = []

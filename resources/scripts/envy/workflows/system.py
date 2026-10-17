@@ -31,7 +31,7 @@ from envy.utils import (
 
 def verify_apply_identity() -> None:
     """Ensure the configured identity is an active secrets recipient."""
-    settings = manifest_settings(machine_manifest(refresh=True, write_cache=False))
+    settings = manifest_settings(machine_manifest(refresh=True))
     configured_home = Path(settings.get("envy.user.home", str(Path.home())))
     configured_key = age_key_file_for_home(configured_home)
     key_file = configured_key if configured_key.exists() else AGE_KEY_FILE

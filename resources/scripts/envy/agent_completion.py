@@ -25,7 +25,7 @@ def _metadata():
     from envy.agent import _managed_manifest, is_obsolete_agent
 
     try:
-        manifest = machine_manifest(write_cache=False) or {}
+        manifest = machine_manifest(completion=True) or {}
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
         manifest = {}
     if not isinstance(manifest, dict):

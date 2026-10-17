@@ -54,7 +54,7 @@ class AgentCompletionTests(unittest.TestCase):
             self.assertNotIn("envy.agents.local-pi.args", paths)
             self.assertIn("envy.llm.endpoints.custom.protocol", self.complete(group, "set", "path", "envy.llm.endpoints.c"))
             self.assertIn("envy.llm.credentials.shared.kind", self.complete(group, "set", "path", "envy.llm.credentials.s"))
-        self.manifest.assert_called_with(write_cache=False)
+        self.manifest.assert_called_with(completion=True)
 
     def test_values_follow_namespace_and_selected_field(self):
         examples = (

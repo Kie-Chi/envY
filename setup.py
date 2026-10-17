@@ -169,6 +169,12 @@ def init_values() -> dict:
     return values
 
 
+def prompt_input(message: str) -> str:
+    """Read one interactive value without background output moving the cursor."""
+    with log.interactive_prompt():
+        return pt_prompt(message)
+
+
 def prompt_secret_recovery_choice() -> str:
     """Choose how setup should handle an existing ciphertext it cannot read."""
     log.console.print(Panel(
@@ -179,7 +185,7 @@ def prompt_secret_recovery_choice() -> str:
         title="New Device Secrets", border_style="red"))
     while True:
         try:
-            answer = pt_prompt("? Choose 1, 2, or 3: ").strip()
+            answer = prompt_input("? Choose 1, 2, or 3: ").strip()
         except (EOFError, KeyboardInterrupt, OSError):
             return "cancel"
         if answer in {"1", "2", "3"}:
@@ -714,7 +720,7 @@ def prompt_yes_no(question: str) -> bool:
     """Require an explicit yes or no; blank and invalid answers retry."""
     while True:
         try:
-            answer = pt_prompt(f"? {question} [y/n]: ").strip().casefold()
+            answer = prompt_input(f"? {question} [y/n]: ").strip().casefold()
         except (EOFError, KeyboardInterrupt, OSError):
             return False
         if answer in {"y", "yes"}:
@@ -917,7 +923,7 @@ def ensure_machine_configuration(machine_id: str) -> bool:
             return False
 
         while True:
-            mode = pt_prompt("? Creation mode (import/copy) [import]: ").strip().lower() or "import"
+            mode = prompt_input("? Creation mode (import/copy) [import]: ").strip().lower() or "import"
             if mode in {"import", "copy"}:
                 break
             log.error("host", "creation mode must be import or copy")

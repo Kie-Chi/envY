@@ -127,6 +127,28 @@ class EvaluationTests(unittest.TestCase):
             self.assertEqual(value, manifest)
             self.assertFalse(evaluation._cache_path("completion-machine").exists())
 
+    def test_completion_reads_existing_cache_without_evaluating(self):
+        manifest = {"id": "completion-machine", "settings": {}}
+        with tempfile.TemporaryDirectory() as cache_root, patch.dict(
+            os.environ, {"XDG_CACHE_HOME": cache_root}, clear=False
+        ), patch.object(
+            evaluation, "current_machine_id", return_value="completion-machine"
+        ), patch.object(
+            evaluation, "_evaluate_machine_manifest", side_effect=AssertionError("completion must not evaluate")
+        ):
+            evaluation._write_cache("completion-machine", "old-fingerprint", manifest)
+            self.assertEqual(evaluation.machine_manifest(completion=True), manifest)
+
+    def test_completion_without_cache_returns_without_running_nix(self):
+        with tempfile.TemporaryDirectory() as cache_root, patch.dict(
+            os.environ, {"XDG_CACHE_HOME": cache_root}, clear=False
+        ), patch.object(
+            evaluation, "current_machine_id", return_value="completion-machine"
+        ), patch.object(
+            evaluation, "_evaluate_machine_manifest", side_effect=AssertionError("completion must not evaluate")
+        ):
+            self.assertIsNone(evaluation.machine_manifest(completion=True))
+
     def test_refresh_bypasses_persistent_cache_and_replaces_it(self):
         first_manifest = {"id": "first"}
         refreshed_manifest = {"id": "refreshed"}

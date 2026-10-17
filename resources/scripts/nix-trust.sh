@@ -25,6 +25,8 @@ sudo_command="${ENVY_NIX_TRUST_SUDO:-sudo}"
 default_daemon_socket='/nix/var/nix/daemon-socket/socket'
 daemon_socket="${ENVY_NIX_TRUST_SOCKET:-$default_daemon_socket}"
 nix_command="${ENVY_NIX_TRUST_NIX:-nix}"
+daemon_wait_attempts="${ENVY_NIX_TRUST_WAIT_ATTEMPTS:-15}"
+nix_rpc_timeout="${ENVY_NIX_TRUST_RPC_TIMEOUT:-5}"
 elevated=0
 quiet=0
 force_reload=0
@@ -301,7 +303,11 @@ daemon_socket_ready() {
 daemon_ready() {
     daemon_socket_ready || return 1
     command -v "$nix_command" >/dev/null 2>&1 || return 1
-    "$nix_command" store info --store daemon >/dev/null 2>&1
+    if [ "$(uname -s)" = "Linux" ] && command -v timeout >/dev/null 2>&1; then
+        timeout "$nix_rpc_timeout" "$nix_command" store info --store daemon >/dev/null 2>&1
+    else
+        "$nix_command" store info --store daemon >/dev/null 2>&1
+    fi
 }
 
 restart_active_daemon() {
@@ -320,9 +326,9 @@ restart_active_daemon() {
                     # has registered its socket. Wait for the socket itself so
                     # the first Nix call cannot race the daemon reload.
                     attempt=1
-                    while [ "$attempt" -le 15 ]; do
+                    while [ "$attempt" -le "$daemon_wait_attempts" ]; do
                         if "$launchctl_command" print "system/$service" >/dev/null 2>&1 \
-                            && daemon_ready; then
+                            && daemon_socket_ready; then
                             say "[OK] Restarted $service after updating Nix daemon trust."
                             return 0
                         fi
@@ -344,9 +350,9 @@ restart_active_daemon() {
         if "$systemctl_command" is-active --quiet "$service" 2>/dev/null; then
             "$systemctl_command" restart "$service" || return "$?"
             attempt=1
-            while [ "$attempt" -le 15 ]; do
+            while [ "$attempt" -le "$daemon_wait_attempts" ]; do
                 if "$systemctl_command" is-active --quiet "$service" 2>/dev/null \
-                    && daemon_ready; then
+                    && daemon_socket_ready; then
                     say "[OK] Restarted $service after updating Nix daemon trust."
                     return 0
                 fi

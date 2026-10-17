@@ -227,6 +227,16 @@ class NixTrustScriptTests(unittest.TestCase):
         self.assertIn("requires repair", result.stdout)
         self.assertEqual(self.custom_config.read_text(), original)
 
+    def test_repair_does_not_require_nix_rpc_after_daemon_restart(self):
+        nix = self.root / "nix-failing"
+        nix.write_text(f"#!{shutil.which('bash')}\nexit 1\n")
+        nix.chmod(0o755)
+
+        result = self.run_helper("repair", nix=nix)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(BEGIN, self.custom_config.read_text())
+
     def test_ready_configuration_needs_no_sudo_or_write(self):
         self.assertEqual(self.run_helper("repair").returncode, 0)
         inode = self.custom_config.stat().st_ino

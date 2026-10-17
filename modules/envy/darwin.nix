@@ -32,6 +32,9 @@ let
   brews = selectStrings softwarePolicy.homebrew.formulae;
   casks = selectStrings softwarePolicy.homebrew.casks;
   taps = selectStrings softwarePolicy.homebrew.repositories;
+  managedTaps = lib.filter
+    (name: !(builtins.elem name [ "homebrew/core" "homebrew/cask" ]))
+    taps;
   homePolicy = config.home-manager.users.${config.envy.user.name}.envy.software;
   homeLlm = config.home-manager.users.${config.envy.user.name}.envy.llm;
   homeAgents = config.home-manager.users.${config.envy.user.name}.envy.agents;
@@ -232,7 +235,7 @@ in
           inherit name;
           clone_target = source.parameters.url;
         } else name
-      ) taps;
+      ) managedTaps;
       onActivation = {
         autoUpdate = false;
         upgrade = false;

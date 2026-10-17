@@ -9,6 +9,7 @@ from envy.sources.model import Source, SourceError
 
 START = "  # BEGIN ENVY MANAGED SOURCES"
 END = "  # END ENVY MANAGED SOURCES"
+HOMEBREW_BUILTIN_TAPS = {"homebrew/core", "homebrew/cask"}
 
 
 def prerequisite(source_id, manifest, includes, exclusions):
@@ -16,6 +17,8 @@ def prerequisite(source_id, manifest, includes, exclusions):
     source = source_for(source_id, manifest)
     if manifest.get("platform") not in source.platforms:
         raise SourceError("source is incompatible with machine platform", "unsupported-platform")
+    if source.type == "tap" and source.parameters.get("tap") in HOMEBREW_BUILTIN_TAPS:
+        return None
     if source.type not in ("native", "tap") or source.parameters.get("system"):
         return None
     group = "native.system.repository" if source.type == "native" else "homebrew.system.repository"

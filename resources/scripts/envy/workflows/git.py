@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import typer
 
@@ -190,7 +191,24 @@ def run_checked_git(args: list[str], action: str) -> None:
         raise typer.Exit(code=result.returncode)
 
 
+def require_no_git_operation() -> None:
+    """Do not turn an unfinished Git operation into a push commit."""
+    conflicts = git_output_checked("diff", "--name-only", "--diff-filter=U")
+    git_dir = Path(git_output_checked("rev-parse", "--absolute-git-dir"))
+    pending = [
+        name for name in (
+            "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD",
+            "rebase-merge", "rebase-apply", "sequencer",
+        ) if (git_dir / name).exists()
+    ]
+    if conflicts or pending:
+        log.error("git", "unfinished Git operation; refusing to synchronize or push")
+        log.hint("Inspect git status, then finish or abort the existing operation first.")
+        raise typer.Exit(code=1)
+
+
 def preflight_push_remotes(remotes: list[str], branch: str) -> set[str]:
+    """Fetch push destinations before selecting a compatible sync target."""
     new_branches: set[str] = set()
     for remote in remotes:
         log.step("git", "checking push destination", branch=f"{remote}/{branch}")
@@ -202,14 +220,6 @@ def preflight_push_remotes(remotes: list[str], branch: str) -> set[str]:
         )
         if verify.returncode != 0:
             new_branches.add(remote)
-            continue
-        remote_ahead = git_output_checked("rev-list", "--count", f"HEAD..{remote_ref}")
-        if not remote_ahead.isdigit():
-            raise typer.Exit(code=1)
-        if int(remote_ahead) > 0:
-            log.error("git", "remote branch is ahead; refusing divergent commit", branch=remote_ref)
-            log.hint("Stash or commit local work, then run envy sync before pushing.")
-            raise typer.Exit(code=1)
     return new_branches
 
 
@@ -339,6 +349,59 @@ def sync(
     run_apply()
 
 
+def sync_before_push(
+    remotes: list[str], branch: str, new_branches: set[str], worktree_paths: list[str],
+) -> None:
+    """Synchronize without activation, preserving uncommitted work and its index."""
+    remote_refs = [f"{remote}/{branch}" for remote in remotes if remote not in new_branches]
+    if not remote_refs:
+        log.info("git", "no existing remote branch to synchronize; preparing initial push")
+        return
+    target = select_sync_target(remote_refs)
+    # An automatic merge must not create a commit containing remote plaintext.
+    enforce_secret_safety({target})
+    if not worktree_paths or git_is_ancestor(target, "HEAD"):
+        merge_sync_target(target)
+        return
+
+    previous_stash = git_output_checked("stash", "list", "-1", "--format=%H")
+    run_checked_git(
+        ["stash", "push", "--include-untracked", "-m", "envy push: temporary sync backup"],
+        "sync backup",
+    )
+    stash = git_output_checked("stash", "list", "-1", "--format=%H")
+    if not stash or stash == previous_stash:
+        log.error("git", "no new sync backup was created; refusing to synchronize")
+        raise typer.Exit(code=1)
+    log.info("git", "saved uncommitted changes before synchronization", stash=stash[:12])
+    try:
+        if changed_paths():
+            log.error("git", "working tree is still dirty after backup; refusing to synchronize")
+            raise typer.Exit(code=1)
+        merge_sync_target(target)
+    except BaseException:
+        log.warn("git", "uncommitted changes remain in the sync backup", stash=stash)
+        log.hint("Finish or abort the merge before restoring the saved changes.")
+        log.hint(f"Restore the backup: git stash apply --index {stash}")
+        raise
+
+    result = run_process(
+        ["git", "stash", "apply", "--index", stash],
+        cwd=ENVY_ROOT, check=False,
+    )
+    if result.returncode != 0:
+        log.error("git", "sync backup restoration failed; commit and push skipped", stash=stash)
+        log.hint("Inspect conflicts: git status")
+        log.hint(f"Inspect the retained backup: git stash show --include-untracked --patch {stash}")
+        log.hint("Resolve the restored changes manually, then validate and retry envy push.")
+        raise typer.Exit(code=result.returncode or 1)
+    if git_output_checked("stash", "list", "-1", "--format=%H") == stash:
+        run_checked_git(["stash", "drop", "stash@{0}"], "sync backup cleanup")
+    else:
+        log.warn("git", "restored changes; sync backup retained behind a newer stash", stash=stash)
+    log.ok("git", "repository synchronized and uncommitted changes restored; apply skipped")
+
+
 @record_operation(
     "push",
     detail=lambda **kw: {"remote": kw.get("remote") or "all", "branch": kw.get("branch")},
@@ -356,11 +419,25 @@ def push(
                   current=current_branch, expected=branch)
         log.hint(f"Switch to {branch}, or pass --branch {current_branch} intentionally.")
         raise typer.Exit(code=1)
+    require_no_git_operation()
     remotes = selected_remotes(remote)
     if not remotes:
         log.error("git", "no Git remotes are configured")
         raise typer.Exit(code=1)
+    worktree_paths = changed_paths()
+    enforce_secret_safety(set())
+    enforce_push_scope(worktree_paths, machine_only=machine_only, self_only=self_only)
     new_branches = preflight_push_remotes(remotes, current_branch)
+    outgoing_paths, outgoing_commits, _ = outgoing_impact(remotes, current_branch, new_branches)
+    enforce_secret_safety(outgoing_commits)
+    enforce_push_scope(
+        ordered_unique([*worktree_paths, *outgoing_paths]),
+        machine_only=machine_only, self_only=self_only,
+    )
+    sync_before_push(remotes, current_branch, new_branches, worktree_paths)
+
+    # Synchronization can add history or change files, so classify the exact
+    # restored state again before staging, confirmation, or publication.
     worktree_paths = changed_paths()
     outgoing_paths, outgoing_commits, counts = outgoing_impact(remotes, current_branch, new_branches)
     enforce_secret_safety(outgoing_commits)
@@ -384,6 +461,9 @@ def push(
         log.step("git", "committing changes")
         run_checked_git(["commit", "-m", msg], "commit")
 
+    outgoing_paths, outgoing_commits, _ = outgoing_impact(remotes, current_branch, new_branches)
+    enforce_secret_safety(outgoing_commits)
+    enforce_push_scope(outgoing_paths, machine_only=machine_only, self_only=self_only)
     succeeded: list[str] = []
     failed: list[str] = []
     untouched: list[str] = []

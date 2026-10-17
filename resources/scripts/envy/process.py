@@ -170,6 +170,7 @@ class _ActivityReporter:
         enabled = os.environ.get("ENVY_ACTIVITY", "1").strip().casefold()
         if (
             enabled in {"0", "false", "no", "off"}
+            or log.is_completion_invocation()
             or not sys.stderr.isatty()
             or threading.current_thread() is not threading.main_thread()
         ):

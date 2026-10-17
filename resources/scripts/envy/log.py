@@ -1,6 +1,8 @@
 """Shared logging helpers for envy commands."""
 
 import os
+import threading
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
 
@@ -8,6 +10,34 @@ from rich.console import Console
 
 console = Console()
 diagnostic_console = Console(stderr=True)
+_interactive_prompt_depth = 0
+_interactive_prompt_lock = threading.Lock()
+
+
+def is_completion_invocation() -> bool:
+    """Return whether Click/Typer is executing a shell completion callback."""
+    return any(
+        key == "_TYPER_COMPLETE" or key.endswith("_COMPLETE")
+        for key in os.environ
+    )
+
+
+@contextmanager
+def interactive_prompt():
+    """Temporarily silence background activity output while the user types."""
+    global _interactive_prompt_depth
+    with _interactive_prompt_lock:
+        _interactive_prompt_depth += 1
+    try:
+        yield
+    finally:
+        with _interactive_prompt_lock:
+            _interactive_prompt_depth = max(0, _interactive_prompt_depth - 1)
+
+
+def _activity_is_allowed() -> bool:
+    with _interactive_prompt_lock:
+        return _interactive_prompt_depth == 0 and not is_completion_invocation()
 
 
 def reset_consoles() -> None:
@@ -65,6 +95,8 @@ def debug(scope: str, message: str, **values: Any) -> None:
 
 def activity(scope: str, message: str, **values: Any) -> None:
     """Render non-structured long-task feedback without polluting JSON stdout."""
+    if not _activity_is_allowed():
+        return
     diagnostic_console.print(
         f"[yellow]…[/yellow] {scope}: {message}{_format_kv(values)}"
     )

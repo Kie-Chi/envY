@@ -1219,7 +1219,7 @@ def _completion_policy(manifest=None) -> tuple[
     """Load completion candidates without allowing evaluation errors to escape."""
     try:
         if manifest is None:
-            manifest = machine_manifest(write_cache=False)
+            manifest = machine_manifest(completion=True)
         if not manifest_software_groups(manifest):
             return (), {}
         groups = groups_for_manifest(manifest, include_empty=True)
@@ -1387,7 +1387,7 @@ def _complete_add(ctx, incomplete: str, *, smart: bool) -> list[tuple[str, str]]
     params = getattr(ctx, "params", {}) or {}
     group_key = params.get("group") or (None if smart else params.get("group_or_item"))
     try:
-        manifest = machine_manifest(write_cache=False)
+        manifest = machine_manifest(completion=True)
         if not manifest:
             return []
         groups, all_items_by_group = _completion_policy(manifest)
@@ -1488,7 +1488,7 @@ def complete_why_groups(ctx, incomplete: str) -> list[tuple[str, str]]:
     """Complete every evaluated policy group, including currently empty groups."""
     del ctx
     try:
-        manifest = machine_manifest(write_cache=False)
+        manifest = machine_manifest(completion=True)
         if not manifest_software_groups(manifest):
             return []
         groups = groups_for_manifest(manifest, include_empty=True)
@@ -1504,7 +1504,7 @@ def complete_why_groups(ctx, incomplete: str) -> list[tuple[str, str]]:
 def complete_why_items(ctx, incomplete: str) -> list[tuple[str, str]]:
     """Complete exact explainable IDs across evaluated and machine-owned policy."""
     try:
-        manifest = machine_manifest(write_cache=False)
+        manifest = machine_manifest(completion=True)
         if not manifest_software_groups(manifest):
             return []
         groups = groups_for_manifest(manifest, include_empty=True)

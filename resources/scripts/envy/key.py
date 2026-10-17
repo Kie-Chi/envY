@@ -53,6 +53,13 @@ from envy.keys.recovery import (
     write_encrypted_recovery_key as _write_encrypted_recovery_key,
 )
 
+
+def prompt_input(message: str) -> str:
+    """Read one interactive value without background output moving the cursor."""
+    with log.interactive_prompt():
+        return pt_prompt(message)
+
+
 # Typer subgroup
 app = typer.Typer(
     name="key",
@@ -702,7 +709,7 @@ def key_import(
         elif action == "age_manual":
             default_path = "~/Library/Application Support/sops/age/keys.txt"
             try:
-                path = pt_prompt(f"Path to age key file [{default_path}]: ").strip()
+                path = prompt_input(f"Path to age key file [{default_path}]: ").strip()
             except (EOFError, KeyboardInterrupt):
                 return None
             if not path:
@@ -711,7 +718,7 @@ def key_import(
         elif action == "ssh_manual":
             default_ssh = "~/.ssh/id_ed25519"
             try:
-                path = pt_prompt(f"Path to SSH private key [{default_ssh}]: ").strip()
+                path = prompt_input(f"Path to SSH private key [{default_ssh}]: ").strip()
             except (EOFError, KeyboardInterrupt):
                 return None
             if not path:

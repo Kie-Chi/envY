@@ -44,6 +44,19 @@ class GitImpactTests(unittest.TestCase):
         initialize.assert_not_called()
         refine.assert_not_called()
 
+    def test_verify_identity_populates_manifest_cache(self):
+        manifest = {"settings": {"envy.user.home": str(Path.home())}}
+        with patch.object(system_workflow, "machine_manifest", return_value=manifest) as evaluate, patch.object(
+            system_workflow, "device_public_keys", return_value=["age1-local"]
+        ), patch.object(
+            system_workflow, "read_sops_yaml_keys", return_value={"device": "age1-local"}
+        ), patch.object(
+            system_workflow, "SECRETS_FILE", Path("/tmp/envy-test-secrets-does-not-exist")
+        ):
+            system_workflow.verify_apply_identity()
+
+        evaluate.assert_called_once_with(refresh=True)
+
     def test_linux_trust_preflight_runs_before_refine(self):
         machine = Path(__file__).resolve()
         events = []
@@ -209,12 +222,15 @@ class GitImpactTests(unittest.TestCase):
             git_workflow, "show_push_impact"
         ), patch.object(
             git_workflow, "confirm_push_scope", return_value=False
-        ) as confirm:
+        ) as confirm, patch.object(
+            git_workflow, "require_no_git_operation"
+        ), patch.object(git_workflow, "sync_before_push") as synchronize:
             with self.assertRaises(typer.Abort):
                 git_workflow.push(
                     msg="test", remote=None, branch="master", machine_only=False,
                     self_only=False, yes=False,
                 )
+        synchronize.assert_called_once_with(["origin"], "master", set(), [])
         confirm.assert_called_once()
 
     def test_sync_selects_the_newest_compatible_remote(self):
@@ -281,15 +297,16 @@ class GitImpactTests(unittest.TestCase):
             ["merge", "--ff-only", "origin/master"], "fast-forward"
         )
 
-    def test_push_preflight_rejects_remote_ahead_before_commit(self):
+    def test_push_preflight_leaves_remote_ahead_for_synchronization(self):
         verify = SimpleNamespace(returncode=0)
-        with patch.object(git_workflow, "run_checked_git"), patch.object(
+        with patch.object(git_workflow, "run_checked_git") as run_checked, patch.object(
             git_workflow, "run_process", return_value=verify
-        ), patch.object(
-            git_workflow, "git_output_checked", return_value="2"
-        ):
-            with self.assertRaises(typer.Exit):
-                git_workflow.preflight_push_remotes(["origin"], "master")
+        ), patch.object(git_workflow, "git_output_checked") as query:
+            new_branches = git_workflow.preflight_push_remotes(["origin"], "master")
+
+        self.assertEqual(new_branches, set())
+        run_checked.assert_called_once_with(["fetch", "origin"], "remote preflight")
+        query.assert_not_called()
 
     def test_push_preflight_allows_a_new_remote_branch(self):
         verify = SimpleNamespace(returncode=1)
@@ -313,6 +330,8 @@ class GitImpactTests(unittest.TestCase):
         ), patch.object(git_workflow, "changed_paths", return_value=[]), patch.object(
             git_workflow, "outgoing_impact", return_value=([], set(), {"backup": 0})
         ), patch.object(git_workflow, "enforce_secret_safety"), patch.object(
+            git_workflow, "require_no_git_operation"
+        ), patch.object(git_workflow, "sync_before_push") as synchronize, patch.object(
             git_workflow, "run_process", return_value=pushed
         ) as run:
             git_workflow.push(
@@ -320,6 +339,7 @@ class GitImpactTests(unittest.TestCase):
                 self_only=False, yes=True,
             )
 
+        synchronize.assert_called_once_with(["backup"], "master", {"backup"}, [])
         run.assert_called_once_with(
             ["git", "push", "-u", "backup", "master"],
             cwd=git_workflow.ENVY_ROOT,

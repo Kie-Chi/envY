@@ -1,4 +1,4 @@
-{ academicResearchSkills, academicResearchSkillsCodex, config, emilSkills, gptImage2PptSkills, lib, machinePlatform, pptMaster, vercelAgentSkills, ... }:
+{ academicResearchSkills, academicResearchSkillsCodex, config, emilSkills, gptImage2PptSkills, lib, machinePlatform, pptMaster, vercelAgentSkills, wazaSource, ... }:
 
 {
   imports = [
@@ -11,7 +11,14 @@
     ./pi-extensions.nix
     ./skills.nix
     ./tools.nix
+    ./web-tools.nix
   ] ++ lib.optionals (machinePlatform == "linux") [ ./linux.nix ];
+
+  home.file = {
+    ".pi/agent/skills/read".recursive = true;
+    ".pi/agent/skills/read/references".source = wazaSource + "/skills/read/references";
+    ".pi/agent/skills/read/LICENSE".source = wazaSource + "/LICENSE";
+  };
 
   # Shared agent defaults. Provider modules define reusable options; this file
   # decides which providers and skills are part of the shared environment.
@@ -42,6 +49,8 @@
         "break-ui"
         "vercel-react-best-practices"
         "vercel-composition-patterns"
+        "read"
+        "browser"
       ];
     };
   };

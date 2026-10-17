@@ -22,7 +22,7 @@ def declared_sources(manifest=None):
     """Read validated definitions only; installed state is unnecessary for IDs."""
     try:
         if manifest is None:
-            manifest = machine_manifest(write_cache=False)
+            manifest = machine_manifest(completion=True)
         definitions = default_definitions()
         definitions.update((manifest or {}).get("software", {}).get("sources", {}))
         platform = (manifest or {}).get("platform", platform_name())

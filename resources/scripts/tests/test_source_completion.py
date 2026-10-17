@@ -67,7 +67,7 @@ class SourceCompletionTests(unittest.TestCase):
             values = dict(completion.complete_source_ids(None, "npm:"))
             self.assertEqual(set(values), {"npm:npmjs", "npm:vendor"})
             self.assertEqual(values["npm:vendor"], "Vendor npm")
-            read.assert_called_once_with(write_cache=False)
+            read.assert_called_once_with(completion=True)
 
     def test_source_options_respect_group_provider_and_previous_selections(self):
         with patch.object(completion, "machine_manifest", return_value=manifest()):

@@ -89,6 +89,29 @@ checks.
 | Official Pi `plan-mode` | Registers `/todos`, conflicting with `todo.ts`, and references `brave-search`. Its shell restrictions are not a security sandbox. |
 | [pi-subagents](https://github.com/nicobailon/pi-subagents) | Promising maintained package with additional dependencies and background/session behavior; requires a separate packaging and runtime review. |
 
+## 网页读取与浏览器
+
+Pi 新增两个技能：`read` 使用 `envy-read URL` 或本地 PDF 路径读取正文；`browser` 使用原生 MCP 处理动态网页和页面交互。这里只选择 Waza 的 read 参考资料，不安装插件宿主或其他 Waza 技能。读取依赖由 Nix 提供；默认请求原网站并遵循环境网络代理。只有用户明确同意时才向第三方正文服务发送公开 URL，私有或敏感 URL 不得使用第三方回退。
+
+`modules/agents/web-tools.nix` 提供读取命令、官方 flake 的 mcp-nixos 包和 nixpkgs 的 Playwright MCP。Pi 的 `~/.pi/agent/mcp.json` 通过已有可写合并机制登记，保留其他服务器及未声明字段；声明字段在 apply 时重申。软件通过正常 include/exclude 策略选择，排除 mcp-nixos 或 envy-browser-mcp 时对应默认服务器禁用。MCP 只暴露已审查工具，未知工具保持隐藏，常用工具从 codemode 按需发现。mcp-nixos 的 flake 查询禁止更新和写入 lock；在线查询结果不替代项目锁定源码和本地求值验证。
+
+浏览器模式：
+
+- `playwright` 默认启用，使用无头隔离上下文。Darwin 复用 `/Applications/Google Chrome.app` 的可执行文件，Linux 使用 Nix Chromium；不使用日常 profile，也不在运行时下载浏览器。
+- `playwright-login` 默认禁用。需要人工登录时在 Pi `/mcp` 启用并重连；浏览器首次导航后打开可见窗口。用户亲自输入密码和验证码，完成后通知代理继续。
+- 登录模式使用 `~/.local/share/envy/browser/profile`，状态由应用拥有，禁止复制或读取日常浏览器 cookies。使用后关闭浏览器并禁用登录服务器；apply 会重新禁用它。Linux 登录模式需要图形会话。
+- 截图等产物放在临时输出目录；任务结束关闭浏览器并清理不需要的产物。用户指定的截图路径可能位于当前项目。
+
+浏览器未开放任意 JavaScript、文件上传或安装工具，保留浏览器沙箱。但工具筛选与技能规则不是权限隔离：登录浏览器仍可能含私人信息，发送、上传、删除、支付等动作必须取得明确授权。
+
+更新 Waza 或 mcp-nixos 时只更新对应 input 并复核上游；Playwright 随 nixpkgs 锁定版本更新，升级后重新验证 MCP 工具名单和启动参数。构建、技能加载及本机浏览器验证不能替代 Linux 运行验证或真实认证流程验收。
+
+- `browser` 和 `read` 已通过 Pi 1.1.0 的技能加载器验证，参考资料可通过实际 Home Manager 输出链接读取。
+- Darwin 已构建读取、mcp-nixos 和浏览器包装命令；读取器包含 7 项回归测试。另以本地 HTTP 测试页和真实 PDF 验证正文提取、登录墙及空页面拒绝。
+- 已通过 MCP 握手实测 Home Manager/nix-darwin 选项、包查询及 flake inputs；包查询复测曾遇远端连接重置，在线服务可用性不受本地构建保证。
+- 默认浏览器包装命令已验证独立 Chrome 实例中的导航、动态内容、点击、截图和关闭。没有使用日常 profile，也未验证真实登录流程。
+- 全机器和两平台 checks 已通过只读求值；Linux 浏览器运行及完整系统构建仍未验证。
+
 ## Apply and update
 
 After reviewing the machine's pending configuration changes, run `envy apply`

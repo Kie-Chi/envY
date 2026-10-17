@@ -177,6 +177,24 @@ def _write_cache(machine_id: str, fingerprint: str, manifest: dict[str, Any]) ->
                 pass
 
 
+def _read_latest_cache(machine_id: str) -> dict[str, Any] | None:
+    """Read a structurally valid manifest cache without running Git or Nix.
+
+    Shell completion must remain fast and side-effect free. A stale manifest is
+    acceptable for suggestions; evaluating the machine to refresh it is not.
+    """
+    try:
+        value = json.loads(_cache_path(machine_id).read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, dict) or value.get("schema") != CACHE_SCHEMA:
+        return None
+    if value.get("machine") != machine_id:
+        return None
+    manifest = value.get("manifest")
+    return manifest if isinstance(manifest, dict) else None
+
+
 def informative_nix_error(stderr: str, *, fallback: str = "nix eval exited without stderr") -> str:
     """Return the most useful line from a failed Nix invocation's stderr.
 
@@ -232,8 +250,13 @@ def last_manifest_error() -> str | None:
     return _last_manifest_error
 
 
-def _load_machine_manifest(*, read_cache: bool, write_cache: bool) -> dict[str, Any] | None:
+def _load_machine_manifest(
+    *, read_cache: bool, write_cache: bool, allow_evaluation: bool = True,
+) -> dict[str, Any] | None:
     machine_id = current_machine_id()
+    if not allow_evaluation:
+        return _read_latest_cache(machine_id)
+
     fingerprint = _repository_fingerprint(machine_id) if (read_cache or write_cache) else None
     if read_cache and fingerprint is not None:
         cached = _read_cache(machine_id, fingerprint)
@@ -279,8 +302,13 @@ def machine_manifest(
     *,
     refresh: bool = False,
     write_cache: bool = True,
+    completion: bool = False,
 ) -> dict[str, Any] | None:
-    """Return the manifest, optionally forbidding persistent cache writes."""
+    """Return the manifest, optionally using only the existing cache for completion."""
+    if completion:
+        return _load_machine_manifest(
+            read_cache=False, write_cache=False, allow_evaluation=False,
+        )
     if not write_cache:
         return _load_machine_manifest(
             read_cache=not refresh and not _cache_disabled(),

@@ -2,6 +2,7 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
+from envy import log
 from envy import process
 
 
@@ -27,7 +28,19 @@ class NotifyEnabledTests(unittest.TestCase):
         self.assertFalse(self._enabled(argv=("envy", "status", "--json")))
 
 
-class NotifyCommandTests(unittest.TestCase):
+    def test_activity_is_suppressed_while_prompt_is_active(self):
+        with patch.object(log.diagnostic_console, "print") as printer:
+            with log.interactive_prompt():
+                log.activity("command", "still running")
+        printer.assert_not_called()
+
+    def test_activity_is_suppressed_for_shell_completion(self):
+        with patch.dict("os.environ", {"_ENVY_COMPLETE": "bash_complete"}, clear=True), \
+             patch.object(log.diagnostic_console, "print") as printer:
+            self.assertTrue(log.is_completion_invocation())
+            log.activity("command", "still running")
+        printer.assert_not_called()
+
     def test_macos_uses_osascript(self):
         with patch.object(process.sys, "platform", "darwin"):
             command = process._notify_command("envy", "done")

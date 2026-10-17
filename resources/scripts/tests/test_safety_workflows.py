@@ -2,6 +2,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -16,6 +17,9 @@ from envy.process import CommandError, command_display, run_process
 from envy.transaction import FileTransaction
 from envy.workflows import check as check_workflow
 from envy.workflows import update as update_workflow
+
+
+NIX_DARWIN_ETC_SCRIPT = Path(__file__).resolve().parents[1] / "nix-darwin-etc.sh"
 
 
 class SafetyWorkflowTests(unittest.TestCase):
@@ -70,6 +74,100 @@ class SafetyWorkflowTests(unittest.TestCase):
         with patch.object(config, "read_secrets_data", return_value=({}, False)):
             with self.assertRaises(RuntimeError):
                 config.set_secret_value("llm/steps/apikey", "new-secret")
+
+    def test_secret_refine_normalizes_scalar_types_when_writing(self):
+        field = next(field for field in config.SECRET_FIELDS if field.path == "home_passwd")
+        field = replace(field, required=False, validators=[])
+        cases = [
+            ("plain", "plain", False),
+            ("", "", False),
+            (12345, "12345", True),
+            (True, "true", True),
+            (False, "false", True),
+            (1.25, "1.25", True),
+            (None, "", True),
+        ]
+        for raw_value, expected, should_write in cases:
+            with self.subTest(raw_value=raw_value):
+                encrypted = {}
+                with patch.object(config, "SECRET_FIELDS", [field]), patch.object(
+                    config, "read_secrets_data", return_value=({"home": {"passwd": raw_value}}, True)
+                ), patch.object(config, "read_machine_nix", return_value={}), patch.object(
+                    config, "write_secrets_data", side_effect=lambda data: encrypted.update(data)
+                ), patch("envy.agent.managed_credential_paths", return_value={}):
+                    report = config.refine_secrets(write=True, strict=True)
+
+                self.assertTrue(report.ok)
+                self.assertEqual(report.changed, should_write)
+                if should_write:
+                    self.assertEqual(encrypted["home"]["passwd"], expected)
+
+    def test_secret_refine_rejects_structured_values_without_writing(self):
+        field = next(field for field in config.SECRET_FIELDS if field.path == "home_passwd")
+        for raw_value in ([], ["secret"], {}, {"value": "secret"}):
+            with self.subTest(raw_value=raw_value), patch.object(
+                config, "SECRET_FIELDS", [field]
+            ), patch.object(
+                config, "read_secrets_data", return_value=({"home": {"passwd": raw_value}}, True)
+            ), patch.object(config, "read_machine_nix", return_value={}), patch.object(
+                config, "write_secrets_data"
+            ) as write, patch("envy.agent.managed_credential_paths", return_value={}):
+                report = config.refine_secrets(write=True, strict=True)
+
+            self.assertFalse(report.ok)
+            self.assertIn("home/passwd", report.errors)
+            write.assert_not_called()
+
+    def test_secret_refine_reports_non_string_types_without_writing(self):
+        field = next(field for field in config.SECRET_FIELDS if field.path == "home_passwd")
+        with patch.object(config, "SECRET_FIELDS", [field]), patch.object(
+            config, "read_secrets_data", return_value=({"home": {"passwd": 12345}}, True)
+        ), patch.object(config, "read_machine_nix", return_value={}), patch.object(
+            config, "write_secrets_data"
+        ) as write, patch("envy.agent.managed_credential_paths", return_value={}):
+            report = config.refine_secrets(write=False, strict=True)
+
+        self.assertFalse(report.ok)
+        self.assertIn("home/passwd", report.errors)
+        write.assert_not_called()
+
+    def test_doctor_reports_non_string_secret_types(self):
+        field = next(field for field in doctor_config.SECRET_FIELDS if field.path == "home_passwd")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            age_dir = root / "age"
+            age_dir.mkdir(mode=0o700)
+            age_key = age_dir / "keys.txt"
+            age_key.write_text("placeholder")
+            age_key.chmod(0o600)
+            secret = root / "secrets.yaml"
+            secret.write_text("encrypted")
+            with patch.object(doctor_config, "SECRET_FIELDS", [field]), patch.object(
+                doctor_config, "AGE_KEY_FILE", age_key
+            ), patch.object(doctor_config, "AGE_KEY_DIR", age_dir), patch.object(
+                doctor_config, "SECRETS_FILE", secret
+            ), patch.object(
+                doctor_config, "read_secrets_data", return_value=({"home": {"passwd": 12345}}, True)
+            ), patch.object(
+                doctor_config, "is_sops_encrypted", return_value=True
+            ), patch.object(doctor_config, "assert_worktree_secret_encrypted"), patch.object(
+                doctor_config, "assert_index_secret_encrypted"
+            ), patch.object(doctor_config, "assert_head_secret_encrypted"), patch.object(
+                doctor_config, "_check_secret_write_capability", return_value=[]
+            ), patch.object(doctor_config, "_check_device_key_distinct_from_recovery", return_value=[]), patch(
+                "envy.agent.managed_credential_paths", return_value={}
+            ) as credentials:
+                for raw_value in (12345, True, False, [], {}):
+                    with self.subTest(raw_value=raw_value):
+                        doctor_config.read_secrets_data.return_value = ({"home": {"passwd": raw_value}}, True)
+                        results = doctor_config._check_secrets({})
+                        type_errors = [
+                            result for result in results
+                            if result.name == "home/passwd" and result.failed
+                            and "secret value" in result.message
+                        ]
+                        self.assertTrue(type_errors)
+                        self.assertTrue(any("string" in result.message or "scalar" in result.message for result in type_errors))
 
     def test_secret_set_replace_rolls_back_key_and_recipients_on_encryption_failure(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -293,20 +391,75 @@ sops:
                 utils.run_darwin_switch()
         success.assert_not_called()
 
-    def test_darwin_bootstrap_enables_flakes_for_sudo_nix_invocation(self):
+    def test_darwin_bootstrap_prepares_etc_before_switch(self):
         with patch.object(utils.shutil, "which", return_value=None), patch.object(
             utils, "esudo"
         ) as sudo, patch.object(utils, "flake_target", return_value="path:.#mac"):
             utils.run_darwin_switch()
 
-        sudo.assert_called_once_with(
-            "--preserve-env=HOME,NIX_CONFIG",
-            "nix", "--extra-experimental-features", "nix-command flakes",
-            "run", "--inputs-from", "path:.", "darwin", "--", "switch",
-            "--flake", "path:.#mac", "--impure",
-            capture=False,
-            activity="nix-darwin build and activation",
+        self.assertEqual(sudo.call_count, 2)
+        self.assertEqual(
+            sudo.call_args_list[0].args,
+            ("--preserve-env=ENVY_NIX_DARWIN_ETC_ROOT", str(utils.ENVY_ROOT / "resources/scripts/nix-darwin-etc.sh")),
         )
+        self.assertEqual(sudo.call_args_list[0].kwargs["activity"], "preparing nix-darwin /etc files")
+        self.assertEqual(
+            sudo.call_args_list[1].args,
+            (
+                "--preserve-env=HOME,NIX_CONFIG",
+                "nix", "--extra-experimental-features", "nix-command flakes",
+                "run", "--inputs-from", "path:.", "darwin", "--", "switch",
+                "--flake", "path:.#mac", "--impure",
+            ),
+        )
+        self.assertEqual(sudo.call_args_list[1].kwargs["activity"], "nix-darwin build and activation")
+
+    def test_nix_darwin_etc_script_moves_unmanaged_files_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "static").mkdir()
+            (root / "bashrc").write_text("old bash\n")
+            (root / "zshrc").write_text("old zsh\n")
+            env = dict(os.environ, ENVY_NIX_DARWIN_ETC_ROOT=str(root))
+
+            first = subprocess.run(["bash", str(NIX_DARWIN_ETC_SCRIPT)], env=env, capture_output=True, text=True)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertEqual((root / "bashrc.before-nix-darwin").read_text(), "old bash\n")
+            self.assertEqual((root / "zshrc.before-nix-darwin").read_text(), "old zsh\n")
+            self.assertFalse((root / "bashrc").exists())
+            self.assertFalse((root / "zshrc").exists())
+
+            second = subprocess.run(["bash", str(NIX_DARWIN_ETC_SCRIPT)], env=env, capture_output=True, text=True)
+            self.assertEqual(second.returncode, 0, second.stderr)
+
+    def test_nix_darwin_etc_script_refuses_existing_backup_without_moving_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "static").mkdir()
+            (root / "bashrc").write_text("current bash\n")
+            (root / "bashrc.before-nix-darwin").write_text("old bash\n")
+            (root / "zshrc").write_text("current zsh\n")
+            env = dict(os.environ, ENVY_NIX_DARWIN_ETC_ROOT=str(root))
+
+            result = subprocess.run(["bash", str(NIX_DARWIN_ETC_SCRIPT)], env=env, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual((root / "bashrc").read_text(), "current bash\n")
+            self.assertEqual((root / "bashrc.before-nix-darwin").read_text(), "old bash\n")
+            self.assertEqual((root / "zshrc").read_text(), "current zsh\n")
+
+    def test_nix_darwin_etc_script_leaves_current_static_links_alone(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            static = root / "static"
+            static.mkdir()
+            (static / "bashrc").write_text("managed bash\n")
+            (root / "bashrc").symlink_to(static / "bashrc")
+            env = dict(os.environ, ENVY_NIX_DARWIN_ETC_ROOT=str(root))
+
+            result = subprocess.run(["bash", str(NIX_DARWIN_ETC_SCRIPT)], env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((root / "bashrc").is_symlink())
+            self.assertFalse((root / "bashrc.before-nix-darwin").exists())
 
     def test_update_restores_lock_when_validation_fails(self):
         with tempfile.TemporaryDirectory() as temporary:

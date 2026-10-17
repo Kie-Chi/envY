@@ -136,7 +136,7 @@ Hybrid approach (in `setup.py`):
 | `envy update` / `envy update inputs [name]` | Update inputs transactionally and validate every machine before retaining `flake.lock` |
 | `envy sync --no-apply` | Synchronize the shared `master` branch, auto-merging local divergence when possible, without applying |
 | `envy sync --build-only` | Synchronize, auto-merge compatible local divergence, and build only the selected machine |
-| `envy push` | Classify worktree plus outgoing commits, confirm shared impact, and push only after remote-ahead checks |
+| `envy push` | 先同步目标远端（不 apply），冲突时停止；复核 worktree 与 outgoing commits 的范围及密文后，确认、提交并推送 |
 | `envy push --machine-only` / `--self` | Restrict a push to machine files or to the selected machine file, respectively |
 | `envy doctor` / `envy dr` | Check platform config, app install/running/state/login hints, and Darwin TCC where applicable |
 | `envy doctor apps --only chrome,codex` | Check selected apps only. Values can be repeated or comma-separated; aliases are defined in `APP_ALIASES`. |

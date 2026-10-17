@@ -316,7 +316,7 @@ def cmd_push(
         False, "--yes", "-y", help="Skip confirmation; scope safety guards still apply",
     ),
 ):
-    """Commit and push changes to all remotes, or a specified one."""
+    """Synchronize without applying, stop on conflicts, then commit and push changes."""
     git_workflow.push(
         msg=msg,
         remote=remote,

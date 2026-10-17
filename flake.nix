@@ -37,6 +37,14 @@
       url = "github:vercel-labs/agent-skills";
       flake = false;
     };
+    waza = {
+      url = "github:tw93/waza";
+      flake = false;
+    };
+    mcp-nixos = {
+      url = "github:utensils/mcp-nixos";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     pi = {
       # Use the GitHub fetcher so flake.lock records an immutable commit rev.
       # The API tarball endpoint for a branch can be re-packed in place and
@@ -94,6 +102,8 @@
         gptImage2PptSkills = inputs.gpt-image2-ppt-skills;
         emilSkills = inputs.emil-skills;
         vercelAgentSkills = inputs.vercel-agent-skills;
+        wazaSource = inputs.waza;
+        mcpNixosPackage = inputs.mcp-nixos.packages.${system}.default;
         piSource = inputs.pi.outPath;
         piPackage = inputs.pi.packages.${system}.default;
       };

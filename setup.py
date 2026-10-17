@@ -108,6 +108,15 @@ class SetupResult:
     exclusions: dict[str, list[str]]
 
 
+def field_text_value(field: FieldDef, value: object) -> str:
+    """Convert a config scalar to the text representation used by setup UI."""
+    if value is None or isinstance(value, (dict, list)):
+        return ""
+    if field.nix_type == "bool" and isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
 def secret_values_from_data(data: dict | None) -> dict:
     """Project raw decrypted YAML into the field map used by setup UI."""
     result = {}
@@ -119,7 +128,7 @@ def secret_values_from_data(data: dict | None) -> dict:
                 current = ""
                 break
             current = current[part]
-        result[field.path] = "" if isinstance(current, (dict, list)) else current
+        result[field.path] = field_text_value(field, current)
     return result
 
 
@@ -159,13 +168,13 @@ def init_values() -> dict:
         if f.condition and not f.condition(values):
             continue
         if f.dest == "machine" and f.path in evaluated_config:
-            values[f.path] = evaluated_config[f.path]
+            values[f.path] = field_text_value(f, evaluated_config[f.path])
         elif f.dest == "machine" and f.path in existing_config:
-            values[f.path] = existing_config[f.path]
+            values[f.path] = field_text_value(f, existing_config[f.path])
         elif f.dest == "secret" and f.path in existing_secrets:
-            values[f.path] = existing_secrets[f.path]
+            values[f.path] = field_text_value(f, existing_secrets[f.path])
         else:
-            values[f.path] = f.default_fn()
+            values[f.path] = field_text_value(f, f.default_fn())
     return values
 
 
@@ -526,11 +535,11 @@ def build_application(state: AppState) -> Application:
         state.editing_field = f
         state.error_msg = ""
         if f.choices:
-            current_val = state.values.get(f.path, f.default_fn())
+            current_val = field_text_value(f, state.values.get(f.path, f.default_fn()))
             state.choice_cursor = f.choices.index(current_val) if current_val in f.choices else 0
             state.mode = "edit_choice"
         else:
-            current_val = state.values.get(f.path, f.default_fn())
+            current_val = field_text_value(f, state.values.get(f.path, f.default_fn()))
             state.edit_buffer.text = current_val
             state.edit_buffer.cursor_position = len(current_val)
             state.mode = "edit_text"
@@ -1016,15 +1025,15 @@ def main() -> int:
         if f.condition and not f.condition(values):
             continue
         if f.dest == "machine" and f.path in evaluated_config:
-            values[f.path] = evaluated_config[f.path]
+            values[f.path] = field_text_value(f, evaluated_config[f.path])
         elif f.dest == "machine" and f.path in existing_config:
-            values[f.path] = existing_config[f.path]
+            values[f.path] = field_text_value(f, existing_config[f.path])
         elif f.dest == "secret" and not empty_secrets and f.path in existing_secrets:
-            values[f.path] = existing_secrets[f.path]
+            values[f.path] = field_text_value(f, existing_secrets[f.path])
         elif f.dest == "secret" and empty_secrets:
             values[f.path] = ""
         else:
-            values[f.path] = f.default_fn()
+            values[f.path] = field_text_value(f, f.default_fn())
     old_values = dict(values)
 
     try:

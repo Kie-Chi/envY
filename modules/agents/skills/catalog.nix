@@ -1,6 +1,16 @@
 { academicResearchSkills, academicResearchSkillsCodex, emilSkills, gptImage2PptSkills, pptMaster, vercelAgentSkills }:
 
 {
+  read = {
+    source = ./read;
+    targets = [ "pi" ];
+  };
+
+  browser = {
+    source = ./browser;
+    targets = [ "pi" ];
+  };
+
   # Codex uses the upstream native adapter as one router skill. The internal
   # workflows deliberately use WORKFLOW.md so Codex discovers only this entry.
   academic-research-suite = {

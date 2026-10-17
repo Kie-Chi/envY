@@ -224,6 +224,7 @@ in
     fonts.packages = fontPackages;
     homebrew = {
       enable = true;
+      enableZshIntegration = true;
       inherit brews casks;
       taps = map (name:
         let source = config.envy.software.sources."homebrew:${name}" or null;

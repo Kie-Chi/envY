@@ -61,6 +61,12 @@ let
   piWrapper = pkgs.writeShellApplication {
     name = "pi";
     text = ''
+      # Pi dispatches management subcommands before parsing session options.
+      case "''${1-}" in
+        install|remove|uninstall|update|list|config|auth|mcp)
+          exec ${lib.getExe selectedPiPackage} "$@"
+          ;;
+      esac
       if [ -f "${config.sops.templates.${templateNameFor "pi"}.path}" ]; then
         # shellcheck source=/dev/null
         source "${config.sops.templates.${templateNameFor "pi"}.path}"

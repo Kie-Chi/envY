@@ -78,6 +78,9 @@
   envy.llm.credentials.deepseek.secretPath = "llm/deepseek/apikey";
   envy.llm.credentials.hbapi.kind = "api-key";
   envy.llm.credentials.hbapi.secretPath = "llm/hbapi/apikey";
+  envy.llm.credentials.mp-new.kind = "api-key";
+  envy.llm.credentials.mp-new.secretPath = "llm/mp-new/apikey";
+  envy.llm.credentials.mp.kind = "api-key";
   envy.llm.credentials.mp.secretPath = "llm/mp/apikey";
   envy.llm.credentials.stepfun.kind = "api-key";
   envy.llm.credentials.stepfun.secretPath = "llm/steps/apikey";
@@ -87,9 +90,9 @@
   # --- LLM ENDPOINTS ---
   envy.llm.endpoints.deepseek-openai.baseUrl = "https://api.deepseek.com";
   envy.llm.endpoints.deepseek-openai.protocol = "openai-compatible";
-  envy.llm.endpoints.stepfun-anthropic.baseUrl = "https://models-proxy.stepfun-inc.com";
+  envy.llm.endpoints.stepfun-anthropic.baseUrl = "https://mp.z01.normandyfunc.com";
   envy.llm.endpoints.stepfun-anthropic.protocol = "anthropic-compatible";
-  envy.llm.endpoints.stepfun-openai.baseUrl = "https://models-proxy.stepfun-inc.com/v1";
+  envy.llm.endpoints.stepfun-openai.baseUrl = "https://mp.z01.normandyfunc.com/v1";
   envy.llm.endpoints.stepfun-openai.protocol = "openai-compatible";
   envy.llm.endpoints.sub2api-anthropic.baseUrl = "https://49.233.149.230:3389";
   envy.llm.endpoints.sub2api-anthropic.protocol = "anthropic-compatible";
@@ -108,12 +111,12 @@
   envy.agents.codex.model = "gpt-6.1-sol";
   envy.agents.pi.adapter = "pi";
   envy.agents.pi.additionalSettings = builtins.fromJSON "{\"compaction\": {\"keepRecentTokens\": 27200, \"reserveTokens\": 27200}, \"defaultTools\": [\"+codemode\"]}";
-  envy.agents.pi.api = "openai-responses";
+  envy.agents.pi.api = "anthropic-messages";
   envy.agents.pi.contextWindow = 272000;
-  envy.agents.pi.credential = "mp";
-  envy.agents.pi.endpoint = "stepfun-openai";
+  envy.agents.pi.credential = "mp-new";
+  envy.agents.pi.endpoint = "stepfun-anthropic";
   envy.agents.pi.maxTokens = 128000;
-  envy.agents.pi.model = "gpt-6-astra";
+  envy.agents.pi.model = "claude-opus-5-5-qiye";
   envy.agents.pi.moreThinking = true;
   # END ENVY MANAGED AGENTS
 

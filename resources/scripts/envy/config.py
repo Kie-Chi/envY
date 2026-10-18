@@ -99,19 +99,49 @@ def _unescape_nix_string(value: str) -> str:
 _MISSING = object()
 
 
+def _lookup_nested(data: dict, path: str) -> tuple[object, str | None, type | None]:
+    """Return a raw YAML value and any non-mapping path component."""
+    current: object = data
+    traversed: list[str] = []
+    for part in path.split("/"):
+        if not isinstance(current, dict):
+            return _MISSING, "/".join(traversed), type(current)
+        if part not in current:
+            return _MISSING, None, None
+        traversed.append(part)
+        current = current[part]
+    return current, None, None
+
+
+def _get_nested_raw(data: dict, path: str, default=_MISSING):
+    value, _, _ = _lookup_nested(data, path)
+    return default if value is _MISSING else value
+
+
 def _get_nested(data: dict, path: str, default=_MISSING):
-    cur = data
-    parts = path.split("/")
-    for part in parts[:-1]:
-        if not isinstance(cur, dict):
-            return default
-        cur = cur.get(part, {})
-    if not isinstance(cur, dict):
+    value = _get_nested_raw(data, path, default)
+    if value is default or value is _MISSING:
         return default
-    if parts[-1] not in cur:
-        return default
-    value = cur[parts[-1]]
     return "" if value is None else str(value)
+
+
+def _secret_type_name(value: object) -> str:
+    if value is None:
+        return "null"
+    return type(value).__name__
+
+
+def _secret_scalar_text(value: object) -> str | None:
+    """Return a string form for scalar YAML values, or None for structures."""
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return None
 
 
 def _set_nested(data: dict, path: str, value: str) -> None:
@@ -774,13 +804,46 @@ def refine_secrets(*, write: bool = True, strict: bool = False, prune: bool = Fa
     for f in SECRET_FIELDS:
         if f.condition and not f.condition(values):
             continue
-        current = _get_nested(data, f.yaml_path)
+        current, blocked_path, blocked_type = _lookup_nested(data, f.yaml_path)
+        if current is _MISSING and blocked_path is not None:
+            report.errors.append(f.yaml_path)
+            log.error(
+                "secrets", "secret path component must be a mapping",
+                key=blocked_path, found=_secret_type_name(blocked_type),
+            )
+            values[f.path] = ""
+            continue
         if current is _MISSING:
-            _set_nested(data, f.yaml_path, f.default_fn())
+            default_value = f.default_fn()
+            _set_nested(data, f.yaml_path, default_value)
             report.added.append(f.yaml_path)
             log.fix("secrets", "created missing secret path", key=f.yaml_path)
-        current_value = _get_nested(data, f.yaml_path, "")
-        values[f.path] = "" if current_value is _MISSING else current_value
+            values[f.path] = str(default_value)
+            continue
+
+        normalized = _secret_scalar_text(current)
+        if normalized is None:
+            report.errors.append(f.yaml_path)
+            log.error(
+                "secrets", "secret value must be a scalar string",
+                key=f.yaml_path, found=_secret_type_name(current),
+            )
+            values[f.path] = ""
+            continue
+        if not isinstance(current, str):
+            if write:
+                _set_nested(data, f.yaml_path, normalized)
+                log.fix(
+                    "secrets", "normalized secret scalar to string",
+                    key=f.yaml_path, found=_secret_type_name(current),
+                )
+            else:
+                report.errors.append(f.yaml_path)
+                log.error(
+                    "secrets", "secret value must be a string",
+                    key=f.yaml_path, found=_secret_type_name(current),
+                )
+        values[f.path] = normalized
 
     # Credentials are dynamic: each agent adapter may introduce its own
     # logical name and encrypted YAML path.  Validate those references here,
@@ -792,8 +855,15 @@ def refine_secrets(*, write: bool = True, strict: bool = False, prune: bool = Fa
             report.errors.append(f"credential:{credential_name}")
             log.error("secrets", "credential secret path is invalid", credential=credential_name)
             continue
-        current = _get_nested(data, secret_path)
-        if current is _MISSING:
+        current, blocked_path, blocked_type = _lookup_nested(data, secret_path)
+        if current is _MISSING and blocked_path is not None:
+            report.errors.append(secret_path)
+            log.error(
+                "secrets", "secret path component must be a mapping",
+                key=blocked_path, found=_secret_type_name(blocked_type),
+            )
+            current = ""
+        elif current is _MISSING:
             report.added.append(secret_path)
             if write:
                 _set_nested(data, secret_path, "")
@@ -802,6 +872,30 @@ def refine_secrets(*, write: bool = True, strict: bool = False, prune: bool = Fa
                 report.errors.append(secret_path)
                 log.error("secrets", "credential secret path is missing", credential=credential_name)
             current = ""
+        else:
+            normalized = _secret_scalar_text(current)
+            if normalized is None:
+                report.errors.append(secret_path)
+                log.error(
+                    "secrets", "secret value must be a scalar string",
+                    key=secret_path, found=_secret_type_name(current),
+                )
+                current = ""
+            else:
+                if not isinstance(current, str):
+                    if write:
+                        _set_nested(data, secret_path, normalized)
+                        log.fix(
+                            "secrets", "normalized secret scalar to string",
+                            key=secret_path, found=_secret_type_name(current),
+                        )
+                    else:
+                        report.errors.append(secret_path)
+                        log.error(
+                            "secrets", "secret value must be a string",
+                            key=secret_path, found=_secret_type_name(current),
+                        )
+                current = normalized
         if not str(current).strip():
             report.warnings.append(secret_path)
             log.warn("secrets", "credential secret is empty", credential=credential_name)

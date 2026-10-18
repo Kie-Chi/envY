@@ -288,6 +288,28 @@ class SourceContractTests(unittest.TestCase):
             dependency = prerequisite(source.id, manifest, [], {})
             self.assertEqual(dependency.group, "native.system.repository")
 
+    def test_homebrew_builtin_taps_do_not_become_prerequisites(self):
+        manifest = {"platform": "darwin", "software": {"groups": {}}}
+        for tap in ("homebrew/core", "homebrew/cask"):
+            source = Source.from_dict("homebrew:" + tap, {
+                "label": tap, "ecosystem": "homebrew", "type": "tap",
+                "platforms": ["darwin"], "scope": "system", "parameters": {"tap": tap},
+            })
+            with patch("envy.sources.policy.source_for", return_value=source):
+                self.assertIsNone(prerequisite(source.id, manifest, [], {}))
+
+    def test_third_party_homebrew_tap_remains_a_prerequisite(self):
+        source = Source.from_dict("homebrew:vendor/tools", {
+            "label": "Vendor tools", "ecosystem": "homebrew", "type": "tap",
+            "platforms": ["darwin"], "scope": "system",
+            "parameters": {"tap": "vendor/tools"},
+        })
+        manifest = {"platform": "darwin", "software": {"groups": {}}}
+        with patch("envy.sources.policy.source_for", return_value=source):
+            dependency = prerequisite(source.id, manifest, [], {})
+        self.assertEqual(dependency.group, "homebrew.system.repository")
+        self.assertEqual(dependency.id, "vendor/tools")
+
     def test_flake_writer_parser_keeps_input_binding(self):
         group = software.COMMON_GROUPS[0]
         include = software.ManagedInclude(group.key, "hello", "hello", ref="flake:other#default",

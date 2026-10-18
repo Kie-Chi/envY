@@ -163,13 +163,31 @@ with the `envy-agent-pi` sops template supplying the API key only at launch.
 The model file contains an `$OPENAI_API_KEY` reference, never a decrypted
 secret.
 
-Pi selects its wire API with `envy.agents.<name>.api`. The option
-defaults to `openai-completions` (`/v1/chat/completions`); set
-`openai-responses` to use `/v1/responses`. The base URL stays at the API root
-(for example `https://models-proxy.stepfun-inc.com/v1`), not the full request
-path. The gateway must support the selected API. For gateways that reject
-GPT reasoning together with function tools on Chat Completions, choose
-Responses rather than disabling reasoning.
+Pi selects its wire API from the selected endpoint protocol unless
+`envy.agents.<name>.api` supplies an explicit override. The mappings are:
+
+- `openai-compatible` -> `openai-completions` (`/v1/chat/completions`)
+- `anthropic-compatible` -> `anthropic-messages` (`/v1/messages`)
+- an explicit `openai-responses` -> `/v1/responses`
+
+The base URL stays at the API root (for example
+`https://models-proxy.stepfun-inc.com/v1`), not the full request path. The
+gateway must support the selected API. For gateways that reject GPT reasoning
+together with function tools on Chat Completions, choose Responses explicitly.
+For an Anthropic endpoint, envY generates `ANTHROPIC_BASE_URL` and
+`ANTHROPIC_API_KEY`; for OpenAI-compatible endpoints it generates the
+corresponding `OPENAI_*` variables.
+
+```nix
+envy.llm.endpoints.my-anthropic = {
+  baseUrl = "https://api.anthropic.com";
+  protocol = "anthropic-compatible";
+};
+envy.agents.pi.endpoint = "my-anthropic";
+```
+
+Use an explicit override when a gateway exposes a protocol that differs from
+its endpoint metadata:
 
 ```sh
 envy config set envy.agents.pi.api openai-responses --json --yes
@@ -178,8 +196,9 @@ envy apply
 
 `envy config show --json` exposes these API fields and their choices for the
 Settings frontend. `envy agent set` edits the same managed block, and
-`envy agent add ... --api openai-responses` sets the API at creation. Invalid
-API selections are rejected before writing. Reapply and restart the agent to
+`envy agent add ... --api anthropic-messages` sets an explicit API at creation.
+Set the field to `null` to return to protocol-based inference. Invalid API
+selections are rejected before writing. Reapply and restart the agent to
 regenerate its model file; manually editing a generated file is not persistent.
 
 Pi can opt in to additional thinking levels for endpoints that support them:

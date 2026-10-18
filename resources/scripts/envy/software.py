@@ -1353,8 +1353,17 @@ def complete_remove_groups(ctx, incomplete: str) -> list[tuple[str, str]]:
 
 
 def _complete_smart_targets(incomplete: str, *, action: str) -> list[tuple[str, str]]:
-    candidates = list(_complete_groups(incomplete, action=action))
     groups, items_by_group = _completion_candidates(action)
+    candidates = [
+        (group.key, group.label)
+        for group in groups
+        if group.key.startswith(incomplete)
+        and (
+            action == "rm"
+            or action == "add" and (group.editable_include or items_by_group[group.key])
+            or action in {"en", "dis"} and items_by_group[group.key]
+        )
+    ]
     needle = incomplete.casefold()
     seen = {value for value, _ in candidates}
     for group in groups:

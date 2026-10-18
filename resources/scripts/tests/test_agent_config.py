@@ -335,6 +335,10 @@ class AgentConfigTests(unittest.TestCase):
                 result = refine_managed(machine_values={}, write=False)
                 self.assertEqual(result["errors"], [])
                 self.assertEqual(_read_values(path)["envy.agents.pi.api"], "openai-responses")
+                config.set_config_value("envy.agents.pi.api", "anthropic-messages", quiet=True)
+                self.assertEqual(_read_values(path)["envy.agents.pi.api"], "anthropic-messages")
+                config.set_config_value("envy.agents.pi.api", "null", quiet=True)
+                self.assertIsNone(_read_values(path)["envy.agents.pi.api"])
                 before = path.read_text()
                 for invalid in ("responses", "", "openai-codex-responses"):
                     with self.subTest(api=invalid), self.assertRaises(typer.BadParameter):

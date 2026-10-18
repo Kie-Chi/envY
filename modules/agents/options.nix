@@ -22,9 +22,9 @@ in
           description = "Logical encrypted credential reference used by this agent.";
         };
         api = mkOption {
-          type = types.enum [ "openai-completions" "openai-responses" ];
-          default = "openai-completions";
-          description = "OpenAI wire API used by compatible agent adapters.";
+          type = types.nullOr (types.enum [ "openai-completions" "openai-responses" "anthropic-messages" ]);
+          default = null;
+          description = "Optional wire API override; Pi derives it from the endpoint protocol when unset.";
         };
         model = mkOption {
           type = types.nullOr types.str;

@@ -131,6 +131,22 @@ class SetupUiTests(unittest.TestCase):
         self.assertIn("<set>", list_text)
         self.assertIn("<set>", edit_text)
 
+    def test_setup_field_values_are_normalized_to_text(self):
+        setup = _load_setup_module()
+        bool_field = next(
+            field for field in setup.ALL_FIELDS
+            if field.path == "envy.darwin.services.mihomo.tun"
+        )
+        self.assertEqual(setup.field_text_value(bool_field, True), "true")
+        self.assertEqual(setup.field_text_value(bool_field, False), "false")
+        self.assertEqual(setup.field_text_value(bool_field, None), "")
+        self.assertEqual(setup.field_text_value(bool_field, 7), "7")
+
+    def test_secret_values_from_data_normalizes_yaml_scalars(self):
+        setup = _load_setup_module()
+        values = setup.secret_values_from_data({"home": {"passwd": 12345}})
+        self.assertEqual(values["home_passwd"], "12345")
+
     def test_policy_view_shows_machine_exclusion_checkboxes(self):
         setup = _load_setup_module()
         manifest = _manifest("linux", {

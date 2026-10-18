@@ -53,7 +53,7 @@ _PATH_RE = re.compile(r"^envy\.(agents|llm\.(?:endpoints|credentials))\." + _NAM
 _SAFE_SECRET_PATH = re.compile(r"^[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*$")
 _KNOWN_ENDPOINTS = {"stepfun-openai", "stepfun-anthropic", "deepseek-openai"}
 _KNOWN_CREDENTIALS = {"stepfun", "deepseek"}
-API_CHOICES = ("openai-completions", "openai-responses")
+API_CHOICES = ("openai-completions", "openai-responses", "anthropic-messages")
 
 
 def _block_pattern() -> re.Pattern[str]:
@@ -175,7 +175,7 @@ def _validate_values(values: dict[str, Any]) -> list[str]:
                 errors.append(path)
             elif field in {"moreThinking", *AGENT_FIELD_ALIASES} and not isinstance(value, bool):
                 errors.append(path)
-            elif field == "api" and value not in API_CHOICES:
+            elif field == "api" and value is not None and value not in API_CHOICES:
                 errors.append(path)
             elif field in {"adapter", "endpoint", "credential", "model", "command"} and value is not None and not isinstance(value, str):
                 errors.append(path)
@@ -421,7 +421,7 @@ def config_view(
         if agent.get("adapter") == "pi":
             add_field(
                 f"envy.agents.{name}.api",
-                agent.get("api", "openai-completions"),
+                agent.get("api"),
                 list(API_CHOICES),
             )
         if agent.get("adapter") == "pi":
@@ -510,7 +510,7 @@ def _set(path: str, value: Any) -> Path:
                     raise typer.BadParameter(f"{path} requires a JSON array of strings") from exc
             if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
                 raise typer.BadParameter(f"{path} requires a JSON array of strings")
-        elif field in {"endpoint", "credential", "model", "contextWindow", "maxTokens"}:
+        elif field in {"endpoint", "credential", "model", "api", "contextWindow", "maxTokens"}:
             if value == "null":
                 value = None
             elif field in {"contextWindow", "maxTokens"}:
@@ -520,7 +520,7 @@ def _set(path: str, value: Any) -> Path:
                     raise typer.BadParameter(f"{path} must be a positive integer or null") from None
                 if value <= 0:
                     raise typer.BadParameter(f"{path} must be a positive integer or null")
-    if path.startswith("envy.agents.") and path.endswith(".api") and value not in API_CHOICES:
+    if path.startswith("envy.agents.") and path.endswith(".api") and value is not None and value not in API_CHOICES:
         raise typer.BadParameter(f"api must be one of: {', '.join(API_CHOICES)}")
     if path.startswith("envy.agents.") and path.endswith(".additionalSettings"):
         try:
@@ -639,7 +639,7 @@ def cmd_set(
 def cmd_add(
     name: str = typer.Argument(...),
     adapter: str = typer.Option(..., "--adapter", autocompletion=complete_adapters),
-    api: Optional[str] = typer.Option(None, "--api", help="Pi wire API: openai-completions or openai-responses", autocompletion=complete_apis),
+    api: Optional[str] = typer.Option(None, "--api", help="Pi wire API override: openai-completions, openai-responses, or anthropic-messages", autocompletion=complete_apis),
     endpoint: Optional[str] = typer.Option(None, "--endpoint", autocompletion=complete_endpoints),
     credential: Optional[str] = typer.Option(None, "--credential", autocompletion=complete_credentials),
     model: Optional[str] = typer.Option(None, "--model"),

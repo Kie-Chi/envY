@@ -60,6 +60,7 @@ class AgentCompletionTests(unittest.TestCase):
         examples = (
             ("envy.agents.local-pi.moreThinking", "t", ["true"]),
             ("envy.agents.other-pi.api", "openai-r", ["openai-responses"]),
+            ("envy.agents.other-pi.api", "anthropic", ["anthropic-messages"]),
             ("envy.agents.omp.api", "", []),
             ("envy.agents.retired.api", "", []),
             ("envy.agents.inherited.endpoint", "c", ["custom"]),
@@ -84,7 +85,7 @@ class AgentCompletionTests(unittest.TestCase):
 
     def test_add_and_credential_set_complete_metadata_references(self):
         for parameter, prefix, expected in (
-            ("adapter", "pi", ["pi"]), ("adapter", "oh-my", []), ("api", "openai-r", ["openai-responses"]),
+            ("adapter", "pi", ["pi"]), ("adapter", "oh-my", []), ("api", "openai-r", ["openai-responses"]), ("api", "anthropic", ["anthropic-messages"]),
             ("endpoint", "c", ["custom"]), ("credential", "s", ["shared"]),
         ):
             self.assertEqual(self.complete("agent", "add", parameter, prefix), expected)

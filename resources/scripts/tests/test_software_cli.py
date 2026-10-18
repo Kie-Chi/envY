@@ -446,6 +446,17 @@ class SoftwareCliTests(unittest.TestCase):
         self.assertIn("remove machine exclusion", add_items[0][1])
         self.assertIn("--clean", remove_items[1][1])
 
+    def test_smart_completion_loads_policy_once(self):
+        manifest = self._completion_manifest()
+        managed = {"nix.user.package": ["okular"], "npm.user.tool": []}
+        with patch.object(software, "machine_manifest", return_value=manifest), patch.object(
+            software, "read_managed_exclusions", return_value=managed
+        ), patch.object(software, "_completion_policy", wraps=software._completion_policy) as policy:
+            candidates = software.complete_remove_targets(None, "")
+
+        self.assertEqual([item[0] for item in candidates], ["nix.user.package", "npm.user.tool", "git", "okular"])
+        policy.assert_called_once_with()
+
     def test_add_completion_merges_only_matching_exact_index_entries(self):
         manifest = self._completion_manifest()
         context = SimpleNamespace(params={"group": "npm.user.tool"})

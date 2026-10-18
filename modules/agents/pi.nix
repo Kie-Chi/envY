@@ -13,19 +13,31 @@ let
   credentialNameFor = agent: if agent.credential == null
     then null
     else "llm-credential-${agent.credential}";
+  apiFor = agent: endpoint:
+    if agent.api != null then agent.api
+    else if endpoint != null && endpoint.protocol == "anthropic-compatible" then "anthropic-messages"
+    else "openai-completions";
+  isAnthropicApi = api: api == "anthropic-messages";
   templateNameFor = name: "envy-agent-${name}";
   templateFor = agent: let
     endpoint = endpointFor agent;
+    api = apiFor agent endpoint;
     credentialName = credentialNameFor agent;
     credential = if credentialName == null
       || !(builtins.hasAttr credentialName config.sops.placeholder)
       then ""
       else builtins.getAttr credentialName config.sops.placeholder;
   in ''
-    ${lib.optionalString (endpoint != null) ''
+    ${lib.optionalString (endpoint != null && isAnthropicApi api) ''
+    export ANTHROPIC_BASE_URL=${lib.escapeShellArg endpoint.baseUrl}
+    ''}
+    ${lib.optionalString (endpoint != null && !(isAnthropicApi api)) ''
     export OPENAI_BASE_URL=${lib.escapeShellArg endpoint.baseUrl}
     ''}
-    ${lib.optionalString (credentialName != null) ''
+    ${lib.optionalString (credentialName != null && isAnthropicApi api) ''
+    export ANTHROPIC_API_KEY=${lib.escapeShellArg credential}
+    ''}
+    ${lib.optionalString (credentialName != null && !(isAnthropicApi api)) ''
     export OPENAI_API_KEY=${lib.escapeShellArg credential}
     ''}
     # The image-PPT skill reads this selector from the caller environment.
@@ -33,10 +45,11 @@ let
   '';
   modelConfigFor = agent: apiKey: let
     endpoint = endpointFor agent;
+    api = apiFor agent endpoint;
   in {
     providers.${providerName} = {
       baseUrl = if endpoint == null then "https://api.openai.com/v1" else endpoint.baseUrl;
-      api = agent.api;
+      inherit api;
       inherit apiKey;
       models = [
         ({
@@ -93,7 +106,11 @@ in
       name = "models";
       target = ".pi/agent/models.json";
       format = "json";
-      data = modelConfigFor piConfig "$OPENAI_API_KEY";
+      data = let
+        endpoint = endpointFor piConfig;
+        api = apiFor piConfig endpoint;
+        apiKey = if isAnthropicApi api then "$ANTHROPIC_API_KEY" else "$OPENAI_API_KEY";
+      in modelConfigFor piConfig apiKey;
     } ];
     envy.software.nix.packages.include = [ piWrapper ];
     envy.software.nix.packages.sourceDependencies = { pi = [ "nix:pi" ]; };

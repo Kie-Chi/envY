@@ -418,6 +418,15 @@ def run_hm(*args: str) -> None:
 
 def run_darwin_switch() -> None:
     """Run nix-darwin switch with sudo."""
+    etc_migration = ENVY_ROOT / "resources" / "scripts" / "nix-darwin-etc.sh"
+    if not etc_migration.is_file():
+        raise RuntimeError(f"missing nix-darwin /etc migration script: {etc_migration}")
+    log.step("darwin", "preparing /etc for nix-darwin")
+    esudo(
+        "--preserve-env=ENVY_NIX_DARWIN_ETC_ROOT", str(etc_migration),
+        capture=False, activity="preparing nix-darwin /etc files",
+    )
+
     log.step("darwin", "running nix-darwin switch")
     runner = shutil.which("darwin-rebuild")
     if runner:

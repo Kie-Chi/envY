@@ -3,7 +3,15 @@
 from pathlib import Path
 
 from envy import _source_info
-from envy.config import machine_config_file, read_machine_nix, read_secrets_data
+from envy.config import (
+    _MISSING,
+    _lookup_nested,
+    _secret_scalar_text,
+    _secret_type_name,
+    machine_config_file,
+    read_machine_nix,
+    read_secrets_data,
+)
 from envy.evaluation import machine_manifest, manifest_settings
 from envy.git_safety import (
     SecretSafetyError,
@@ -202,11 +210,70 @@ def _check_secrets(machine_values: dict[str, str]) -> list[CheckResult]:
         results.append(ok(SECTION_SECRETS, "decrypt", "sops decrypt succeeded"))
         secret_values = dict(machine_values)
         for field in SECRET_FIELDS:
-            current = data
-            for part in field.yaml_path.split("/"):
-                current = current.get(part, {}) if isinstance(current, dict) else {}
-            secret_values[field.path] = "" if isinstance(current, dict) else str(current or "")
+            current, blocked_path, blocked_type = _lookup_nested(data, field.yaml_path)
+            if current is _MISSING:
+                secret_values[field.path] = ""
+                if blocked_path is not None:
+                    results.append(error(
+                        SECTION_SECRETS,
+                        field.yaml_path,
+                        "secret path component must be a mapping",
+                        hint=f"{blocked_path} has type {_secret_type_name(blocked_type)}",
+                    ))
+                continue
+            normalized = _secret_scalar_text(current)
+            if normalized is None:
+                results.append(error(
+                    SECTION_SECRETS,
+                    field.yaml_path,
+                    "secret value must be a scalar string",
+                    hint=f"found {_secret_type_name(current)}",
+                ))
+                secret_values[field.path] = ""
+            else:
+                if not isinstance(current, str):
+                    results.append(error(
+                        SECTION_SECRETS,
+                        field.yaml_path,
+                        "secret value must be a string",
+                        hint=f"found {_secret_type_name(current)}",
+                    ))
+                secret_values[field.path] = normalized
         results.extend(_check_fields(SECRET_FIELDS, secret_values, SECTION_SECRETS))
+
+        from envy.agent import managed_credential_paths
+        for credential_name, secret_path in managed_credential_paths().items():
+            current, blocked_path, blocked_type = _lookup_nested(data, secret_path)
+            if current is _MISSING:
+                if blocked_path is not None:
+                    results.append(error(
+                        SECTION_SECRETS,
+                        secret_path,
+                        "secret path component must be a mapping",
+                        hint=f"{blocked_path} has type {_secret_type_name(blocked_type)}",
+                    ))
+                else:
+                    results.append(error(
+                        SECTION_SECRETS,
+                        secret_path,
+                        "secret path is missing",
+                    ))
+                continue
+            normalized = _secret_scalar_text(current)
+            if normalized is None:
+                results.append(error(
+                    SECTION_SECRETS,
+                    secret_path,
+                    "secret value must be a scalar string",
+                    hint=f"credential {credential_name} found {_secret_type_name(current)}",
+                ))
+            elif not isinstance(current, str):
+                results.append(error(
+                    SECTION_SECRETS,
+                    secret_path,
+                    "secret value must be a string",
+                    hint=f"credential {credential_name} found {_secret_type_name(current)}",
+                ))
     else:
         results.append(error(
             SECTION_SECRETS,

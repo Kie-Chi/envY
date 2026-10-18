@@ -113,7 +113,7 @@
   envy.agents.pi.credential = "mp";
   envy.agents.pi.endpoint = "stepfun-openai";
   envy.agents.pi.maxTokens = 128000;
-  envy.agents.pi.model = "gpt-6.1-sol-coding";
+  envy.agents.pi.model = "gpt-6-astra";
   envy.agents.pi.moreThinking = true;
   # END ENVY MANAGED AGENTS
 

@@ -231,7 +231,7 @@ class ConfigShowTests(unittest.TestCase):
         self.assertEqual(payload["values"]["envy.agents.codex.model"], "custom-model")
         self.assertEqual(payload["values"]["envy.agents.pi.api"], "openai-responses")
         fields = {entry["path"]: entry for entry in payload["fields"]}
-        self.assertEqual(fields["envy.agents.pi.api"]["choices"], ["openai-completions", "openai-responses"])
+        self.assertEqual(fields["envy.agents.pi.api"]["choices"], ["openai-completions", "openai-responses", "anthropic-messages"])
         self.assertTrue(payload["llm"]["credentials"]["local"]["credentialSet"])
         self.assertNotIn("hidden-key", output.getvalue())
 

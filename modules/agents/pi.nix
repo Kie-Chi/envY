@@ -57,6 +57,10 @@ let
           name = agent.model;
           reasoning = true;
           input = [ "text" "image" ];
+        } // lib.optionalAttrs (api == "anthropic-messages") {
+          compat = {
+            forceAdaptiveThinking = true;
+          };
         } // lib.optionalAttrs (agent.contextWindow != null) {
           contextWindow = agent.contextWindow;
         } // lib.optionalAttrs (agent.maxTokens != null) {

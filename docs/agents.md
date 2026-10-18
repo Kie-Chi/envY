@@ -176,7 +176,9 @@ gateway must support the selected API. For gateways that reject GPT reasoning
 together with function tools on Chat Completions, choose Responses explicitly.
 For an Anthropic endpoint, envY generates `ANTHROPIC_BASE_URL` and
 `ANTHROPIC_API_KEY`; for OpenAI-compatible endpoints it generates the
-corresponding `OPENAI_*` variables.
+corresponding `OPENAI_*` variables. Custom Anthropic models also receive
+`compat.forceAdaptiveThinking = true`, so Pi sends `thinking.type = adaptive`
+and `output_config.effort`, as required by current Claude models and gateways.
 
 ```nix
 envy.llm.endpoints.my-anthropic = {

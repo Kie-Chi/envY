@@ -101,7 +101,7 @@
   envy.agents.cc.aliases = [ "ccli" ];
   envy.agents.cc.credential = "mp";
   envy.agents.cc.endpoint = "stepfun-anthropic";
-  envy.agents.cc.model = "claude-opus-5-5";
+  envy.agents.cc.model = "claude-opus-5-5-qiye";
   envy.agents.codex.adapter = "codex";
   envy.agents.codex.credential = "xikai";
   envy.agents.codex.endpoint = "xikai-openai";

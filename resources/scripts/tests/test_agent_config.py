@@ -10,11 +10,23 @@ from typer.testing import CliRunner
 
 from envy import agent, config
 from envy.agent import (
-    _read_values, _render, _runtime_change_kind, _runtime_env, _set, _write_values, refine_managed,
+    _read_values, _render, _runtime_change_kind, _runtime_env, _runtime_pi_models, _set, _write_values, refine_managed,
 )
 
 
 class AgentConfigTests(unittest.TestCase):
+    def test_profile_values_and_profile_switch_are_runtime_fields(self):
+        values = {
+            "envy.agentProfiles.fast.endpoint": "stepfun-openai",
+            "envy.agentProfiles.fast.model": "fast-model",
+            "envy.agentProfiles.fast.credential": "stepfun",
+            "envy.agents.pi.adapter": "pi",
+            "envy.agents.pi.profile": "fast",
+        }
+        profiles = agent._profile_values(values)
+        self.assertEqual(agent._profile_agent_fields(profiles["fast"])["model"], "fast-model")
+        self.assertEqual(agent._runtime_change_kind("envy.agentProfiles.fast.model"), "live")
+
     def test_runtime_change_kind_separates_live_and_apply_fields(self):
         self.assertEqual(_runtime_change_kind("envy.agents.pi.model"), "live")
         self.assertEqual(_runtime_change_kind("envy.llm.endpoints.stepfun.baseUrl"), "live")
@@ -37,6 +49,21 @@ class AgentConfigTests(unittest.TestCase):
         self.assertIn("export OPENAI_BASE_URL=https://example.test/v1", rendered)
         self.assertIn("export OPENAI_API_KEY=secret-value", rendered)
         self.assertIn("export ENVY_AGENT_MODEL='model/with space'", rendered)
+        self.assertIn("unset OPENAI_BASE_URL", rendered)
+        self.assertIn("ANTHROPIC_BASE_URL", rendered)
+
+    def test_runtime_pi_models_switches_protocol_and_api(self):
+        values = {
+            "envy.llm.endpoints.stepfun.baseUrl": "https://example.test/messages",
+            "envy.llm.endpoints.stepfun.protocol": "anthropic-compatible",
+        }
+        models = _runtime_pi_models(values, {
+            "endpoint": "stepfun", "model": "claude-model",
+        })
+        provider = models["providers"]["envy-pi"]
+        self.assertEqual(provider["api"], "anthropic-messages")
+        self.assertEqual(provider["baseUrl"], "https://example.test/messages")
+        self.assertEqual(provider["apiKey"], "$ANTHROPIC_API_KEY")
 
     def test_multiline_settings_survive_shared_reader_and_rewrite(self):
         with tempfile.TemporaryDirectory() as directory:

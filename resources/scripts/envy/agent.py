@@ -50,7 +50,7 @@ from envy.utils import SECRETS_FILE, current_machine_id
 MANAGED_START = "  # BEGIN ENVY MANAGED AGENTS"
 MANAGED_END = "  # END ENVY MANAGED AGENTS"
 _NAME = r"[A-Za-z0-9][A-Za-z0-9_-]*"
-_PATH_RE = re.compile(r"^envy\.(agents|llm\.(?:endpoints|credentials))\." + _NAME + r"(?:\.[A-Za-z0-9_-]+)?$")
+_PATH_RE = re.compile(r"^envy\.(agents|agentProfiles|llm\.(?:endpoints|credentials))\." + _NAME + r"(?:\.[A-Za-z0-9_-]+)?$")
 _SAFE_SECRET_PATH = re.compile(r"^[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*$")
 _KNOWN_ENDPOINTS = {"stepfun-openai", "stepfun-anthropic", "deepseek-openai"}
 _KNOWN_CREDENTIALS = {"stepfun", "deepseek"}
@@ -155,6 +155,7 @@ def _migration_values(machine_values: dict[str, Any]) -> dict[str, Any]:
 def _validate_values(values: dict[str, Any]) -> list[str]:
     errors: list[str] = obsolete_agent_paths(values)
     agent_names: set[str] = set()
+    profile_names: set[str] = set()
     endpoint_names: set[str] = set()
     credential_names: set[str] = set()
     for path, value in values.items():
@@ -163,9 +164,19 @@ def _validate_values(values: dict[str, Any]) -> list[str]:
             errors.append(path)
             continue
         namespace, name, field = match.groups()
-        if namespace == "agents":
+        if namespace == "agentProfiles":
+            profile_names.add(name)
+            if field not in {"endpoint", "credential", "api", "model", "contextWindow", "maxTokens"}:
+                errors.append(path)
+            elif field in {"contextWindow", "maxTokens"} and value is not None and (isinstance(value, bool) or not isinstance(value, int) or value <= 0):
+                errors.append(path)
+            elif field == "api" and value is not None and value not in API_CHOICES:
+                errors.append(path)
+            elif field in {"endpoint", "credential", "model"} and value is not None and not isinstance(value, str):
+                errors.append(path)
+        elif namespace == "agents":
             agent_names.add(name)
-            if field not in {"adapter", "api", "endpoint", "credential", "model", "contextWindow", "maxTokens", "command", "args", "aliases", "skills", "additionalSettings", "moreThinking", *AGENT_FIELD_ALIASES}:
+            if field not in {"profile", "adapter", "api", "endpoint", "credential", "model", "contextWindow", "maxTokens", "command", "args", "aliases", "skills", "additionalSettings", "moreThinking", *AGENT_FIELD_ALIASES}:
                 errors.append(path)
             elif field in {"contextWindow", "maxTokens"} and value is not None and (
                 isinstance(value, bool) or not isinstance(value, int) or value <= 0
@@ -181,7 +192,7 @@ def _validate_values(values: dict[str, Any]) -> list[str]:
                 errors.append(path)
             elif field == "api" and value is not None and value not in API_CHOICES:
                 errors.append(path)
-            elif field in {"adapter", "endpoint", "credential", "model", "command"} and value is not None and not isinstance(value, str):
+            elif field in {"profile", "adapter", "endpoint", "credential", "model", "command"} and value is not None and not isinstance(value, str):
                 errors.append(path)
         elif namespace == "llm.endpoints":
             endpoint_names.add(name)
@@ -200,6 +211,10 @@ def _validate_values(values: dict[str, Any]) -> list[str]:
             elif field == "secretPath" and not _SAFE_SECRET_PATH.fullmatch(value):
                 errors.append(path)
 
+    for name in sorted(profile_names):
+        if f"envy.agentProfiles.{name}.endpoint" not in values or f"envy.agentProfiles.{name}.model" not in values:
+            errors.append(f"envy.agentProfiles.{name}")
+    declared_profiles = set(profile_names)
     declared_endpoints = {path.split(".")[3] for path in values if path.startswith("envy.llm.endpoints.")}
     declared_credentials = {path.split(".")[3] for path in values if path.startswith("envy.llm.credentials.")}
     for name in sorted(agent_names):
@@ -217,6 +232,8 @@ def _validate_values(values: dict[str, Any]) -> list[str]:
         if path.endswith(".endpoint") and value not in declared_endpoints | _KNOWN_ENDPOINTS:
             errors.append(path)
         if path.endswith(".credential") and value not in declared_credentials | _KNOWN_CREDENTIALS:
+            errors.append(path)
+        if path.startswith("envy.agents.") and path.endswith(".profile") and value not in declared_profiles:
             errors.append(path)
     return sorted(set(errors))
 
@@ -461,6 +478,7 @@ def _render(values: dict[str, Any]) -> str:
     sections = [
         ("LLM CREDENTIALS", "envy.llm.credentials."),
         ("LLM ENDPOINTS", "envy.llm.endpoints."),
+        ("AGENT PROFILES", "envy.agentProfiles."),
         ("AGENTS", "envy.agents."),
     ]
     for title, prefix in sections:
@@ -518,10 +536,9 @@ def _runtime_env(values: dict[str, Any], agent: dict[str, Any], secrets: dict[st
     secret_path = _nested_value(values, "envy.llm.credentials", str(credential_name), "secretPath", "") if credential_name else ""
     api = agent.get("api") or ("anthropic-messages" if endpoint.get("protocol") == "anthropic-compatible" else "openai-completions")
     prefix = "ANTHROPIC" if api == "anthropic-messages" or adapter == "claude-code" else ("STEPFUN" if adapter == "stepgo" else "OPENAI")
-    unset_names = f"{prefix}_BASE_URL {prefix}_API_KEY {prefix}_MODEL"
-    if prefix == "ANTHROPIC":
-        unset_names += " ANTHROPIC_AUTH_TOKEN"
-    lines = [f"unset {unset_names}"]
+    lines = [
+        "unset OPENAI_BASE_URL OPENAI_API_KEY OPENAI_MODEL ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL STEPFUN_BASE_URL STEPFUN_API_KEY STEPFUN_MODEL",
+    ]
     if endpoint.get("baseUrl"):
         lines.append(f"export {prefix}_BASE_URL={shlex.quote(str(endpoint['baseUrl']))}")
     secret = _secret_value(secrets, secret_path)
@@ -538,6 +555,41 @@ def _runtime_env(values: dict[str, Any], agent: dict[str, Any], secrets: dict[st
     return "\n".join(lines) + "\n"
 
 
+def _runtime_pi_models(values: dict[str, Any], agent: dict[str, Any]) -> dict[str, Any]:
+    endpoint_name = agent.get("endpoint")
+    endpoint = {}
+    if isinstance(endpoint_name, str):
+        endpoint = {
+            "baseUrl": _nested_value(values, "envy.llm.endpoints", endpoint_name, "baseUrl", ""),
+            "protocol": _nested_value(values, "envy.llm.endpoints", endpoint_name, "protocol", "openai-compatible"),
+        }
+    api = agent.get("api") or (
+        "anthropic-messages" if endpoint.get("protocol") == "anthropic-compatible" else "openai-completions"
+    )
+    model = agent.get("model") or ""
+    model_data: dict[str, Any] = {
+        "id": model,
+        "name": model,
+        "reasoning": True,
+        "input": ["text", "image"],
+    }
+    if api == "anthropic-messages":
+        model_data["compat"] = {"forceAdaptiveThinking": True}
+    if isinstance(agent.get("contextWindow"), int):
+        model_data["contextWindow"] = agent["contextWindow"]
+    if isinstance(agent.get("maxTokens"), int):
+        model_data["maxTokens"] = agent["maxTokens"]
+    if agent.get("moreThinking"):
+        model_data["thinkingLevelMap"] = {"xhigh": "xhigh", "max": "max", "ultra": "ultra"}
+    api_key = "$ANTHROPIC_API_KEY" if api == "anthropic-messages" else "$OPENAI_API_KEY"
+    return {"providers": {"envy-pi": {
+        "baseUrl": endpoint.get("baseUrl") or "https://api.openai.com/v1",
+        "api": api,
+        "apiKey": api_key,
+        "models": [model_data],
+    }}}
+
+
 def refresh_runtime(*, values: dict[str, Any] | None = None) -> list[str]:
     """Refresh private agent runtime overrides without evaluating or applying Nix."""
     values = values if values is not None else _read_values()
@@ -546,11 +598,18 @@ def refresh_runtime(*, values: dict[str, Any] | None = None) -> list[str]:
         secrets = {}
     if not decrypt_ok:
         log.warn("agents", "runtime credentials were not refreshed; sops decryption failed")
+    profiles = _profile_values(values)
     agents: dict[str, dict[str, Any]] = {}
     for path, value in values.items():
         parts = path.split(".")
         if len(parts) == 4 and parts[:2] == ["envy", "agents"]:
             agents.setdefault(parts[2], {})[parts[3]] = value
+    for agent in agents.values():
+        profile_name = agent.get("profile")
+        if isinstance(profile_name, str) and profile_name in profiles:
+            profile_fields = _profile_agent_fields(profiles[profile_name])
+            for field, value in profile_fields.items():
+                agent[field] = value
     ensure_private_directory(_RUNTIME_DIR)
     written: list[str] = []
     for name, agent in agents.items():
@@ -558,13 +617,38 @@ def refresh_runtime(*, values: dict[str, Any] | None = None) -> list[str]:
             continue
         target = _RUNTIME_DIR / f"{name}.env"
         atomic_write_text(target, _runtime_env(values, agent, secrets), mode=0o600, private_parent=True)
+        if name == "pi" and agent.get("adapter") == "pi":
+            pi_models = Path.home() / ".pi" / "agent" / "models.json"
+            atomic_write_text(
+                pi_models,
+                json.dumps(_runtime_pi_models(values, agent), ensure_ascii=False, indent=2) + "\n",
+                mode=0o600,
+                private_parent=True,
+            )
         written.append(name)
     return written
+
+
+def _profile_values(values: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    profiles: dict[str, dict[str, Any]] = {}
+    prefix = "envy.agentProfiles."
+    for path, value in values.items():
+        if path.startswith(prefix):
+            parts = path.split(".")
+            if len(parts) == 4:
+                profiles.setdefault(parts[2], {})[parts[3]] = value
+    return profiles
+
+
+def _profile_agent_fields(profile: dict[str, Any]) -> dict[str, Any]:
+    return {field: profile[field] for field in ("endpoint", "credential", "api", "model", "contextWindow", "maxTokens") if field in profile}
 
 
 def _runtime_change_kind(path: str) -> str:
     parts = path.split(".")
     if len(parts) == 4 and parts[:2] == ["envy", "agents"] and parts[3] in _LIVE_AGENT_FIELDS:
+        return "live"
+    if len(parts) == 4 and parts[:2] == ["envy", "agentProfiles"] and parts[3] in _LIVE_AGENT_FIELDS:
         return "live"
     if len(parts) == 5 and parts[:3] == ["envy", "llm", "endpoints"] and parts[4] in _LIVE_ENDPOINT_FIELDS:
         return "live"
@@ -626,6 +710,8 @@ def _set(path: str, value: Any) -> Path:
         adapter = value if path.endswith(".adapter") else values.get(f"envy.agents.{name}.adapter")
         if is_obsolete_agent(name, adapter):
             raise typer.BadParameter("OMP is retired; run envy config refine to remove its obsolete configuration")
+    if path.startswith("envy.agents.") and path.rsplit(".", 1)[-1] in _LIVE_AGENT_FIELDS:
+        values.pop(f"envy.agents.{path.split('.')[2]}.profile", None)
     values[path] = value
     if path in _validate_values(values):
         raise typer.BadParameter(f"invalid agent configuration field: {path}")
@@ -665,7 +751,97 @@ def _payload(values: dict[str, Any], agents: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-app = typer.Typer(name="agent", help="Manage machine-owned LLM agent instances and connections")
+app = typer.Typer(name="agent", help="Manage machine-owned agent instances and connections")
+profile_app = typer.Typer(name="profile", help="Manage reusable agent model profiles")
+app.add_typer(profile_app, name="profile")
+
+
+@profile_app.command(name="list")
+@profile_app.command(name="ls", rich_help_panel="Aliases")
+def cmd_profile_list(json_output: bool = typer.Option(False, "--json")):
+    values = _profile_values(_read_values())
+    if json_output:
+        emit("agent.profile.list", data={"profiles": values})
+        return
+    for name, profile in sorted(values.items()):
+        log.console.print(f"{name}: {profile.get('model', '')} via {profile.get('endpoint', '')}")
+
+
+@profile_app.command(name="add")
+def cmd_profile_add(
+    name: str = typer.Argument(...),
+    endpoint: str = typer.Option(..., "--endpoint"),
+    model: str = typer.Option(..., "--model"),
+    credential: Optional[str] = typer.Option(None, "--credential"),
+    api: Optional[str] = typer.Option(None, "--api", autocompletion=complete_apis),
+    context_window: Optional[int] = typer.Option(None, "--context-window"),
+    max_tokens: Optional[int] = typer.Option(None, "--max-tokens"),
+    json_output: bool = typer.Option(False, "--json"),
+    yes: bool = typer.Option(False, "--yes", "-y"),
+):
+    if not re.fullmatch(_NAME, name):
+        raise typer.BadParameter(f"invalid profile name: {name}")
+    if api is not None and api not in API_CHOICES:
+        raise typer.BadParameter(f"api must be one of: {', '.join(API_CHOICES)}")
+    if context_window is not None and context_window <= 0:
+        raise typer.BadParameter("context window must be positive")
+    if max_tokens is not None and max_tokens <= 0:
+        raise typer.BadParameter("max tokens must be positive")
+    values = _read_values()
+    prefix = f"envy.agentProfiles.{name}."
+    if any(path.startswith(prefix) for path in values):
+        raise typer.BadParameter(f"agent profile already exists: {name}")
+    values.update({
+        prefix + "endpoint": endpoint,
+        prefix + "model": model,
+        prefix + "credential": credential,
+        prefix + "api": api,
+        prefix + "contextWindow": context_window,
+        prefix + "maxTokens": max_tokens,
+    })
+    errors = _validate_values(values)
+    if errors:
+        raise typer.BadParameter("invalid profile configuration: " + ", ".join(errors))
+    target = _write_values(values)
+    offer_mutation_commit([target], f"chore(agent): add profile {name}", quiet=json_output or yes)
+    if json_output:
+        emit("agent.profile.add", data={"name": name})
+    else:
+        log.ok("agents", "profile added", profile=name)
+        log.hint("Use: envy agent profile use <agent> " + name)
+
+
+@profile_app.command(name="use")
+def cmd_profile_use(
+    agent_name: str = typer.Argument(..., metavar="AGENT"),
+    profile_name: str = typer.Argument(..., metavar="PROFILE"),
+    json_output: bool = typer.Option(False, "--json"),
+    yes: bool = typer.Option(False, "--yes", "-y"),
+):
+    values = _read_values()
+    profiles = _profile_values(values)
+    profile = profiles.get(profile_name)
+    if profile is None:
+        raise typer.BadParameter(f"unknown agent profile: {profile_name}")
+    agent_prefix = f"envy.agents.{agent_name}."
+    if not values.get(agent_prefix + "adapter"):
+        raise typer.BadParameter(f"unknown managed agent: {agent_name}")
+    for field, value in _profile_agent_fields(profile).items():
+        values[agent_prefix + field] = value
+    values[agent_prefix + "profile"] = profile_name
+    errors = _validate_values(values)
+    if errors:
+        raise typer.BadParameter("profile cannot be applied: " + ", ".join(errors))
+    target = _write_values(values)
+    refreshed = refresh_runtime(values=values)
+    offer_mutation_commit([target], f"chore(agent): use profile {profile_name} for {agent_name}", quiet=json_output or yes)
+    if json_output:
+        emit("agent.profile.use", data={"agent": agent_name, "profile": profile_name, "runtimeRefreshed": bool(refreshed)})
+    else:
+        log.ok("agents", "profile switched", agent=agent_name, profile=profile_name)
+        log.ok("agents", "runtime configuration refreshed", agents=", ".join(refreshed) or "none")
+        log.hint("Changes apply to newly started agent processes.")
+        log.hint("Review and commit the machine configuration when ready.")
 
 
 @app.command(name="refresh")
@@ -808,6 +984,10 @@ def cmd_credential_set(
         set_secret_value(secret_path, value)
         _set(f"envy.llm.credentials.{name}.secretPath", secret_path)
         transaction.commit()
-    offer_mutation_commit([machine_path, SECRETS_FILE], f"chore(agent): update credential {name}", quiet=json_output)
+    refreshed = refresh_runtime()
+    if not json_output:
+        log.ok("agents", "credential runtime configuration refreshed", agents=", ".join(refreshed) or "none")
+        log.hint("Changes apply to newly started agent processes.")
+        log.hint("Review and commit the machine configuration and encrypted secret when ready.")
     if json_output:
-        emit("agent.credential-set", data={"name": name, "secretPath": secret_path, "set": bool(value)})
+        emit("agent.credential-set", data={"name": name, "secretPath": secret_path, "set": bool(value), "runtimeRefreshed": bool(refreshed)})

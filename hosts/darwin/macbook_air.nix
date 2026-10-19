@@ -77,12 +77,40 @@
   envy.llm.endpoints.xikai-openai.baseUrl = "https://api.xikai.site/v1";
   envy.llm.endpoints.xikai-openai.protocol = "openai-compatible";
 
+  # --- AGENT PROFILES ---
+  envy.agentProfiles.xikai-magpie.api = "openai-responses";
+  envy.agentProfiles.xikai-magpie.contextWindow = 272000;
+  envy.agentProfiles.xikai-magpie.credential = "xikai";
+  envy.agentProfiles.xikai-magpie.endpoint = "xikai-openai";
+  envy.agentProfiles.xikai-magpie.maxTokens = 128000;
+  envy.agentProfiles.xikai-magpie.model = "gpt-6.1-sol";
+
+  envy.agentProfiles.hb-sub2api.api = "anthropic-messages";
+  envy.agentProfiles.hb-sub2api.credential = "hbapi";
+  envy.agentProfiles.hb-sub2api.endpoint = "sub2api-anthropic";
+  envy.agentProfiles.hb-sub2api.model = "claude-opus-5";
+
+  envy.agentProfiles.stepfun-openai.api = "openai-completions";
+  envy.agentProfiles.stepfun-openai.credential = "stepfun";
+  envy.agentProfiles.stepfun-openai.endpoint = "stepfun-openai";
+  envy.agentProfiles.stepfun-openai.model = "step-3.7-flash";
+
+  envy.agentProfiles.stepfun-anthropic.api = "anthropic-messages";
+  envy.agentProfiles.stepfun-anthropic.credential = "stepfun";
+  envy.agentProfiles.stepfun-anthropic.endpoint = "stepfun-anthropic";
+  envy.agentProfiles.stepfun-anthropic.model = "step-3.7-flash";
+
+  envy.agentProfiles.deepseek.api = "openai-completions";
+  envy.agentProfiles.deepseek.credential = "deepseek";
+  envy.agentProfiles.deepseek.endpoint = "deepseek-openai";
+  envy.agentProfiles.deepseek.model = "deepseek-v4-pro";
+
   # --- AGENTS ---
   envy.agents.cc.adapter = "claude-code";
   envy.agents.cc.aliases = [ "ccli" ];
   envy.agents.cc.credential = "hbapi";
   envy.agents.cc.endpoint = "sub2api-anthropic";
-  envy.agents.cc.model = "claude-fable-5-1";
+  envy.agents.cc.model = "claude-opus-5";
   envy.agents.codex.adapter = "codex";
   envy.agents.codex.credential = "xikai";
   envy.agents.codex.endpoint = "xikai-openai";

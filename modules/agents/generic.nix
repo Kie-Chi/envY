@@ -26,6 +26,10 @@ let
             # shellcheck source=/dev/null
             source "${config.envy.user.home}/.config/envy/agent-runtime/${name}.env"
           fi
+          if [ -f "${config.envy.user.home}/.config/envy/agent-runtime/${name}.env" ]; then
+            # shellcheck source=/dev/null
+            source "${config.envy.user.home}/.config/envy/agent-runtime/${name}.env"
+          fi
           cmd=(${lib.escapeShellArg command})
           ${lib.concatMapStringsSep "\n" (arg: "cmd+=(${lib.escapeShellArg arg})") agent.args}
           exec "''${cmd[@]}" "$@"

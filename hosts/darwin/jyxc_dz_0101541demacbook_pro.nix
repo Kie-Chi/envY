@@ -111,12 +111,12 @@
   envy.agents.codex.model = "gpt-6.1-sol";
   envy.agents.pi.adapter = "pi";
   envy.agents.pi.additionalSettings = builtins.fromJSON "{\"compaction\": {\"keepRecentTokens\": 27200, \"reserveTokens\": 27200}, \"defaultTools\": [\"+codemode\"]}";
-  envy.agents.pi.api = "anthropic-messages";
+  envy.agents.pi.api = "openai-completions";
   envy.agents.pi.contextWindow = 272000;
-  envy.agents.pi.credential = "mp-new";
-  envy.agents.pi.endpoint = "stepfun-anthropic";
+  envy.agents.pi.credential = "mp";
+  envy.agents.pi.endpoint = "stepfun-openai";
   envy.agents.pi.maxTokens = 128000;
-  envy.agents.pi.model = "claude-opus-5-5-qiye";
+  envy.agents.pi.model = "gpt-6.1-sol-coding";
   envy.agents.pi.moreThinking = true;
   # END ENVY MANAGED AGENTS
 

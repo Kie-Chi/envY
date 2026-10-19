@@ -88,10 +88,18 @@ let
         # shellcheck source=/dev/null
         source "${config.sops.templates.${templateNameFor "pi"}.path}"
       fi
+      if [ -f "${config.envy.user.home}/.config/envy/agent-runtime/pi.env" ]; then
+        # shellcheck source=/dev/null
+        source "${config.envy.user.home}/.config/envy/agent-runtime/pi.env"
+      fi
       cmd=(${lib.escapeShellArg (lib.getExe selectedPiPackage)})
       ${prompts.shellArgs "pi"}
       ${lib.optionalString (piConfig.model != null) ''
-      cmd+=(--model ${lib.escapeShellArg "${providerName}/${piConfig.model}"})
+      if [[ -n "''${ENVY_AGENT_MODEL:-}" ]]; then
+        cmd+=(--model "${providerName}/''${ENVY_AGENT_MODEL}")
+      else
+        cmd+=(--model ${lib.escapeShellArg "${providerName}/${piConfig.model}"})
+      fi
       ''}
       ${lib.concatMapStringsSep "\n" (arg: "cmd+=(${lib.escapeShellArg arg})") piConfig.args}
       exec "''${cmd[@]}" "$@"

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 from pathlib import Path
 from typing import Any, Optional
 
@@ -41,7 +42,7 @@ from envy.legacy import (
 )
 from envy.mutation import offer_mutation_commit
 from envy.nix_literals import LiteralError, LiteralReader
-from envy.secure_io import atomic_write_text
+from envy.secure_io import atomic_write_text, ensure_private_directory
 from envy.transaction import FileTransaction
 from envy.utils import SECRETS_FILE, current_machine_id
 
@@ -53,6 +54,9 @@ _PATH_RE = re.compile(r"^envy\.(agents|llm\.(?:endpoints|credentials))\." + _NAM
 _SAFE_SECRET_PATH = re.compile(r"^[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*$")
 _KNOWN_ENDPOINTS = {"stepfun-openai", "stepfun-anthropic", "deepseek-openai"}
 _KNOWN_CREDENTIALS = {"stepfun", "deepseek"}
+_RUNTIME_DIR = Path.home() / ".config" / "envy" / "agent-runtime"
+_LIVE_AGENT_FIELDS = {"model", "endpoint", "credential", "api", "contextWindow", "maxTokens"}
+_LIVE_ENDPOINT_FIELDS = {"baseUrl", "protocol"}
 API_CHOICES = ("openai-completions", "openai-responses", "anthropic-messages")
 
 
@@ -488,6 +492,85 @@ def _write_values(values: dict[str, Any], *, path: Path | None = None) -> Path:
     return path
 
 
+def _nested_value(values: dict[str, Any], prefix: str, name: str, field: str, default: Any = None) -> Any:
+    return values.get(f"{prefix}.{name}.{field}", default)
+
+
+def _secret_value(data: dict[str, Any], path: str | None) -> str:
+    current: Any = data
+    for part in str(path or "").split("/"):
+        if not part:
+            continue
+        current = current.get(part) if isinstance(current, dict) else None
+    return current if isinstance(current, str) else ""
+
+
+def _runtime_env(values: dict[str, Any], agent: dict[str, Any], secrets: dict[str, Any]) -> str:
+    adapter = str(agent.get("adapter") or "")
+    endpoint_name = agent.get("endpoint")
+    endpoint = {}
+    if isinstance(endpoint_name, str):
+        endpoint = {
+            "baseUrl": _nested_value(values, "envy.llm.endpoints", endpoint_name, "baseUrl", ""),
+            "protocol": _nested_value(values, "envy.llm.endpoints", endpoint_name, "protocol", "openai-compatible"),
+        }
+    credential_name = agent.get("credential")
+    secret_path = _nested_value(values, "envy.llm.credentials", str(credential_name), "secretPath", "") if credential_name else ""
+    api = agent.get("api") or ("anthropic-messages" if endpoint.get("protocol") == "anthropic-compatible" else "openai-completions")
+    prefix = "ANTHROPIC" if api == "anthropic-messages" or adapter == "claude-code" else ("STEPFUN" if adapter == "stepgo" else "OPENAI")
+    unset_names = f"{prefix}_BASE_URL {prefix}_API_KEY {prefix}_MODEL"
+    if prefix == "ANTHROPIC":
+        unset_names += " ANTHROPIC_AUTH_TOKEN"
+    lines = [f"unset {unset_names}"]
+    if endpoint.get("baseUrl"):
+        lines.append(f"export {prefix}_BASE_URL={shlex.quote(str(endpoint['baseUrl']))}")
+    secret = _secret_value(secrets, secret_path)
+    if secret:
+        lines.append(f"export {prefix}_API_KEY={shlex.quote(secret)}")
+        if prefix == "ANTHROPIC":
+            lines.append(f"export ANTHROPIC_AUTH_TOKEN={shlex.quote(secret)}")
+    if agent.get("model"):
+        lines.append(f"export {prefix}_MODEL={shlex.quote(str(agent['model']))}")
+        lines.append(f"export ENVY_AGENT_MODEL={shlex.quote(str(agent['model']))}")
+    else:
+        lines.append("unset ENVY_AGENT_MODEL")
+    lines.append("export GPT_IMAGE_MODEL_NAME=gpt-image-2")
+    return "\n".join(lines) + "\n"
+
+
+def refresh_runtime(*, values: dict[str, Any] | None = None) -> list[str]:
+    """Refresh private agent runtime overrides without evaluating or applying Nix."""
+    values = values if values is not None else _read_values()
+    secrets, decrypt_ok = read_secrets_data()
+    if not isinstance(secrets, dict):
+        secrets = {}
+    if not decrypt_ok:
+        log.warn("agents", "runtime credentials were not refreshed; sops decryption failed")
+    agents: dict[str, dict[str, Any]] = {}
+    for path, value in values.items():
+        parts = path.split(".")
+        if len(parts) == 4 and parts[:2] == ["envy", "agents"]:
+            agents.setdefault(parts[2], {})[parts[3]] = value
+    ensure_private_directory(_RUNTIME_DIR)
+    written: list[str] = []
+    for name, agent in agents.items():
+        if not agent.get("adapter"):
+            continue
+        target = _RUNTIME_DIR / f"{name}.env"
+        atomic_write_text(target, _runtime_env(values, agent, secrets), mode=0o600, private_parent=True)
+        written.append(name)
+    return written
+
+
+def _runtime_change_kind(path: str) -> str:
+    parts = path.split(".")
+    if len(parts) == 4 and parts[:2] == ["envy", "agents"] and parts[3] in _LIVE_AGENT_FIELDS:
+        return "live"
+    if len(parts) == 5 and parts[:3] == ["envy", "llm", "endpoints"] and parts[4] in _LIVE_ENDPOINT_FIELDS:
+        return "live"
+    return "apply"
+
+
 def _validate_path(path: str) -> None:
     if not _PATH_RE.fullmatch(path):
         raise typer.BadParameter(f"invalid envY agent path: {path}")
@@ -585,6 +668,17 @@ def _payload(values: dict[str, Any], agents: dict[str, Any]) -> dict[str, Any]:
 app = typer.Typer(name="agent", help="Manage machine-owned LLM agent instances and connections")
 
 
+@app.command(name="refresh")
+def cmd_refresh(json_output: bool = typer.Option(False, "--json")):
+    """Refresh private runtime overrides without running Nix apply."""
+    refreshed = refresh_runtime()
+    if json_output:
+        emit("agent.refresh", data={"agents": refreshed})
+    else:
+        log.ok("agents", "runtime configuration refreshed", agents=", ".join(refreshed) or "none")
+        log.hint("Changes apply to newly started agent processes.")
+
+
 @app.command(name="list")
 @app.command(name="ls", rich_help_panel="Aliases")
 def cmd_list(json_output: bool = typer.Option(False, "--json")):
@@ -630,9 +724,17 @@ def cmd_set(
             emit_error("agent.set", str(exc), code="invalid-value")
             raise typer.Exit(code=1) from exc
         raise
-    offer_mutation_commit([target], f"chore(agent): update {current_machine_id()} agent policy", quiet=json_output or yes)
+    changed_kind = _runtime_change_kind(path)
+    refreshed = refresh_runtime() if changed_kind == "live" else []
+    if changed_kind == "live" and not json_output:
+        log.ok("agents", "runtime configuration refreshed", agents=", ".join(refreshed) or "none")
+        log.hint("Changes apply to newly started agent processes.")
+        log.hint("Review and commit the machine configuration when ready.")
+    elif changed_kind == "apply" and not json_output:
+        log.warn("agents", "this change requires `envy apply` before it takes effect")
+        log.hint("Run: envy apply")
     if json_output:
-        emit("agent.set", data={"path": path, "value": value, "machine": current_machine_id()})
+        emit("agent.set", data={"path": path, "value": value, "machine": current_machine_id(), "changeKind": changed_kind, "runtimeRefreshed": bool(refreshed)})
 
 
 @app.command(name="add")

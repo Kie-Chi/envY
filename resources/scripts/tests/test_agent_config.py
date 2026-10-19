@@ -9,10 +9,35 @@ import typer
 from typer.testing import CliRunner
 
 from envy import agent, config
-from envy.agent import _read_values, _render, _set, _write_values, refine_managed
+from envy.agent import (
+    _read_values, _render, _runtime_change_kind, _runtime_env, _set, _write_values, refine_managed,
+)
 
 
 class AgentConfigTests(unittest.TestCase):
+    def test_runtime_change_kind_separates_live_and_apply_fields(self):
+        self.assertEqual(_runtime_change_kind("envy.agents.pi.model"), "live")
+        self.assertEqual(_runtime_change_kind("envy.llm.endpoints.stepfun.baseUrl"), "live")
+        self.assertEqual(_runtime_change_kind("envy.agents.pi.moreThinking"), "apply")
+        self.assertEqual(_runtime_change_kind("envy.agents.pi.skills"), "apply")
+
+    def test_runtime_env_contains_current_endpoint_model_and_secret(self):
+        values = {
+            "envy.agents.pi.adapter": "pi",
+            "envy.agents.pi.endpoint": "stepfun",
+            "envy.agents.pi.credential": "stepfun",
+            "envy.agents.pi.model": "model/with space",
+            "envy.llm.endpoints.stepfun.baseUrl": "https://example.test/v1",
+            "envy.llm.endpoints.stepfun.protocol": "openai-compatible",
+            "envy.llm.credentials.stepfun.secretPath": "llm/steps/apikey",
+        }
+        rendered = _runtime_env(values, {
+            "adapter": "pi", "endpoint": "stepfun", "credential": "stepfun", "model": "model/with space",
+        }, {"llm": {"steps": {"apikey": "secret-value"}}})
+        self.assertIn("export OPENAI_BASE_URL=https://example.test/v1", rendered)
+        self.assertIn("export OPENAI_API_KEY=secret-value", rendered)
+        self.assertIn("export ENVY_AGENT_MODEL='model/with space'", rendered)
+
     def test_multiline_settings_survive_shared_reader_and_rewrite(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "machine.nix"

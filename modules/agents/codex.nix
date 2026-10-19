@@ -18,6 +18,10 @@ let
         # shellcheck source=/dev/null
         source "${config.sops.templates.${templateName}.path}"
       fi
+      if [ -f "${config.envy.user.home}/.config/envy/agent-runtime/codex.env" ]; then
+        # shellcheck source=/dev/null
+        source "${config.envy.user.home}/.config/envy/agent-runtime/codex.env"
+      fi
       cmd=(${lib.escapeShellArg (lib.getExe pkgs.codex)})
       ${prompts.shellArgs "codex"}
       ${lib.concatMapStringsSep "\n" (arg: "cmd+=(${lib.escapeShellArg arg})") agentConfig.args}

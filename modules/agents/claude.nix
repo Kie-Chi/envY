@@ -36,6 +36,10 @@ let
         # shellcheck source=/dev/null
         source "${config.sops.templates.${templateName}.path}"
       fi
+      if [ -f "${config.envy.user.home}/.config/envy/agent-runtime/cc.env" ]; then
+        # shellcheck source=/dev/null
+        source "${config.envy.user.home}/.config/envy/agent-runtime/cc.env"
+      fi
 
       cmd=("${lib.getExe legacyConfig.package}")
       ${lib.concatMapStringsSep "\n" (arg: "cmd+=(${lib.escapeShellArg arg})") agentArgs}

@@ -20,6 +20,9 @@ class AgentCompletionTests(unittest.TestCase):
             "envy.agents.local-pi.endpoint": "custom",
             "envy.llm.endpoints.custom.baseUrl": "https://private.example/v1",
             "envy.llm.credentials.custom.secretPath": "llm/custom/apikey",
+            "envy.agentProfiles.fast.endpoint": "custom",
+            "envy.agentProfiles.fast.credential": "custom",
+            "envy.agentProfiles.fast.model": "fast-model",
         }) + "\n}\n")
         self.before = self.path.read_bytes()
         self.enterContext(patch.object(agent, "machine_config_file", return_value=self.path))
@@ -46,6 +49,9 @@ class AgentCompletionTests(unittest.TestCase):
         for group in ("agent", "config"):
             paths = self.complete(group, "set", "path", "envy.agents.")
             self.assertIn("envy.agents.local-pi.moreThinking", paths)
+            self.assertIn("envy.agents.local-pi.profile", paths)
+            profile_paths = self.complete(group, "set", "path", "envy.agentProfiles.fast.")
+            self.assertIn("envy.agentProfiles.fast.model", profile_paths)
             self.assertIn("envy.agents.inherited.model", paths)
             self.assertIn("envy.agents.other-pi.api", paths)
             self.assertNotIn("envy.agents.omp.api", paths)
@@ -65,6 +71,9 @@ class AgentCompletionTests(unittest.TestCase):
             ("envy.agents.retired.api", "", []),
             ("envy.agents.inherited.endpoint", "c", ["custom"]),
             ("envy.agents.inherited.credential", "s", ["shared"]),
+            ("envy.agents.local-pi.profile", "f", ["fast"]),
+            ("envy.agentProfiles.fast.endpoint", "c", ["custom"]),
+            ("envy.agentProfiles.fast.credential", "c", ["custom"]),
             ("envy.agents.inherited.adapter", "cl", ["claude-code"]),
             ("envy.llm.endpoints.custom.protocol", "an", ["anthropic-compatible"]),
             ("envy.llm.credentials.custom.kind", "t", ["token"]),
@@ -90,6 +99,18 @@ class AgentCompletionTests(unittest.TestCase):
         ):
             self.assertEqual(self.complete("agent", "add", parameter, prefix), expected)
         self.assertEqual(self.complete("agent", "credential-set", "name", "c"), ["custom"])
+        profile_command = get_command(cli).commands["agent"].commands["profile"].commands["add"]
+        endpoint = next(item for item in profile_command.params if item.name == "endpoint")
+        credential = next(item for item in profile_command.params if item.name == "credential")
+        context = click.Context(profile_command)
+        context.params = {}
+        self.assertEqual([item.value for item in endpoint.shell_complete(context, "c")], ["custom"])
+        self.assertEqual([item.value for item in credential.shell_complete(context, "c")], ["custom"])
+        use_command = get_command(cli).commands["agent"].commands["profile"].commands["use"]
+        agent_name = next(item for item in use_command.params if item.name == "agent_name")
+        profile_name = next(item for item in use_command.params if item.name == "profile_name")
+        self.assertEqual([item.value for item in agent_name.shell_complete(context, "l")], ["local-pi"])
+        self.assertEqual([item.value for item in profile_name.shell_complete(context, "f")], ["fast"])
         self.assertEqual(self.complete("agent", "credential-set", "secret_path", "llm/custom"), ["llm/custom/apikey"])
         self.assertEqual(self.complete("config", "secret-set", "yaml_path", "llm/custom"), ["llm/custom/apikey"])
 

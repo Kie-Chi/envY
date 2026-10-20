@@ -28,7 +28,9 @@ from envy.agent_completion import (
     complete_credentials,
     complete_endpoints,
     complete_managed_agent_names,
+    complete_profile_names,
 )
+
 from envy.config import _escape_nix_string, machine_config_file, read_secrets_data, set_secret_value
 from envy.evaluation import invalidate_machine_manifest, machine_manifest
 from envy.jsonio import emit, emit_error
@@ -770,9 +772,9 @@ def cmd_profile_list(json_output: bool = typer.Option(False, "--json")):
 @profile_app.command(name="add")
 def cmd_profile_add(
     name: str = typer.Argument(...),
-    endpoint: str = typer.Option(..., "--endpoint"),
+    endpoint: str = typer.Option(..., "--endpoint", autocompletion=complete_endpoints),
     model: str = typer.Option(..., "--model"),
-    credential: Optional[str] = typer.Option(None, "--credential"),
+    credential: Optional[str] = typer.Option(None, "--credential", autocompletion=complete_credentials),
     api: Optional[str] = typer.Option(None, "--api", autocompletion=complete_apis),
     context_window: Optional[int] = typer.Option(None, "--context-window"),
     max_tokens: Optional[int] = typer.Option(None, "--max-tokens"),
@@ -813,8 +815,8 @@ def cmd_profile_add(
 
 @profile_app.command(name="use")
 def cmd_profile_use(
-    agent_name: str = typer.Argument(..., metavar="AGENT"),
-    profile_name: str = typer.Argument(..., metavar="PROFILE"),
+    agent_name: str = typer.Argument(..., metavar="AGENT", autocompletion=complete_managed_agent_names),
+    profile_name: str = typer.Argument(..., metavar="PROFILE", autocompletion=complete_profile_names),
     json_output: bool = typer.Option(False, "--json"),
     yes: bool = typer.Option(False, "--yes", "-y"),
 ):

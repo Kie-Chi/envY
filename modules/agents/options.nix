@@ -4,12 +4,32 @@ let
   inherit (lib) mkOption types;
 in
 {
+  options.envy.agentProfiles = mkOption {
+    type = types.attrsOf (types.submodule ({ ... }: {
+      options = {
+        endpoint = mkOption { type = types.nonEmptyStr; description = "Named endpoint for this reusable agent profile."; };
+        credential = mkOption { type = types.nullOr types.str; default = null; description = "Logical credential reference for this reusable agent profile."; };
+        api = mkOption { type = types.nullOr (types.enum [ "openai-completions" "openai-responses" "anthropic-messages" ]); default = null; description = "Optional wire API override."; };
+        model = mkOption { type = types.nonEmptyStr; description = "Model selected by this reusable agent profile."; };
+        contextWindow = mkOption { type = types.nullOr types.ints.positive; default = null; };
+        maxTokens = mkOption { type = types.nullOr types.ints.positive; default = null; };
+      };
+    }));
+    default = {};
+    description = "Reusable non-sensitive agent model, endpoint, and credential selections.";
+  };
+
   options.envy.agents = mkOption {
     type = types.attrsOf (types.submodule ({ ... }: {
       options = {
         adapter = mkOption {
           type = types.nonEmptyStr;
           description = "Agent adapter ID that owns package, command, env mapping, and skills integration.";
+        };
+        profile = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          description = "Reusable envy.agentProfiles entry used to populate runtime selections.";
         };
         endpoint = mkOption {
           type = types.nullOr types.str;

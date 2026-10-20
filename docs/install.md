@@ -1,158 +1,40 @@
-# Installation and Bootstrap
+# 安装与 bootstrap
 
-`install.sh` 是仓库之外的一层薄 bootstrap：它负责取得 checkout，然后把控制权交给仓库内的 `setup.sh`。Machine ID、import/copy 模式、软件 exclusions、非敏感配置和 secrets 仍由 setup 流程管理
+## 入口
 
-## Requirements
-
-开始前需要：
-
-- macOS 或 Linux，具有 Bash、Git 和网络连接
-- 使用远程命令时需要 `curl`；已下载脚本可以直接用 Bash 执行
-- 运行交互式 setup 时需要真实终端。无 TTY 的 CI 环境应使用 `--no-setup`
-- 首次安装 Nix 可能要求 `sudo`。`setup.sh` 在 `china` 模式通过清华镜像运行官方 Nix 二进制安装脚本，在 `upstream` 模式使用 Determinate Nix Installer。Darwin 还会在 setup 前检查 Homebrew：缺失时先下载完整 installer，China 默认使用 USTC，失败后回退官方地址；安装后立即恢复当前进程的 Homebrew PATH，然后运行最小化的 setup flake app
-
-envY 需要 Nix 的 `nix-command` 和 `flakes` 功能。官方 Nix 安装后默认未启用它们；
-setup 和仓库内的 `./envy` 入口会通过当前进程的 `NIX_CONFIG` 临时启用，并保留已有的
-其他实验功能。apply 后，用户的 `~/.config/nix/nix.conf` 会持久启用这两个功能。
-macOS 首次 apply 的 `sudo nix run` fallback 也会显式传入对应开关。首次 setup 的
-runtime 不把镜像作为 `NIX_CONFIG` 客户端 override；trust helper 先将 daemon 自身的
-substituters 配置好并重载，因此 Thalheim/USTC 不会在 runtime 阶段被当成 untrusted。
-
-如果旧 checkout 在运行 `./setup.sh` 时提示
-`experimental Nix feature 'nix-command' is disabled`（或 `flakes` 被禁用），这是
-bootstrap 缺少功能开关；该报错本身不表示 Nix 版本不兼容。可以先临时启用后重试：
+- install.sh 在仓库外运行：取得或复用 checkout，然后交给 setup.sh。
+- setup.sh 安装 Nix，运行最小 setup flake app，再执行 setup.py。
+- setup.py 负责 machine、非敏感配置、软件 exclusions 和 sops secrets。
 
 ```bash
-export NIX_CONFIG="${NIX_CONFIG:-}
-extra-experimental-features = nix-command flakes"
-bash ./setup.sh
-```
-
-## Remote Bootstrap
-
-从默认 `master` clone 到 `~/.envy` 并启动交互式 setup：
-
-```bash
-curl --proto '=https' --tlsv1.2 -fsSL \
-  https://gh-proxy.com/https://raw.githubusercontent.com/Kie-Chi/envY/master/install.sh | bash
-```
-
-默认 bootstrap mirror 是 `china`。国内模式使用 `gh-proxy.com` 获取 GitHub 仓库，失败时
-回退到 GitHub 直连；可以通过 `ENVY_GIT_MIRROR_URL` 指定自己信任的 GitHub 代理。
-显式使用上游环境：
-
-```bash
-curl --proto '=https' --tlsv1.2 -fsSL \
-  https://raw.githubusercontent.com/Kie-Chi/envY/master/install.sh \
-  | bash -s -- --mirror upstream
-```
-
-任何 `curl | bash` 都会执行远程内容。更容易审查的方式是先下载：
-
-```bash
-curl --proto '=https' --tlsv1.2 -fL \
-  https://gh-proxy.com/https://raw.githubusercontent.com/Kie-Chi/envY/master/install.sh \
-  -o /tmp/envy-install.sh
-less /tmp/envy-install.sh
-bash /tmp/envy-install.sh
-```
-
-`master` 会持续变化。可复现安装应使用已审查的 release tag，并让 raw URL 与 clone ref 保持一致：
-
-```bash
-ENVY_RELEASE='<tag>'
-curl --proto '=https' --tlsv1.2 -fsSL \
-  "https://raw.githubusercontent.com/Kie-Chi/envY/$ENVY_RELEASE/install.sh" \
-  | ENVY_BRANCH="$ENVY_RELEASE" bash
-```
-
-## Options
-
-只取得仓库，不启动 setup：
-
-```bash
-curl --proto '=https' --tlsv1.2 -fsSL \
-  https://raw.githubusercontent.com/Kie-Chi/envY/master/install.sh \
-  | bash -s -- --no-setup
-```
-
-本地脚本支持以下参数：
-
-```text
---repo URL       Git repository URL
---branch NAME    要 clone 的 branch 或 tag，默认 master
---target PATH    checkout 路径，默认 $HOME/.envy
---mirror MODE    bootstrap mirror：china 或 upstream，默认 china
---no-setup       只 clone，不运行 setup.sh
---force, -f      重新 clone 并替换已有 checkout
---reset-secrets  使用空 secrets 启动 setup，并替换 secrets.yaml
-```
-
-对应环境变量是 `ENVY_REPOSITORY_URL`、`ENVY_BRANCH`、`ENVY_ROOT`、`ENVY_MIRROR` 和
-`ENVY_GIT_MIRROR_URL`。`ENVY_NIX_INSTALLER_URL` 可以显式覆盖 Nix installer 下载地址；Darwin 的
-`ENVY_HOMEBREW_INSTALL_URL` 可以显式指定经过信任的 Homebrew 安装脚本地址，
-`ENVY_HOMEBREW_ARTIFACT_DOMAIN` 可以显式指定 Homebrew OCI artifact mirror。China 默认使用
-USTC 的 Homebrew API/普通 bottle 源，并使用可按 digest 读取 portable Ruby 的 OCI endpoint；
-`ENVY_HOMEBREW_BOTTLE_DOMAIN` 仍可覆盖普通 bottle 源。`--reset-secrets` 也可以通过
-`bash setup.sh --reset-secrets` 使用。它不会读取旧 secrets 的值，保存时会整体替换加密文件。
-
-如果该地址提供标准 Nix 安装脚本，可再设置 `ENVY_NIX_INSTALLER_ARGS='--daemon'`。
-国内模式的默认 GitHub 代理是可替换的第三方 endpoint，使用前应确认其信任边界。例如：
-
-```bash
-ENVY_REPOSITORY_URL='git@github.com:Kie-Chi/envY.git' \
-ENVY_BRANCH='master' \
-ENVY_ROOT="$HOME/src/envy" \
-ENVY_MIRROR='china' \
 bash install.sh
+bash setup.sh
 ```
+远程 bootstrap 可用 --mirror china|upstream、固定 release/tag、指定 clone 目录；参数以 bash install.sh --help 为准。已有 checkout 会复用，不会自动创建软件选择或覆盖手工配置。
 
-`ENVY_DOTFILES` 与 `DOTFILES_DIR` 仅作为旧版本迁移输入继续被识别；新脚本、
-shell 环境和文档统一使用 `ENVY_ROOT`。已有 `~/.dotfiles` checkout 应移动到
-`~/.envy`，并把 remote 更新为 `git@github.com:Kie-Chi/envY.git`。bootstrap
-不会自动移动已有目录，也不会覆盖其中的未提交改动。
+## 镜像边界
 
-旧机器迁移后，`~/.config/dotfiles/config.nix` 或 `/etc/dotfiles/config.nix`
-可能仍引用旧目录。命名的 Linux 机器目标（例如 `linux_desktop`）的 Nix 求值不导入
-这些旧配置；只有选择兼容目标 `default` 时才会导入它们。如果 apply 在
-`homeConfigurations` 的 `optionalAttrs` 条件处报旧 `~/.dotfiles/config.nix`
-不存在，这是旧版 flake 提前导入兼容配置的问题，需要更新 checkout 中的 `flake.nix`。
-命名目标不需要为此重新创建旧 `config.nix`。
+bootstrap 的临时环境由 resources/scripts/mirror-env.sh 和 nix-trust.sh 设置；它只服务于第一次获取仓库和 setup runtime。setup 写入机器配置后，长期环境由 modules/mirrors 和 apply 管理。端点必须来自 modules/mirrors/catalog.nix。
 
-`setup.sh` 也支持 `--mirror china|upstream`。Darwin 和 Linux 的 Nix daemon 模式会拒绝普通用户
-通过 `NIX_CONFIG` 临时添加未信任的 substituter；setup 会在第一次 Nix build 前调用
-`resources/scripts/nix-trust.sh`。如果 `/etc/nix/nix.conf` include 了
-`/etc/nix/nix.custom.conf`，helper 原子维护后者的固定标记块；官方安装器未生成该 include
-时，则只在主配置中维护同一标记块，保留标记外的安装器和管理员配置。两种模式都信任 sops-nix 的
-`cache.thalheim.io` 及固定 public key；`china` 另外信任 USTC 和官方 cache key。该 block
-还启用 `nix-command` 和 `flakes`，并使用 `extra-trusted-users` 加入当前用户，不会替换管理员已有的 `trusted-users` policy。
+不要把 token 放进 URL；不要自动改系统 APT source、运行 chsrc set 或把不可信代理用于固定 hash 下载。Flake source mirror 只对带 lock hash 的受支持 source 做有校验的替换。
 
-仅当 block 需要创建或升级时才会请求 `sudo`，更改后只重启当前 active 的 Nix daemon。
-Darwin 使用 `launchctl`，兼容官方和 Determinate 的 daemon label；Linux 使用 `systemctl`。
-marker 格式损坏、配置由外部 symlink 管理或没有提权能力都会明确终止 setup；daemon 重启
-失败会还原配置并报错，避免带着实际未生效的缓存策略继续执行大规模本地构建。
-macOS 的 apply 会保留 bootstrap 的 `NIX_CONFIG`，让 sudo 下的构建继续使用所选镜像。
+## 初始化机器
 
-## Existing Checkouts
-
-目标不存在时，bootstrap 先 clone 到 `mktemp` 创建的临时目录，再移动到目标路径。clone 失败不会留下半成品 target。
-
-目标已经是 Git checkout 时，脚本默认直接使用它；不会隐式执行 `fetch`、`pull`、`reset` 或切换 branch。需要重新取得完整 checkout 时显式使用 `install.sh --force`（或 `-f`）；脚本会先在 target 同目录完成临时 clone，成功后替换旧目录，下载失败则保留旧 checkout。强制模式会删除旧 checkout 中的本地修改。进入正常工作流后使用 `envy sync`。
-
-目标存在但不是 Git checkout 时，脚本会拒绝继续且不会删除其中内容。它还拒绝把 `/` 或 `$HOME` 当作 target。
-
-## Responsibility Boundary
-
-完整流程是：
-
-```text
-install.sh -> clone/reuse checkout -> setup.sh -> nix run path:.#setup -> setup.py
+```bash
+envy host init <id>       # import 或 copy hosts/default.nix
+envy host select <id>
+envy config refine
+envy config check
+envy apply
 ```
+初始化只创建 host，不选择软件。import 会继续继承 default，copy 会创建独立快照。
 
-- `install.sh` 只负责 repository bootstrap 和终端交接。
-- `setup.sh` 只负责准备 Nix、Darwin Homebrew 和 setup runtime 并启动 setup。安装 Nix 后会在当前进程显式恢复 `/nix/var/nix/profiles/default/bin`；Homebrew 安装后会恢复 `/opt/homebrew/bin` 或 `/usr/local/bin`，不要求重新登录才能继续 setup。China 模式先按 catalog 预取带锁定 `narHash` 的 GitHub Flake source；预取失败时保留锁定 URL 回退，不修改 `flake.nix` 或 `flake.lock`。
-- `setup.py` 创建或选择 host、编辑 machine 配置和 software exclusions，并管理 sops secrets。
-- setup 的列表、输入和变更摘要会遮罩 secret，只显示是否为空，不打印 secret 原文。
+## 职责
 
-Machine policy 的 import/copy 语义及软件状态见 [machines.md](machines.md)。
-bootstrap 与 apply 后的镜像职责、APT ownership 和 GitHub/source download 限制见 [mirrors.md](mirrors.md)。
+| 部件 | 负责 |
+|---|---|
+| install.sh | checkout 与 bootstrap 参数 |
+| setup.sh | Nix/runtime 交接 |
+| setup.py | 机器配置、软件 policy、secret 保存与加密 |
+| envy apply | 求值、激活和持久镜像配置 |
+| envy sync/update | 共享分支与 input 的事务更新 |

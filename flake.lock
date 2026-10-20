@@ -32,6 +32,22 @@
         "type": "github"
       }
     },
+    "anti-defensive-writing": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1792246308,
+        "narHash": "sha256-PE9tsaNer0jeZGsxILG1EFHJySkMV1+DP3ylDSOFxDs=",
+        "owner": "Kiterlin",
+        "repo": "anti-defensive-writing",
+        "rev": "f516147d017a3fe43ae99192cb89d8261b0c8679",
+        "type": "github"
+      },
+      "original": {
+        "owner": "Kiterlin",
+        "repo": "anti-defensive-writing",
+        "type": "github"
+      }
+    },
     "darwin": {
       "inputs": {
         "nixpkgs": [
@@ -315,6 +331,7 @@
       "inputs": {
         "academic-research-skills": "academic-research-skills",
         "academic-research-skills-codex": "academic-research-skills-codex",
+        "anti-defensive-writing": "anti-defensive-writing",
         "darwin": "darwin",
         "emil-skills": "emil-skills",
         "gpt-image2-ppt-skills": "gpt-image2-ppt-skills",

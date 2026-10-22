@@ -1,4 +1,4 @@
-{ academicResearchSkills, academicResearchSkillsCodex, emilSkills, gptImage2PptSkills, pptMaster, vercelAgentSkills }:
+{ academicResearchSkills, academicResearchSkillsCodex, antiDefensiveWriting, emilSkills, gptImage2PptSkills, pptMaster, vercelAgentSkills }:
 
 {
   read = {
@@ -19,6 +19,11 @@
   };
 
   # Claude Code's upstream distribution exposes four coordinated skills.
+  anti-defensive-writing = {
+    source = antiDefensiveWriting;
+    targets = [ "codex" "claude" "claude-code" "pi" ];
+  };
+
   academic-paper = {
     source = academicResearchSkills + "/academic-paper";
     targets = [ "claude" ];

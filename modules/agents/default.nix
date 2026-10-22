@@ -1,4 +1,4 @@
-{ academicResearchSkills, academicResearchSkillsCodex, config, emilSkills, gptImage2PptSkills, lib, machinePlatform, pptMaster, vercelAgentSkills, wazaSource, ... }:
+{ academicResearchSkills, academicResearchSkillsCodex, antiDefensiveWriting, config, emilSkills, gptImage2PptSkills, lib, machinePlatform, pptMaster, vercelAgentSkills, wazaSource, ... }:
 
 {
   imports = [
@@ -32,9 +32,10 @@
 
     skills = {
       catalog = import ./skills/catalog.nix {
-        inherit academicResearchSkills academicResearchSkillsCodex emilSkills gptImage2PptSkills pptMaster vercelAgentSkills;
+        inherit academicResearchSkills academicResearchSkillsCodex antiDefensiveWriting emilSkills gptImage2PptSkills pptMaster vercelAgentSkills;
       };
       active = [
+        "anti-defensive-writing"
         "academic-research-suite"
         "academic-paper"
         "academic-paper-reviewer"

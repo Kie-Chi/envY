@@ -16,6 +16,7 @@ let
         machineSystem = system;
         academicResearchSkills = inputs.academic-research-skills;
         academicResearchSkillsCodex = inputs.academic-research-skills-codex;
+        antiDefensiveWriting = inputs.anti-defensive-writing;
         pptMaster = inputs.ppt-master;
         gptImage2PptSkills = inputs.gpt-image2-ppt-skills;
         emilSkills = inputs.emil-skills;

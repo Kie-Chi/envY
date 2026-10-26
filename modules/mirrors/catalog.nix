@@ -39,6 +39,8 @@
       debianSecurity = "https://security.debian.org/debian-security";
     };
     dockerInstallerMirror = null;
+    # Registry host substituted for docker.io in container base images.
+    docker.registry = "docker.io";
     probes = {
       common = [
         { name = "Nix cache"; url = "https://cache.nixos.org/nix-cache-info"; }
@@ -111,6 +113,7 @@
       debianSecurity = "https://mirrors.tuna.tsinghua.edu.cn/debian-security";
     };
     dockerInstallerMirror = "Aliyun";
+    docker.registry = "docker.m.daocloud.io";
     probes = {
       common = [
         { name = "Nix cache"; url = "https://mirrors.ustc.edu.cn/nix-channels/store/nix-cache-info"; }

@@ -55,6 +55,9 @@ profile // {
     debian = field "apt" "debian" profile.apt.debian;
     debianSecurity = field "apt" "debianSecurity" profile.apt.debianSecurity;
   };
+  docker = profile.docker // {
+    registry = field "docker" "registry" profile.docker.registry;
+  };
   flakeSourceMirror = valueAt [ "flakeSourceMirror" ] (profile.flakeSourceMirror or null);
   dockerInstallerMirror = valueAt [ "dockerInstallerMirror" ] profile.dockerInstallerMirror;
 }

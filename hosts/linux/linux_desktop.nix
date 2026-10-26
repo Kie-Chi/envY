@@ -87,7 +87,7 @@
   envy.agents.pi.additionalSettings = {
     compaction = {
       keepRecentTokens = 27200;
-      reserveTokens = 27200;
+      reserveTokens = 40960;
     };
     defaultTools = [ "+codemode" ];
   };

@@ -161,7 +161,7 @@ def _validate_values(values: dict[str, Any]) -> list[str]:
     endpoint_names: set[str] = set()
     credential_names: set[str] = set()
     for path, value in values.items():
-        match = re.fullmatch(r"envy\.(agents|llm\.(?:endpoints|credentials))\.([A-Za-z0-9][A-Za-z0-9_-]*)(?:\.([A-Za-z0-9_-]+))?", path)
+        match = re.fullmatch(r"envy\.(agents|agentProfiles|llm\.(?:endpoints|credentials))\.([A-Za-z0-9][A-Za-z0-9_-]*)(?:\.([A-Za-z0-9_-]+))?", path)
         if not match:
             errors.append(path)
             continue
@@ -229,13 +229,13 @@ def _validate_values(values: dict[str, Any]) -> list[str]:
         if f"envy.llm.credentials.{name}.secretPath" not in values:
             errors.append(f"envy.llm.credentials.{name}.secretPath")
     for path, value in values.items():
+        if path.startswith("envy.agents.") and path.endswith(".profile") and isinstance(value, str) and value not in declared_profiles:
+            errors.append(path)
         if not path.startswith("envy.agents.") or not path.endswith((".endpoint", ".credential")) or not isinstance(value, str):
             continue
         if path.endswith(".endpoint") and value not in declared_endpoints | _KNOWN_ENDPOINTS:
             errors.append(path)
         if path.endswith(".credential") and value not in declared_credentials | _KNOWN_CREDENTIALS:
-            errors.append(path)
-        if path.startswith("envy.agents.") and path.endswith(".profile") and value not in declared_profiles:
             errors.append(path)
     return sorted(set(errors))
 

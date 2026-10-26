@@ -27,6 +27,22 @@ class AgentConfigTests(unittest.TestCase):
         self.assertEqual(agent._profile_agent_fields(profiles["fast"])["model"], "fast-model")
         self.assertEqual(agent._runtime_change_kind("envy.agentProfiles.fast.model"), "live")
 
+    def test_validate_values_accepts_profiles_and_checks_profile_references(self):
+        values = {
+            "envy.agentProfiles.fast.endpoint": "stepfun-openai",
+            "envy.agentProfiles.fast.model": "fast-model",
+            "envy.agentProfiles.fast.api": "openai-responses",
+            "envy.agentProfiles.fast.contextWindow": 1000,
+            "envy.agents.pi.adapter": "pi",
+            "envy.agents.pi.profile": "fast",
+        }
+        self.assertEqual(agent._validate_values(values), [])
+        values["envy.agents.pi.profile"] = "missing"
+        self.assertEqual(agent._validate_values(values), ["envy.agents.pi.profile"])
+        values["envy.agents.pi.profile"] = "fast"
+        values["envy.agentProfiles.fast.unknown"] = "x"
+        self.assertEqual(agent._validate_values(values), ["envy.agentProfiles.fast.unknown"])
+
     def test_runtime_change_kind_separates_live_and_apply_fields(self):
         self.assertEqual(_runtime_change_kind("envy.agents.pi.model"), "live")
         self.assertEqual(_runtime_change_kind("envy.llm.endpoints.stepfun.baseUrl"), "live")

@@ -9,6 +9,8 @@ envY 的 modules/agents 管理 agent 安装、provider wrapper、skill catalog �
 - skills.nix：按 adapter 解析 active skill，建立 Home Manager discovery links。
 - prompts/：provider prompt。
 - web-tools.nix：受审查的 MCP 工具与 mcp-nixos。
+- pi-extensions.nix：Pi 扩展。官方示例来自锁定的 Pi source；第三方 npm 包（goal-x、btw）由 pi-npm-extension.nix 按固定版本和 registry sha512 解包，链接为 `~/.pi/agent/extensions/envy-<name>`。
+- pi-cron.nix：仅 Darwin。链接 cron 扩展，并以 Home Manager LaunchAgent `dev.pi.cron` 托管其 daemon；定时任务通过 envY `pi` wrapper 运行。
 
 skill 的 source 来自锁定 flake input；catalog 校验每个选中 source 都有 SKILL.md，并检查 target 兼容性。claude-code 与 claude 共用发现目录。
 

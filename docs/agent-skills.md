@@ -18,6 +18,14 @@ Pi 使用 codemode = only；未知 MCP 工具需按需发现。browser 登录使
 
 MCP 工具和 skill 通过项目的 source、secret、mirror 和 Nix 配置分发。
 
+## Pi 扩展
+
+envY 只管理扩展代码和 cron daemon 的 LaunchAgent。目标、任务、运行日志与 daemon 状态由扩展自己保存：goal-x 写入项目内 `.pi/goals/`（已加入全局 git ignore），cron 写入 `~/.pi/agent/cron/`。不要用 `pi install` 再安装同名包，否则会重复注册 `/goal`、`/cron` 或 `/btw`。
+
+升级 npm 扩展时，先确认新版本的 Pi peer 范围包含锁定的 Pi 版本，并确认没有运行时 dependencies，再同时更新版本、URL 和 registry integrity。
+
+官方示例 notify 与 subagent 在构建时做最小改写：notify 只在终端交互模式发送 OSC 通知；subagent 通过 envY `pi` wrapper 启动子进程，示例 agent 不固定模型而继承调用方模型。agent 链接为 `~/.pi/agent/agents/envy-<name>.md`，工作流模板提供 `/implement`、`/scout-and-plan`、`/implement-and-review`。
+
 ## Claude Code 插件
 
 envY 只在 `~/.claude/settings.json` 声明 `enabledPlugins`（skill-creator、code-review）；marketplace、插件缓存和 installed_plugins.json 由 Claude Code 自己维护。

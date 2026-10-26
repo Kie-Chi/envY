@@ -12,7 +12,8 @@
     ./skills.nix
     ./tools.nix
     ./web-tools.nix
-  ] ++ lib.optionals (machinePlatform == "linux") [ ./linux.nix ];
+  ] ++ lib.optionals (machinePlatform == "linux") [ ./linux.nix ]
+    ++ lib.optionals (machinePlatform == "darwin") [ ./pi-cron.nix ];
 
   home.file = {
     ".pi/agent/skills/read".recursive = true;

@@ -13,7 +13,7 @@ let
     else [ "--system-prompt" (forAdapter adapter) ];
 in
 {
-  inherit forAdapter fileFor;
+  inherit argsFor forAdapter fileFor;
   shellArgs = adapter: lib.concatMapStringsSep "\n"
     (arg: "cmd+=(${lib.escapeShellArg arg})") (argsFor adapter);
 }

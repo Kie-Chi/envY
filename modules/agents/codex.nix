@@ -39,8 +39,9 @@ in
     { agents.settingsFiles.codex = {
       target = ".codex/config.toml";
       format = "toml";
-    }; }
-    (lib.mkIf (machinePlatform == "linux") {
+    };
+    # amux reads these credentials on every platform; the wrapper command
+    # stays Linux-only because Darwin installs Codex as a Homebrew cask.
     sops.templates.${templateName}.content = ''
       ${lib.optionalString (endpoint != null) ''
       export OPENAI_BASE_URL=${lib.escapeShellArg endpoint.baseUrl}
@@ -52,7 +53,8 @@ in
       export OPENAI_MODEL=${lib.escapeShellArg agentConfig.model}
       ''}
       export GPT_IMAGE_MODEL_NAME=gpt-image-2
-    '';
+    ''; }
+    (lib.mkIf (machinePlatform == "linux") {
     envy.software.nix.packages.include = [ codex ];
     envy.software.nix.packages.references.codex = "local:modules/agents/codex.nix#codex";
     })

@@ -3,6 +3,7 @@
 {
   imports = [
     ./options.nix
+    ./amux
     ./claude.nix
     ./codex.nix
     ./generic.nix

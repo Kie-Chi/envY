@@ -141,4 +141,14 @@ in
     default = { };
     description = "Machine-owned agent instances and their endpoint/model selection.";
   };
+
+  # Kept outside envy.agents, whose every key is an agent instance.
+  options.envy.amux.skipPermissions = mkOption {
+    type = types.bool;
+    default = true;
+    description = ''
+      Start amux container agents with their permission prompts disabled.
+      `amux new --no-skip-permissions` keeps the prompts for one session.
+    '';
+  };
 }

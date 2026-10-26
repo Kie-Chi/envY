@@ -55,6 +55,9 @@ COMMON_MACHINE_FIELDS = [
     FieldDef(group="MIRRORS", dest="machine", path="envy.mirrors.mode", prompt="Network mirror mode",
              default_fn=lambda: os.getenv("ENVY_MIRROR", "china"),
              choices=["upstream", "china"], required=True),
+    FieldDef(group="AMUX", dest="machine", path="envy.amux.skipPermissions",
+             prompt="Skip agent permission prompts in amux containers", default_fn=lambda: "true",
+             choices=["true", "false"], required=True, nix_type="bool"),
 ]
 
 # These fields were machine-managed before endpoints and agents became

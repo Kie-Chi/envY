@@ -58,6 +58,14 @@ in
     ];
   };
 
+  # Let OSC 52 copies from terminal programs, including amux sessions, reach
+  # the macOS clipboard.
+  system.defaults.CustomUserPreferences = lib.mkIf (
+    builtins.elem "iterm2" config.envy.darwin.software.homebrew.casks.effective
+  ) {
+    "com.googlecode.iterm2".AllowClipboardAccess = true;
+  };
+
   home-manager.users."${config.envy.user.name}" = lib.mkIf (
     builtins.elem "iterm2" config.envy.darwin.software.homebrew.casks.effective
   ) {

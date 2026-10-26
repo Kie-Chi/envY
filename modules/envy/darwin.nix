@@ -93,6 +93,7 @@ in
         "envy.darwin.services.openssh.mode" = policy.services.openssh.mode;
         "envy.vscode.mode" = config.envy.vscode.mode;
         "envy.mirrors.mode" = config.envy.mirrors.mode;
+        "envy.amux.skipPermissions" = config.envy.amux.skipPermissions;
       };
       llm = {
         credentials = lib.mapAttrs (_: credential: {

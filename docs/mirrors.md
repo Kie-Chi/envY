@@ -25,6 +25,7 @@ envy.mirrors.mode = "china";
 | Darwin Homebrew | 由 Darwin activation 管理 installer、API、bottle 和 catalog 中的 artifact mirror |
 | Linux APT | envY 只管理自己的 /etc/apt/sources.list.d/envy-mirror.sources；不改系统或第三方 source |
 | Docker 等外部安装器 | 仅使用 catalog 中明确声明的 mirror 参数 |
+| 容器基础镜像 | amux 构建镜像时用 `docker.registry` 替换 docker.io；覆盖写在 machine 文件的 `envy.mirrors.overrides.docker.registry`，不修改 Docker daemon 配置 |
 
 APT 搜索、更新、安装与本地 artifact 依赖共用有效 source 集合；切回 upstream 只删除 envY 自己的文件。
 

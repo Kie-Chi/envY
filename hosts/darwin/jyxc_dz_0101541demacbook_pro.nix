@@ -1,10 +1,13 @@
-{ ... }:
+{ pkgs, ... }:
 
 {
   imports = [ ../default.nix ];
 
   # BEGIN ENVY MANAGED CONFIG
   # `envy config` updates only this block. Other machine policy stays intact.
+
+  # --- AMUX CONFIG ---
+  envy.amux.skipPermissions = true;
 
   # --- BASE CONFIG ---
   envy.user.name = "jyxc-dz-0101541";
@@ -41,6 +44,12 @@
 
   # BEGIN ENVY MANAGED SOFTWARE
   # `envy setup` and `envy software` own only these machine-local selections.
+
+  envy.darwin.software.nix.systemPackages.include = [
+    # envy: {"id":"sunshine","ref":"nix:sunshine","sourceId":"nix:nixpkgs"}
+    pkgs."sunshine"
+  ];
+  envy.darwin.software.nix.systemPackages.references = builtins.fromJSON "{\"sunshine\":\"nix:sunshine\"}";
 
   envy.darwin.software.homebrew.casks.include = [
     "steam"
@@ -99,25 +108,58 @@
   envy.llm.endpoints.xikai-openai.baseUrl = "https://api.xikai.site/v1";
   envy.llm.endpoints.xikai-openai.protocol = "openai-compatible";
 
+  # --- AGENT PROFILES ---
+  envy.agentProfiles.hb-sub2api.api = "anthropic-messages";
+  envy.agentProfiles.hb-sub2api.credential = "hbapi";
+  envy.agentProfiles.hb-sub2api.endpoint = "sub2api-anthropic";
+  envy.agentProfiles.hb-sub2api.model = "claude-opus-5";
+  envy.agentProfiles.stepfun-anthropic.api = "anthropic-messages";
+  envy.agentProfiles.stepfun-anthropic.credential = "mp-new";
+  envy.agentProfiles.stepfun-anthropic.endpoint = "stepfun-anthropic";
+  envy.agentProfiles.stepfun-anthropic.model = "claude-opus-5-5-qiye";
+  envy.agentProfiles.stepfun-openai-ds.api = "openai-responses";
+  envy.agentProfiles.stepfun-openai-ds.credential = "mp-new";
+  envy.agentProfiles.stepfun-openai-ds.endpoint = "stepfun-openai";
+  envy.agentProfiles.stepfun-openai-ds.model = "deepseek-v4.1-flash-qiye";
+  envy.agentProfiles.stepfun-openai-new.api = "openai-responses";
+  envy.agentProfiles.stepfun-openai-new.credential = "mp-new";
+  envy.agentProfiles.stepfun-openai-new.endpoint = "stepfun-openai";
+  envy.agentProfiles.stepfun-openai-new.model = "gpt-6.1-sol-qiye";
+  envy.agentProfiles.stepfun-openai.api = "openai-responses";
+  envy.agentProfiles.stepfun-openai.credential = "mp";
+  envy.agentProfiles.stepfun-openai.endpoint = "stepfun-openai";
+  envy.agentProfiles.stepfun-openai.model = "gpt-6-astra";
+  envy.agentProfiles.xikai-magpie.api = "openai-responses";
+  envy.agentProfiles.xikai-magpie.contextWindow = 272000;
+  envy.agentProfiles.xikai-magpie.credential = "xikai";
+  envy.agentProfiles.xikai-magpie.endpoint = "xikai-openai";
+  envy.agentProfiles.xikai-magpie.maxTokens = 128000;
+  envy.agentProfiles.xikai-magpie.model = "gpt-6.1-sol";
+
   # --- AGENTS ---
   envy.agents.cc.adapter = "claude-code";
   envy.agents.cc.aliases = [ "ccli" ];
-  envy.agents.cc.credential = "mp";
+  envy.agents.cc.api = "anthropic-messages";
+  envy.agents.cc.credential = "mp-new";
   envy.agents.cc.endpoint = "stepfun-anthropic";
   envy.agents.cc.model = "claude-opus-5-5-qiye";
+  envy.agents.cc.profile = "stepfun-anthropic";
   envy.agents.codex.adapter = "codex";
-  envy.agents.codex.credential = "xikai";
-  envy.agents.codex.endpoint = "xikai-openai";
-  envy.agents.codex.model = "gpt-6.1-sol";
+  envy.agents.codex.api = "openai-responses";
+  envy.agents.codex.credential = "mp-new";
+  envy.agents.codex.endpoint = "stepfun-openai";
+  envy.agents.codex.model = "gpt-6.1-sol-qiye";
+  envy.agents.codex.profile = "stepfun-openai-new";
   envy.agents.pi.adapter = "pi";
-  envy.agents.pi.additionalSettings = builtins.fromJSON "{\"compaction\": {\"keepRecentTokens\": 27200, \"reserveTokens\": 27200}, \"defaultTools\": [\"+codemode\"]}";
-  envy.agents.pi.api = "openai-responses";
+  envy.agents.pi.additionalSettings = builtins.fromJSON "{\"compaction\": {\"keepRecentTokens\": 27200, \"reserveTokens\": 40960}, \"defaultTools\": [\"+codemode\"]}";
+  envy.agents.pi.api = "anthropic-messages";
   envy.agents.pi.contextWindow = 272000;
-  envy.agents.pi.credential = "mp";
-  envy.agents.pi.endpoint = "stepfun-openai";
+  envy.agents.pi.credential = "mp-new";
+  envy.agents.pi.endpoint = "stepfun-anthropic";
   envy.agents.pi.maxTokens = 128000;
-  envy.agents.pi.model = "gpt-6.1-sol-coding";
+  envy.agents.pi.model = "claude-opus-5-5-qiye";
   envy.agents.pi.moreThinking = true;
+  envy.agents.pi.profile = "stepfun-anthropic";
   # END ENVY MANAGED AGENTS
 
 }

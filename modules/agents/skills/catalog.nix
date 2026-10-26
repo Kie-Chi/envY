@@ -1,4 +1,4 @@
-{ academicResearchSkills, academicResearchSkillsCodex, antiDefensiveWriting, emilSkills, gptImage2PptSkills, pptMaster, vercelAgentSkills }:
+{ academicResearchSkills, academicResearchSkillsCodex, antiDefensiveWriting, emilSkills, gptImage2PptSkills, pptMaster, promptMaster, vercelAgentSkills, wazaSource }:
 
 {
   read = {
@@ -83,6 +83,22 @@
     targets = [ "codex" "claude" "claude-code" "pi" ];
   };
 
+  # animate routes audits, reviews, and opportunity searches to these skills.
+  review-animations = {
+    source = emilSkills + "/skills/review-animations";
+    targets = [ "codex" "claude" "claude-code" "pi" ];
+  };
+
+  improve-animations = {
+    source = emilSkills + "/skills/improve-animations";
+    targets = [ "codex" "claude" "claude-code" "pi" ];
+  };
+
+  find-animation-opportunities = {
+    source = emilSkills + "/skills/find-animation-opportunities";
+    targets = [ "codex" "claude" "claude-code" "pi" ];
+  };
+
   # Registry IDs match SKILL.md names rather than upstream directory names.
   vercel-react-best-practices = {
     source = vercelAgentSkills + "/skills/react-best-practices";
@@ -91,6 +107,33 @@
 
   vercel-composition-patterns = {
     source = vercelAgentSkills + "/skills/composition-patterns";
+    targets = [ "codex" "claude" "claude-code" "pi" ];
+  };
+
+  web-design-guidelines = {
+    source = vercelAgentSkills + "/skills/web-design-guidelines";
+    targets = [ "codex" "claude" "claude-code" "pi" ];
+  };
+
+  # The repository root is the skill directory.
+  prompt-master = {
+    source = promptMaster;
+    targets = [ "codex" "claude" "claude-code" "pi" ];
+  };
+
+  # Waza skills run their own scripts and references relative to SKILL.md.
+  health = {
+    source = wazaSource + "/skills/health";
+    targets = [ "codex" "claude" "claude-code" "pi" ];
+  };
+
+  hunt = {
+    source = wazaSource + "/skills/hunt";
+    targets = [ "codex" "claude" "claude-code" "pi" ];
+  };
+
+  check = {
+    source = wazaSource + "/skills/check";
     targets = [ "codex" "claude" "claude-code" "pi" ];
   };
 }

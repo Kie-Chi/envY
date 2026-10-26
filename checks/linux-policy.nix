@@ -22,6 +22,7 @@ let
         emilSkills = inputs.emil-skills;
         vercelAgentSkills = inputs.vercel-agent-skills;
         wazaSource = inputs.waza;
+        promptMaster = inputs.prompt-master;
         mcpNixosPackage = inputs.mcp-nixos.packages.${system}.default;
         piSource = inputs.pi.outPath;
         piPackage = inputs.pi.packages.${system}.default;

@@ -1,4 +1,4 @@
-{ academicResearchSkills, academicResearchSkillsCodex, antiDefensiveWriting, config, emilSkills, gptImage2PptSkills, lib, machinePlatform, pptMaster, vercelAgentSkills, wazaSource, ... }:
+{ academicResearchSkills, academicResearchSkillsCodex, antiDefensiveWriting, config, emilSkills, gptImage2PptSkills, lib, machinePlatform, pptMaster, promptMaster, vercelAgentSkills, wazaSource, ... }:
 
 {
   imports = [
@@ -32,7 +32,7 @@
 
     skills = {
       catalog = import ./skills/catalog.nix {
-        inherit academicResearchSkills academicResearchSkillsCodex antiDefensiveWriting emilSkills gptImage2PptSkills pptMaster vercelAgentSkills;
+        inherit academicResearchSkills academicResearchSkillsCodex antiDefensiveWriting emilSkills gptImage2PptSkills pptMaster promptMaster vercelAgentSkills wazaSource;
       };
       active = [
         "anti-defensive-writing"
@@ -48,8 +48,16 @@
         "pick-ui-library"
         "animation-performance"
         "break-ui"
+        "review-animations"
+        "improve-animations"
+        "find-animation-opportunities"
         "vercel-react-best-practices"
         "vercel-composition-patterns"
+        "web-design-guidelines"
+        "prompt-master"
+        "health"
+        "hunt"
+        "check"
         "read"
         "browser"
       ];

@@ -45,6 +45,10 @@
       url = "github:tw93/waza";
       flake = false;
     };
+    prompt-master = {
+      url = "github:nidhinjs/prompt-master";
+      flake = false;
+    };
     mcp-nixos = {
       url = "github:utensils/mcp-nixos";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -108,6 +112,7 @@
         emilSkills = inputs.emil-skills;
         vercelAgentSkills = inputs.vercel-agent-skills;
         wazaSource = inputs.waza;
+        promptMaster = inputs.prompt-master;
         mcpNixosPackage = inputs.mcp-nixos.packages.${system}.default;
         piSource = inputs.pi.outPath;
         piPackage = inputs.pi.packages.${system}.default;

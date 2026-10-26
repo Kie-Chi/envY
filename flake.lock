@@ -327,6 +327,22 @@
         "url": "https://api.github.com/repos/Categorytyy/ppt-master/tarball/master"
       }
     },
+    "prompt-master": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1792675577,
+        "narHash": "sha256-1ApKOYmCrOr7+ln/8SZkK+7S7KTl+tTWPQCN0F3pCRw=",
+        "owner": "nidhinjs",
+        "repo": "prompt-master",
+        "rev": "49b3a72469b1e7287d66387004ccfcca90e5968a",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nidhinjs",
+        "repo": "prompt-master",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "academic-research-skills": "academic-research-skills",
@@ -341,6 +357,7 @@
         "nixpkgs": "nixpkgs_2",
         "pi": "pi",
         "ppt-master": "ppt-master",
+        "prompt-master": "prompt-master",
         "sops-nix": "sops-nix",
         "vercel-agent-skills": "vercel-agent-skills",
         "waza": "waza"

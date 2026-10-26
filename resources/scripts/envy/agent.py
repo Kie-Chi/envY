@@ -581,8 +581,13 @@ def _runtime_pi_models(values: dict[str, Any], agent: dict[str, Any]) -> dict[st
         model_data["contextWindow"] = agent["contextWindow"]
     if isinstance(agent.get("maxTokens"), int):
         model_data["maxTokens"] = agent["maxTokens"]
+    # Keep in sync with modules/agents/pi.nix: adaptive-thinking Anthropic
+    # models reject the thinking.type=disabled request Pi sends for "off".
+    thinking_level_map: dict[str, str | None] = {"off": None} if api == "anthropic-messages" else {}
     if agent.get("moreThinking"):
-        model_data["thinkingLevelMap"] = {"xhigh": "xhigh", "max": "max", "ultra": "ultra"}
+        thinking_level_map.update({"xhigh": "xhigh", "max": "max", "ultra": "ultra"})
+    if thinking_level_map:
+        model_data["thinkingLevelMap"] = thinking_level_map
     api_key = "$ANTHROPIC_API_KEY" if api == "anthropic-messages" else "$OPENAI_API_KEY"
     return {"providers": {"envy-pi": {
         "baseUrl": endpoint.get("baseUrl") or "https://api.openai.com/v1",

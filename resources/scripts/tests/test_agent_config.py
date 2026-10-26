@@ -80,6 +80,20 @@ class AgentConfigTests(unittest.TestCase):
         self.assertEqual(provider["api"], "anthropic-messages")
         self.assertEqual(provider["baseUrl"], "https://example.test/messages")
         self.assertEqual(provider["apiKey"], "$ANTHROPIC_API_KEY")
+        self.assertEqual(provider["models"][0]["thinkingLevelMap"], {"off": None})
+
+    def test_runtime_pi_models_thinking_level_map_matches_api(self):
+        anthropic = {
+            "envy.llm.endpoints.claude.baseUrl": "https://example.test",
+            "envy.llm.endpoints.claude.protocol": "anthropic-compatible",
+        }
+        merged = _runtime_pi_models(anthropic, {"endpoint": "claude", "model": "m", "moreThinking": True})
+        self.assertEqual(
+            merged["providers"]["envy-pi"]["models"][0]["thinkingLevelMap"],
+            {"off": None, "xhigh": "xhigh", "max": "max", "ultra": "ultra"},
+        )
+        openai = _runtime_pi_models({}, {"api": "openai-responses", "model": "m"})
+        self.assertNotIn("thinkingLevelMap", openai["providers"]["envy-pi"]["models"][0])
 
     def test_multiline_settings_survive_shared_reader_and_rewrite(self):
         with tempfile.TemporaryDirectory() as directory:

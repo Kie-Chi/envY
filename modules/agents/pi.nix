@@ -46,6 +46,15 @@ let
   modelConfigFor = agent: apiKey: let
     endpoint = endpointFor agent;
     api = apiFor agent endpoint;
+    # Adaptive-thinking Anthropic models reject thinking.type=disabled, which
+    # Pi sends for requests without a reasoning level (for example /btw).
+    thinkingLevelMap = lib.optionalAttrs (api == "anthropic-messages") {
+      off = null;
+    } // lib.optionalAttrs (agent.adapter == "pi" && agent.moreThinking) {
+      xhigh = "xhigh";
+      max = "max";
+      ultra = "ultra";
+    };
   in {
     providers.${providerName} = {
       baseUrl = if endpoint == null then "https://api.openai.com/v1" else endpoint.baseUrl;
@@ -65,12 +74,8 @@ let
           contextWindow = agent.contextWindow;
         } // lib.optionalAttrs (agent.maxTokens != null) {
           maxTokens = agent.maxTokens;
-        } // lib.optionalAttrs (agent.adapter == "pi" && agent.moreThinking) {
-          thinkingLevelMap = {
-            xhigh = "xhigh";
-            max = "max";
-            ultra = "ultra";
-          };
+        } // lib.optionalAttrs (thinkingLevelMap != { }) {
+          inherit thinkingLevelMap;
         })
       ];
     };

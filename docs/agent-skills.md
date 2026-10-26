@@ -18,6 +18,10 @@ Pi 使用 codemode = only；未知 MCP 工具需按需发现。browser 登录使
 
 MCP 工具和 skill 通过项目的 source、secret、mirror 和 Nix 配置分发。
 
+## Claude Code 插件
+
+envY 只在 `~/.claude/settings.json` 声明 `enabledPlugins`（skill-creator、code-review）；marketplace、插件缓存和 installed_plugins.json 由 Claude Code 自己维护。
+
 ```bash
 nix flake check path:. --no-build
 envy check --all

@@ -109,6 +109,11 @@
     # machine-owned value replaces this mkDefault during migration, avoiding
     # list concatenation when the block also declares ccli.
     aliases = lib.mkDefault [ "ccli" ];
+    # Claude Code installs enabled marketplace plugins and owns their cache.
+    additionalSettings.enabledPlugins = {
+      "skill-creator@claude-plugins-official" = lib.mkDefault true;
+      "code-review@claude-plugins-official" = lib.mkDefault true;
+    };
   };
 
   # Pi is the upstream extensible harness.

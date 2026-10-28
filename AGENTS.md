@@ -28,7 +28,7 @@ Cross-platform Nix configuration for Darwin (aarch64-darwin) and Linux (x86_64-l
 | `.device-label` | Gitignored device-local TOML identity: machine target and sops key label only. |
 | `modules/envy/options.nix` | `envy.*` schema for meaningful machine values, package/Homebrew selections, and metadata. |
 | `modules/envy/darwin.nix` / `modules/envy/linux.nix` / `modules/envy/home.nix` | Platform manifest and package/Homebrew aggregators. |
-| `modules/llm/default.nix` | Shared LLM sops declarations, environment template, and shell integration. |
+| `modules/llm/default.nix` | Declares one `llm-credential-<name>` sops secret per logical LLM credential. |
 | `modules/mirrors/` | Versioned mirror catalog, common ecosystem environment, and Darwin/Linux implementations. |
 | `modules/cores/secrets.nix` | Core password secret required by host-level activation tasks. |
 | `modules/libs/sys.nix` | Provides the `sys` module argument from `activation.nix` (log/esudo/sops prelude and `task.activation`), `deploy.nix` (render, root deploy, writable merge), and Linux-only `linux-packages.nix`. |
@@ -86,17 +86,17 @@ composition root or cross-platform dispatcher owns that boundary.
 
 | Context | Format | Example |
 |---|---|---|
-| Non-sensitive machine config | `envy.xxx.yyy` (Nix option) | `envy.llm.steps.url` |
-| sops secret name | `xxx-yyy-zzz` (hyphen-separated) | `sops.secrets.llm-steps-apikey` |
+| Non-sensitive machine config | `envy.xxx.yyy` (Nix option) | `envy.git.email` |
+| sops secret name | `xxx-yyy-zzz` (hyphen-separated) | `sops.secrets.llm-credential-stepfun` |
 | sops secret key in YAML | `xxx/yyy/zzz` (slash-separated) | `llm/steps/apikey` |
-| sops placeholder | Same as secret name | `config.sops.placeholder.llm-steps-apikey` |
+| sops placeholder | Same as secret name | `config.sops.placeholder.llm-credential-stepfun` |
 
 ### Secret flow
 
 1. `setup.py` collects values → writes the managed blocks in the selected machine file + temporary plaintext `secrets.yaml` → encrypts secrets with sops → offers a scoped commit for that machine file and changed sops files
 2. The platform apply command evaluates `hosts/<platform>/<id>.nix`; sops-nix decrypts secrets during activation
 3. Decrypted secrets available as file paths (`config.sops.secrets.xxx.path`) or in rendered templates (`config.sops.placeholder.xxx`)
-4. Owning features declare their secrets and templates: `llm` owns `env-secrets`, Darwin proxies own `mihomo-config`, and Raycast owns `raycast-providers`
+4. Owning features declare their secrets and templates: `llm` owns the `llm-credential-*` secrets, Darwin proxies own `mihomo-config`, and Raycast owns `raycast-providers`
 
 ### age key management
 

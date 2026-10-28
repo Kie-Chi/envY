@@ -1148,7 +1148,7 @@ def _run_setup(session: _SetupSession) -> int:
         raise _SetupStop(0)
 
     # Catch empty/invalid required fields before the destructive save. Otherwise
-    # write_machine_nix persists e.g. `envy.llm.steps.url = ""`, the Nix manifest
+    # write_machine_nix persists e.g. `envy.git.email = ""`, the Nix manifest
     # rejects it, and the FileTransaction rolls everything back — silently
     # discarding the user's edits with only a cryptic `""` from the evaluator.
     if not validate_required_fields(new_values):

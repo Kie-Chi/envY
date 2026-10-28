@@ -1,4 +1,4 @@
-{ academicResearchSkills, academicResearchSkillsCodex, antiDefensiveWriting, config, emilSkills, gptImage2PptSkills, lib, machinePlatform, pptMaster, promptMaster, vercelAgentSkills, wazaSource, ... }:
+{ academicResearchSkills, academicResearchSkillsCodex, antiDefensiveWriting, emilSkills, gptImage2PptSkills, lib, machinePlatform, pptMaster, promptMaster, vercelAgentSkills, wazaSource, ... }:
 
 {
   imports = [
@@ -82,15 +82,15 @@
 
   envy.llm.endpoints = {
     stepfun-openai = {
-      baseUrl = lib.mkDefault "${lib.removeSuffix "/" config.envy.llm.steps.url}/v1";
+      baseUrl = lib.mkDefault "https://stepfun.com/v1";
       protocol = lib.mkDefault "openai-compatible";
     };
     stepfun-anthropic = {
-      baseUrl = lib.mkDefault config.envy.llm.steps.url;
+      baseUrl = lib.mkDefault "https://stepfun.com";
       protocol = lib.mkDefault "anthropic-compatible";
     };
     deepseek-openai = {
-      baseUrl = lib.mkDefault config.envy.llm.deepseek.url;
+      baseUrl = lib.mkDefault "https://api.deepseek.com";
       protocol = lib.mkDefault "openai-compatible";
     };
   };
@@ -99,14 +99,14 @@
     adapter = lib.mkDefault "codex";
     endpoint = lib.mkDefault "stepfun-openai";
     credential = lib.mkDefault "stepfun";
-    model = lib.mkDefault config.envy.llm.steps.model;
+    model = lib.mkDefault "step-3.7-flash";
   };
 
   envy.agents.cc = {
     adapter = lib.mkDefault "claude-code";
     endpoint = lib.mkDefault "stepfun-anthropic";
     credential = lib.mkDefault "stepfun";
-    model = lib.mkDefault config.envy.llm.steps.model;
+    model = lib.mkDefault "step-3.7-flash";
     # Keep the compatibility alias when no machine block exists. A normal
     # machine-owned value replaces this mkDefault during migration, avoiding
     # list concatenation when the block also declares ccli.

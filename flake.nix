@@ -203,10 +203,6 @@
             envy.repository.path = get [ "dotfiles" "path" ] "${userHome}/.envy";
             envy.git.name = get [ "git" "name" ] user;
             envy.git.email = get [ "git" "email" ] "${user}@localhost";
-            envy.llm.steps.url = get [ "llm" "steps" "url" ] "https://models-proxy.stepfun-inc.com";
-            envy.llm.steps.model = get [ "llm" "steps" "model" ] "step-3.7-flash";
-            envy.llm.deepseek.url = get [ "llm" "deepseek" "url" ] "https://api.deepseek.com";
-            envy.llm.deepseek.model = get [ "llm" "deepseek" "model" ] "deepseek-v4-pro";
             envy.vscode.mode = get [ "vscode" "mode" ] "remote";
             envy.linux.option = get [ "home" "option" ] "desktop";
             envy.linux.desktop = get [ "home" "desktop" ] "all";
@@ -482,7 +478,18 @@
             && configuration.config.envy.machine.manifest ? shell
             && configuration.config.envy.machine.manifest.software.groups ? "native.system.package"
             && !(configuration.config.envy.machine.manifest.software.groups ? "homebrew.system.cask"))
-          (builtins.attrValues homeConfigurations);
+          (builtins.attrValues homeConfigurations)
+        && lib.all
+          (home:
+            # Agents, Raycast, and Zotero read LLM keys only through logical
+            # credentials; scalar-era names such as llm-steps-apikey are retired.
+            lib.all
+              (name: !(lib.hasPrefix "llm-" name) || lib.hasPrefix "llm-credential-" name)
+              (builtins.attrNames home.sops.secrets))
+          (map
+            (configuration: configuration.config.home-manager.users.${configuration.config.envy.user.name})
+            (builtins.attrValues darwinConfigurations)
+          ++ map (configuration: configuration.config) (builtins.attrValues homeConfigurations));
       mkPlatformOptionCheck = system:
         assert import ./checks/legacy-linux-compatibility.nix { inherit inputs; };
         assert import ./checks/agent-skills.nix { inherit inputs; };

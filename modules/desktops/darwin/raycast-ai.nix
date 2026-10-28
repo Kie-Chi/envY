@@ -30,11 +30,11 @@
       providers:
         - id: stepfun
           name: StepFun
-          base_url: ${config.envy.llm.steps.url}
+          base_url: https://stepfun.com
           api_keys:
-            stepfun: ${config.sops.placeholder.llm-steps-apikey}
+            stepfun: ${config.sops.placeholder.llm-credential-stepfun}
           models:
-            - id: ${config.envy.llm.steps.model}
+            - id: step-3.7-flash
               name: Step 3.7 Flash
               context: 256000
               abilities:
@@ -48,11 +48,11 @@
                   supported: true
         - id: deepseek
           name: DeepSeek
-          base_url: ${config.envy.llm.deepseek.url}
+          base_url: https://api.deepseek.com
           api_keys:
-            raycast: ${config.sops.placeholder.llm-deepseek-apikey}
+            raycast: ${config.sops.placeholder.llm-credential-deepseek}
           models:
-            - id: ${config.envy.llm.deepseek.model}
+            - id: deepseek-v4-pro
               name: DeepSeek V4 Pro
               context: 200000
               abilities:

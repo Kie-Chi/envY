@@ -49,6 +49,10 @@ jobs:
         run: nix build "path:.#checks.${{ matrix.system }}.envy-python-tests"
       - name: Run shell checks
         run: nix build "path:.#checks.${{ matrix.system }}.envy-shell-checks"
+      - name: Lint Python and Nix
+        run: nix build "path:.#checks.${{ matrix.system }}.envy-lint"
+      - name: Run agent tool tests
+        run: nix build "path:.#checks.${{ matrix.system }}.envy-agent-tests"
       - name: Guard encrypted secrets
         run: nix build "path:.#checks.${{ matrix.system }}.secret-safety"
       - name: Check platform option boundaries

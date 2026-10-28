@@ -329,7 +329,45 @@
           bash -n resources/scripts/mirror-env.sh
           bash -n ${./resources/scripts/flake-source-mirror.sh}
           bash -n resources/scripts/nix-trust.sh
-          shellcheck -x envy install.sh setup.sh requires.sh resources/scripts/mirror-env.sh resources/scripts/flake-source-mirror.sh resources/scripts/nix-trust.sh
+          shellcheck -x envy install.sh setup.sh requires.sh \
+            resources/scripts/mirror-env.sh resources/scripts/flake-source-mirror.sh \
+            resources/scripts/nix-trust.sh resources/scripts/nix-darwin-etc.sh \
+            resources/scripts/spk resources/scripts/ppack resources/scripts/scrctl \
+            resources/helpers/fix-pipewire resources/helpers/nscrctl \
+            resources/helpers/quake resources/helpers/screenshot \
+            modules/agents/amux/image/entry.sh
+          # Sourced fragments carry no shebang; name the shell that reads them.
+          shellcheck -s sh modules/agents/amux/image/profile.sh
+          shellcheck -s bash files/fcitx/deploy.sh
+          touch "$out"
+        '';
+
+      mkEnvyLintCheck = system:
+        let pkgs = nixpkgs.legacyPackages.${system};
+        in pkgs.runCommand "envy-lint" {
+          nativeBuildInputs = [ pkgs.python3Packages.pyflakes pkgs.deadnix ];
+        } ''
+          cd ${./.}
+          pyflakes setup.py resources/scripts/envy resources/scripts/tests resources/helpers modules/agents
+          deadnix --fail .
+          touch "$out"
+        '';
+
+      # Agent tools also run these tests while building their packages, but
+      # CI evaluates with --no-build, so expose them as standalone checks.
+      mkEnvyAgentCheck = system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          python = pkgs.python3.withPackages (ps: [ ps.readability-lxml ps.html2text ]);
+        in pkgs.runCommand "envy-agent-tests" {
+          nativeBuildInputs = [ python pkgs.git pkgs.zsh ];
+        } ''
+          export HOME="$TMPDIR/home"
+          mkdir -p "$HOME"
+          export PYTHONPYCACHEPREFIX="$TMPDIR/pycache"
+          AMUX_PATH=${./modules/agents/amux/amux.py} python ${./modules/agents/tests/test_amux.py}
+          zsh -n ${./modules/agents/amux/_amux}
+          ENVY_READER_PATH=${./modules/agents/skills/read/scripts/read.py} python ${./modules/agents/tests/test_reader.py}
           touch "$out"
         '';
 
@@ -478,10 +516,14 @@
       checks.aarch64-darwin.envy-python-tests = mkEnvyPythonCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-shell-checks = mkEnvyShellCheck "aarch64-darwin";
       checks.aarch64-darwin.secret-safety = mkSecretSafetyCheck "aarch64-darwin";
+      checks.aarch64-darwin.envy-lint = mkEnvyLintCheck "aarch64-darwin";
+      checks.aarch64-darwin.envy-agent-tests = mkEnvyAgentCheck "aarch64-darwin";
       checks.x86_64-linux.platform-option-boundaries = mkPlatformOptionCheck "x86_64-linux";
       checks.x86_64-linux.linux-policy-boundaries = linuxPolicyCheck;
       checks.x86_64-linux.envy-python-tests = mkEnvyPythonCheck "x86_64-linux";
       checks.x86_64-linux.envy-shell-checks = mkEnvyShellCheck "x86_64-linux";
       checks.x86_64-linux.secret-safety = mkSecretSafetyCheck "x86_64-linux";
+      checks.x86_64-linux.envy-lint = mkEnvyLintCheck "x86_64-linux";
+      checks.x86_64-linux.envy-agent-tests = mkEnvyAgentCheck "x86_64-linux";
     };
 }

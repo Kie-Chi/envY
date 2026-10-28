@@ -11,7 +11,12 @@ from rich.table import Table
 from envy import log
 from envy.config import read_machine_nix, read_secrets_yaml
 from envy.doctor.runner import DEFAULT_CHECKS, exit_code, run_sections
-from envy.evaluation import machine_manifest, manifest_settings, manifest_software_groups
+from envy.evaluation import (
+    last_manifest_error,
+    machine_manifest,
+    manifest_settings,
+    manifest_software_groups,
+)
 from envy.process import run_process
 from envy.schemas.config import MACHINE_FIELDS, SECRET_FIELDS
 from envy.utils import (
@@ -70,6 +75,19 @@ def _config_snapshot(manifest: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def _software_snapshot(manifest: dict[str, Any] | None) -> dict[str, Any]:
+    if manifest is None:
+        # Counts are unknown, not zero: a failed or timed-out evaluation must
+        # not look like a machine without software.
+        return {
+            "schemaVersion": 1,
+            "machine": current_machine_id(),
+            "available": False,
+            "error": last_manifest_error() or "machine manifest is unavailable",
+            "groups": None,
+            "included": None,
+            "effective": None,
+            "excluded": None,
+        }
     groups = manifest_software_groups(manifest)
     included = 0
     effective = 0
@@ -86,7 +104,8 @@ def _software_snapshot(manifest: dict[str, Any] | None) -> dict[str, Any]:
         excluded += len((include_ids | exclude_ids) - effective_ids)
     return {
         "schemaVersion": 1,
-        "machine": manifest.get("id", current_machine_id()) if manifest else current_machine_id(),
+        "machine": manifest.get("id", current_machine_id()),
+        "available": True,
         "groups": len(groups),
         "included": included,
         "effective": effective,
@@ -158,6 +177,13 @@ def _recommendations(payload: dict[str, Any]) -> list[dict[str, str]]:
     doctor = payload["doctor"]["summary"]
     git = payload["git"]
     generation = payload["generation"]
+    software = payload["software"]
+    if not software.get("available", True):
+        recommendations.append({
+            "label": "Check machine evaluation",
+            "command": "envy host check",
+            "reason": f"machine manifest could not be evaluated: {software['error']}",
+        })
     if doctor["error"]:
         recommendations.append({
             "label": "Inspect health errors",
@@ -247,10 +273,14 @@ def render(payload: dict[str, Any]) -> None:
         "Generation",
         str(current.get("number", "not detected")),
     )
-    table.add_row(
-        "Software",
-        f"{software['effective']} effective · {software['excluded']} excluded · {software['groups']} groups",
-    )
+    if software.get("available", True):
+        software_text = (
+            f"{software['effective']} effective · {software['excluded']} excluded · "
+            f"{software['groups']} groups"
+        )
+    else:
+        software_text = f"unavailable · {software['error']}"
+    table.add_row("Software", software_text)
     table.add_row(
         "Doctor",
         f"{doctor['ok']} OK · {doctor['warn']} warnings · {doctor['error']} errors",

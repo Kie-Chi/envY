@@ -80,7 +80,6 @@ def prepare_setup_age_key() -> PreparedDeviceKey:
     if AGE_KEY_FILE.exists():
         current_pub = get_current_device_public_key()
         if current_pub:
-            from envy.keys.storage import prepare_device_age_key
             return prepare_device_age_key(AGE_KEY_FILE.read_text())
 
     ssh_key = HOME_DIR / ".ssh" / "id_ed25519"

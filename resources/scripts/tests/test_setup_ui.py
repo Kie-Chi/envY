@@ -1,5 +1,6 @@
 import importlib.util
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -93,6 +94,25 @@ class SetupUiTests(unittest.TestCase):
         self.assertEqual(values, {})
         self.assertFalse(replace)
         self.assertTrue(cancelled)
+
+    def test_ssh_identity_prepares_a_key_when_no_age_key_exists(self):
+        setup = _load_setup_module()
+        staged = object()
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            (home / ".ssh").mkdir()
+            (home / ".ssh" / "id_ed25519").write_text("ssh-private-key\n")
+            with patch.object(setup, "AGE_KEY_FILE", home / "age" / "keys.txt"), patch.object(
+                setup, "AGE_KEY_DIR", home / "age"
+            ), patch.object(setup, "HOME_DIR", home), patch.object(
+                setup, "run_cmd", return_value="AGE-SECRET-KEY-TEST"
+            ) as convert, patch.object(
+                setup, "prepare_device_age_key", return_value=staged
+            ) as prepare, patch.object(setup, "prepare_generated_device_age_key") as generate:
+                self.assertIs(setup.prepare_setup_age_key(), staged)
+        self.assertEqual(convert.call_args.args[0][:3], ["ssh-to-age", "-private-key", "-i"])
+        prepare.assert_called_once_with("AGE-SECRET-KEY-TEST")
+        generate.assert_not_called()
 
     def test_changes_summary_never_prints_secret_values(self):
         setup = _load_setup_module()

@@ -104,6 +104,7 @@ Hybrid approach (in `setup.py`):
 - Else → `age-keygen` generates new key
 - Key stored at `~/Library/Application Support/sops/age/keys.txt` on Darwin or `~/.config/sops/age/keys.txt` on Linux
 - New device: add age public key to `.sops.yaml`, then `sops updatekeys secrets/secrets.yaml`
+- The age key and activation-decrypted secrets (including the sudo password) are readable by every process running as the user, including host-side agents. Run untrusted agents through `amux`, whose containers receive only the agent credentials they need.
 
 ## Commands
 

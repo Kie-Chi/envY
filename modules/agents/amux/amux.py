@@ -27,6 +27,7 @@ import subprocess
 import sys
 import termios
 import time
+import tomllib
 import tty
 import urllib.request
 from dataclasses import dataclass
@@ -51,6 +52,17 @@ DOCKER_SYSTEMS = {"arm64": "aarch64-linux", "amd64": "x86_64-linux"}
 NPM_PLATFORMS = {"arm64": "linux-arm64", "amd64": "linux-x64"}
 VERSION_TTL = 24 * 3600
 FORMAT_RE = re.compile(r"#\{(\w+)\}")
+# Host history shared at the same paths, so sessions resume on either side.
+# State databases stay per container: SQLite locking is unreliable across
+# the VM file share, and host and container agents differ in version.
+HISTORY = {"claude": (".claude/projects",), "codex": (".codex/sessions", ".codex/archived_sessions")}
+# Codex indexes rollouts into its state database only once, so a fresh
+# per-container database is what makes host sessions created later visible.
+CODEX_SQLITE_HOME = "/tmp/amux-codex"
+# Codex refuses to redefine these provider IDs.
+CODEX_BUILTIN_PROVIDERS = {"openai", "ollama", "lmstudio"}
+PROVIDER_RE = re.compile(r"[A-Za-z0-9_-]+")
+UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
 # tmux.conf binds these keys to "detach-client -E 'exit N'".
 EXIT_NEXT, EXIT_PREV, EXIT_CHOOSE = 10, 11, 12
@@ -410,6 +422,7 @@ def plan_mounts(
     etc: str,
     paste_dir: str,
     ssh_agent: str | None,
+    history: Iterable[str] = (),
 ) -> list[Mount]:
     """Same-path mounts for the session; Docker mounts parents before children."""
     for path in [root, *(path for path, _ in add_dirs)]:
@@ -438,10 +451,71 @@ def plan_mounts(
     for target, source in sorted(skills.items()):
         if os.path.isdir(source):
             mounts.append(Mount(source, target, readonly=True))
+    mounts += [Mount(os.path.realpath(path), path) for path in history]
     mounts.append(Mount(paste_dir, PASTE_MOUNT, readonly=True))
     if ssh_agent:
         mounts.append(Mount(ssh_agent, SSH_AGENT_MOUNT))
     return mounts
+
+
+def history_dirs(agent: str, home: str) -> list[str]:
+    """The agent's host history directories, created private when missing."""
+    paths = [os.path.join(home, path) for path in HISTORY[agent]]
+    for path in paths:
+        os.makedirs(path, mode=0o700, exist_ok=True)
+    return paths
+
+
+def resumed_session(agent: str, agent_args: list[str]) -> str | None:
+    """The session UUID that the agent arguments resume or fork, if any."""
+    if agent == "codex":
+        start = next((i for i, arg in enumerate(agent_args) if arg in ("resume", "fork")), None)
+        candidates = [] if start is None else agent_args[start + 1:]
+    else:
+        candidates = [agent_args[i + 1] for i, arg in enumerate(agent_args[:-1]) if arg in ("-r", "--resume")]
+        candidates += [arg.split("=", 1)[1] for arg in agent_args if arg.startswith("--resume=")]
+    return next((arg for arg in candidates if UUID_RE.fullmatch(arg)), None)
+
+
+def first_cwd(path: Path, limit: int = 100) -> str | None:
+    """The first working directory recorded in a JSON Lines transcript."""
+    try:
+        with path.open(encoding="utf-8", errors="replace") as lines:
+            for _, line in zip(range(limit), lines):
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                # Codex nests it in session_meta; Claude Code puts it on each entry.
+                payload = record.get("payload")
+                cwd = payload.get("cwd") if isinstance(payload, dict) else record.get("cwd")
+                if isinstance(cwd, str) and cwd:
+                    return cwd
+    except OSError:
+        pass
+    return None
+
+
+def session_workdir(agent: str, home: str, session: str) -> str | None:
+    """Where a host history session ran, so its project can be shared again."""
+    session = session.lower()
+    if agent == "codex":
+        files = [path for root in HISTORY["codex"]
+                 for path in sorted(Path(home, root).glob(f"**/rollout-*-{session}.jsonl"))]
+    else:
+        files = sorted(Path(home, HISTORY["claude"][0]).glob(f"*/{session}.jsonl"))
+    return next(filter(None, map(first_cwd, files)), None)
+
+
+def host_timezone() -> str | None:
+    """The host's IANA time zone name; the container defaults to UTC."""
+    zone = os.environ.get("TZ", "").lstrip(":")
+    if not zone:
+        target = os.path.realpath("/etc/localtime")
+        zone = target.rsplit("/zoneinfo/", 1)[1] if "/zoneinfo/" in target else ""
+    return zone if re.fullmatch(r"[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*", zone) else None
 
 
 def host_ssh_agent() -> str | None:
@@ -470,16 +544,33 @@ def load_env(files: list[str], names: list[str]) -> dict[str, str]:
     return {name: values[name] for name in names if values.get(name)}
 
 
-def codex_provider_args(env: dict[str, str]) -> list[str]:
+def codex_provider_id(home: str) -> str:
+    """The host's Codex provider ID, or envy.
+
+    Codex lists only sessions recorded under the current provider ID, so
+    reusing the host's ID keeps shared sessions visible in the picker. The
+    endpoint and key still come from envY.
+    """
+    try:
+        with open(os.path.join(home, ".codex", "config.toml"), "rb") as file:
+            provider = tomllib.load(file).get("model_provider")
+    except (OSError, tomllib.TOMLDecodeError):
+        return "envy"
+    if isinstance(provider, str) and PROVIDER_RE.fullmatch(provider) and provider not in CODEX_BUILTIN_PROVIDERS:
+        return provider
+    return "envy"
+
+
+def codex_provider_args(env: dict[str, str], provider: str = "envy") -> list[str]:
     """Point Codex at the envY endpoint without persisting the key in auth.json."""
     args = []
     if env.get("OPENAI_BASE_URL"):
         args += [
-            "-c", 'model_provider="envy"',
-            "-c", 'model_providers.envy.name="envy"',
-            "-c", f"model_providers.envy.base_url={json.dumps(env['OPENAI_BASE_URL'])}",
-            "-c", 'model_providers.envy.env_key="OPENAI_API_KEY"',
-            "-c", 'model_providers.envy.wire_api="responses"',
+            "-c", f"model_provider={json.dumps(provider)}",
+            "-c", f"model_providers.{provider}.name={json.dumps(provider)}",
+            "-c", f"model_providers.{provider}.base_url={json.dumps(env['OPENAI_BASE_URL'])}",
+            "-c", f'model_providers.{provider}.env_key="OPENAI_API_KEY"',
+            "-c", f'model_providers.{provider}.wire_api="responses"',
         ]
     if env.get("OPENAI_MODEL"):
         args += ["-m", env["OPENAI_MODEL"]]
@@ -487,10 +578,10 @@ def codex_provider_args(env: dict[str, str]) -> list[str]:
 
 
 def agent_argv(spec: dict, agent: str, env: dict[str, str], skip: bool,
-               add_dirs: list[tuple[str, bool]], extra: list[str]) -> list[str]:
+               add_dirs: list[tuple[str, bool]], extra: list[str], provider: str = "envy") -> list[str]:
     argv = [spec["command"], *(spec["skipArgs"] if skip else spec.get("promptArgs", [])), *spec["args"]]
     if agent == "codex":
-        argv += codex_provider_args(env)
+        argv += codex_provider_args(env, provider)
     if spec.get("addDirFlag"):
         for path, _ in add_dirs:
             argv += [spec["addDirFlag"], path]
@@ -819,7 +910,19 @@ def cmd_new(args: argparse.Namespace, cfg: dict) -> int:
     agent = args.agent
     spec = cfg["agents"][agent]
     home = os.path.realpath(cfg["home"])
-    workdir = os.path.realpath(args.c or os.getcwd())
+    share_history = not args.no_history
+    workdir = args.c
+    session = resumed_session(agent, args.agent_args) if share_history and not workdir else None
+    if session:
+        # The agents filter by working directory, and the session's project
+        # must be mounted for it to continue.
+        found = session_workdir(agent, home, session)
+        if found and os.path.isdir(found):
+            print(f"amux: resuming {session} in {found}", file=sys.stderr)
+            workdir = found
+        elif found:
+            print(f"amux: {session} ran in {found}, which no longer exists", file=sys.stderr)
+    workdir = os.path.realpath(workdir or os.getcwd())
     if not os.path.isdir(workdir):
         raise AmuxError(f"not a directory: {workdir}")
     sessions = list_sessions()
@@ -843,10 +946,12 @@ def cmd_new(args: argparse.Namespace, cfg: dict) -> int:
     mounts = plan_mounts(
         root=root, home=home, layout=layout, add_dirs=add_dirs, skills=spec.get("skills", {}),
         etc=cfg["etc"], paste_dir=paste_dir, ssh_agent=host_ssh_agent(),
+        history=history_dirs(agent, home) if share_history else [],
     )
     env = load_env(spec["envFiles"], spec["env"])
     skip = cfg["skipPermissions"] and not args.no_skip_permissions
-    argv = agent_argv(spec, agent, env, skip, add_dirs, args.agent_args)
+    provider = codex_provider_id(home) if agent == "codex" else "envy"
+    argv = agent_argv(spec, agent, env, skip, add_dirs, args.agent_args, provider)
 
     image, _ = ensure_image(cfg, docker_arch(cfg))
     tools = ensure_tools(cfg, image)
@@ -862,6 +967,10 @@ def cmd_new(args: argparse.Namespace, cfg: dict) -> int:
            "--env", f"PATH={tools}/bin:{home}/.local/bin:{SYSTEM_PATH}"]
     for key, value in sorted(cfg["env"].items()):
         run += ["--env", f"{key}={value}"]
+    if zone := host_timezone():
+        run += ["--env", f"TZ={zone}"]
+    if agent == "codex" and share_history:
+        run += ["--env", f"CODEX_SQLITE_HOME={CODEX_SQLITE_HOME}"]
     if any(m.target == SSH_AGENT_MOUNT for m in mounts):
         run += ["--env", f"SSH_AUTH_SOCK={SSH_AGENT_MOUNT}"]
     for variable in env:
@@ -950,7 +1059,11 @@ def parser() -> argparse.ArgumentParser:
                      help="also share PATH, read-only unless suffixed with :rw")
     new.add_argument("--no-skip-permissions", action="store_true",
                      help="keep the agent's permission prompts for this session")
+    new.add_argument("--no-history", action="store_true",
+                     help="keep this session's history in the amux volume instead of the host's")
     new.add_argument("agent", nargs="?", choices=AGENTS, default="claude")
+    new.add_argument("agent_args", nargs=argparse.REMAINDER, metavar="ARG",
+                     help="arguments for the agent, such as codex resume or claude --continue")
     new.set_defaults(func=cmd_new)
 
     attach = commands.add_parser("attach-session", aliases=["attach", "a", "at"], help="attach to a session")
@@ -974,17 +1087,10 @@ def parser() -> argparse.ArgumentParser:
 
 
 def parse(argv: list[str]) -> argparse.Namespace:
-    agent_args: list[str] = []
-    if "--" in argv:
-        split = argv.index("--")
-        argv, agent_args = argv[:split], argv[split + 1:]
+    # Like tmux new-session's command, everything after the agent is its own.
     if not argv or (argv[0].startswith("-") and argv[0] not in ("-h", "--help")) or argv[0] in AGENTS:
         argv = ["new", *argv]
-    args = parser().parse_args(argv)
-    if agent_args and args.command not in ("new", "new-session"):
-        parser().error("agent arguments after -- require the new command")
-    args.agent_args = agent_args
-    return args
+    return parser().parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:

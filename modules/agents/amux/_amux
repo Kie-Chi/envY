@@ -13,13 +13,52 @@ _amux_formats() {
   _wanted formats expl 'format' compadd -a formats
 }
 
+# Words after the agent belong to it; offer only its session commands and
+# leave session IDs to the agent's own picker.
+_amux_agent_args() {
+  local -a commands
+  case $words[1] in
+    codex)
+      if (( CURRENT == 2 )); then
+        commands=('resume:resume a previous session' 'fork:fork a previous session')
+        _describe -t commands 'codex command' commands
+      elif [[ $words[2] == (resume|fork) ]]; then
+        shift words; (( CURRENT-- ))
+        _arguments \
+          '--last[use the most recent session]' \
+          '--all[show sessions from every directory]' \
+          '--include-non-interactive[include non-interactive sessions]'
+      fi
+      ;;
+    claude)
+      _arguments \
+        '(-r --resume -c --continue)'{-r,--resume}'[resume a session by ID or from the picker]' \
+        '(-r --resume -c --continue)'{-c,--continue}'[continue the most recent session here]' \
+        '--fork-session[use a new session ID when resuming]'
+      ;;
+  esac
+}
+
 _amux_new() {
+  local i=2
+  while (( i < CURRENT )); do
+    case $words[i] in
+      -s|-c|--add-dir) (( i += 2 )) ;;
+      claude|codex)
+        shift $(( i - 1 )) words; (( CURRENT -= i - 1 ))
+        _amux_agent_args
+        return
+        ;;
+      *) (( i++ )) ;;
+    esac
+  done
   _arguments -s -S \
     '-s[session name]:session name:' \
     '-d[do not attach]' \
     '-c[working directory]:directory:_directories' \
     '*--add-dir[also share a directory, read-only unless suffixed with :rw]:directory:_directories' \
     '--no-skip-permissions[keep the agent permission prompts]' \
+    '--no-history[keep history in the amux volume instead of the host]' \
     '(-h --help)'{-h,--help}'[show help]' \
     '1:agent:((claude\:"Claude Code" codex\:"Codex"))'
 }

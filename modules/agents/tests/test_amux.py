@@ -1,6 +1,7 @@
 """Unit checks for the amux host client: input filtering, mounts, and commands."""
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -67,10 +68,11 @@ class MountTests(unittest.TestCase):
     def git(self, *args, cwd):
         subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
 
-    def plan(self, root, layout=None, add_dirs=(), skills=None, ssh=None):
+    def plan(self, root, layout=None, add_dirs=(), skills=None, ssh=None, history=()):
         return amux.plan_mounts(
             root=root, home=self.home, layout=layout, add_dirs=list(add_dirs), skills=skills or {},
             etc="/nix/store/e-amux-etc", paste_dir=os.path.join(self.home, ".cache/amux/paste"), ssh_agent=ssh,
+            history=history,
         )
 
     def test_refuses_home_and_ancestors(self):
@@ -134,6 +136,20 @@ class MountTests(unittest.TestCase):
         self.assertLess(targets.index(self.home), targets.index(target))
         self.assertIn(amux.Mount("/run/host-services/ssh-auth.sock", amux.SSH_AGENT_MOUNT), mounts)
 
+    def test_history_shares_host_directories_over_the_volume(self):
+        work = os.path.join(self.home, "work")
+        os.makedirs(work)
+        history = amux.history_dirs("codex", self.home)
+        self.assertEqual(history, [os.path.join(self.home, ".codex/sessions"),
+                                   os.path.join(self.home, ".codex/archived_sessions")])
+        self.assertEqual(os.stat(history[0]).st_mode & 0o777, 0o700)
+        mounts = self.plan(work, history=history)
+        targets = [m.target for m in mounts]
+        for path in history:
+            self.assertIn(amux.Mount(path, path), mounts)
+            self.assertLess(targets.index(self.home), targets.index(path))
+        self.assertEqual(amux.history_dirs("claude", self.home), [os.path.join(self.home, ".claude/projects")])
+
     def test_mount_argument_quotes_commas(self):
         self.assertEqual(amux.Mount("/a,b", "/a,b", readonly=True).args(),
                          ["--mount", 'type=bind,"source=/a,b","target=/a,b",readonly'])
@@ -160,6 +176,58 @@ class CommandTests(unittest.TestCase):
         self.assertFalse(any("secret" in arg for arg in argv))
         argv = amux.agent_argv(self.CODEX, "codex", {}, False, [], [])
         self.assertEqual(argv, ["codex", "--ask-for-approval", "untrusted"])
+        argv = amux.agent_argv(self.CODEX, "codex", env, True, [], ["resume", "--last"], "custom")
+        self.assertIn('model_provider="custom"', argv)
+        self.assertIn('model_providers.custom.base_url="https://example.test/v1"', argv)
+        self.assertEqual(argv[-4:], ["-m", "m", "resume", "--last"])
+
+    def test_codex_provider_id_follows_host(self):
+        with tempfile.TemporaryDirectory() as home:
+            config = Path(home, ".codex/config.toml")
+            self.assertEqual(amux.codex_provider_id(home), "envy")
+            config.parent.mkdir()
+            for text, expected in (('model_provider = "custom"\n', "custom"), ('model_provider = "openai"\n', "envy"),
+                                   ('model_provider = "a.b"\n', "envy"), ("model_provider = [\n", "envy"),
+                                   ('model = "m"\n', "envy")):
+                config.write_text(text)
+                self.assertEqual(amux.codex_provider_id(home), expected, text)
+
+    def test_resumed_session(self):
+        sid = "01a13348-d933-7910-8841-02f50eed042d"
+        self.assertEqual(amux.resumed_session("codex", ["resume", sid]), sid)
+        self.assertEqual(amux.resumed_session("codex", ["-m", "x", "fork", sid, "go on"]), sid)
+        self.assertIsNone(amux.resumed_session("codex", ["resume", "--last"]))
+        self.assertIsNone(amux.resumed_session("codex", [sid]))
+        self.assertEqual(amux.resumed_session("claude", ["--fork-session", "-r", sid]), sid)
+        self.assertEqual(amux.resumed_session("claude", [f"--resume={sid}"]), sid)
+        self.assertIsNone(amux.resumed_session("claude", ["--resume", "title words"]))
+        self.assertIsNone(amux.resumed_session("claude", ["--resume"]))
+
+    def test_session_workdir_reads_host_history(self):
+        sid = "01a13348-d933-7910-8841-02f50eed042d"
+        with tempfile.TemporaryDirectory() as home:
+            day = Path(home, ".codex/sessions/2026/10/13")
+            day.mkdir(parents=True)
+            meta = {"type": "session_meta", "payload": {"id": sid, "cwd": "/w/codex"}}
+            Path(day, f"rollout-2026-10-13T11-22-54-{sid}.jsonl").write_text(json.dumps(meta) + "\n")
+            Path(day, f"rollout-2026-10-13T11-30-00-x_{sid[:-1]}0.jsonl").write_text(json.dumps(meta) + "\n")
+            self.assertEqual(amux.session_workdir("codex", home, sid.upper()), "/w/codex")
+            self.assertIsNone(amux.session_workdir("codex", home, sid[:-1] + "1"))
+            project = Path(home, ".claude/projects/-w-claude")
+            project.mkdir(parents=True)
+            lines = ["not json", json.dumps({"type": "summary"}), json.dumps({"type": "user", "cwd": "/w/claude"})]
+            Path(project, f"{sid}.jsonl").write_text("\n".join(lines) + "\n")
+            self.assertEqual(amux.session_workdir("claude", home, sid), "/w/claude")
+            self.assertIsNone(amux.session_workdir("claude", home, sid[:-1] + "1"))
+
+    def test_host_timezone(self):
+        with mock.patch.dict(os.environ, {"TZ": ":Asia/Shanghai"}):
+            self.assertEqual(amux.host_timezone(), "Asia/Shanghai")
+        with mock.patch.dict(os.environ, {"TZ": "../etc/passwd"}):
+            self.assertIsNone(amux.host_timezone())
+        with mock.patch.dict(os.environ, {"TZ": ""}), \
+                mock.patch.object(amux.os.path, "realpath", return_value="/var/db/timezone/zoneinfo/Europe/Paris"):
+            self.assertEqual(amux.host_timezone(), "Europe/Paris")
 
     def test_load_env_keeps_selected_names(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -189,7 +257,18 @@ class CommandTests(unittest.TestCase):
         args = amux.parse(["codex", "--", "--resume"])
         self.assertEqual((args.command, args.agent, args.agent_args), ("new", "codex", ["--resume"]))
         args = amux.parse(["-s", "x", "--add-dir", "/tmp:rw"])
-        self.assertEqual((args.command, args.s, args.add_dir, args.agent), ("new", "x", ["/tmp:rw"], "claude"))
+        self.assertEqual((args.command, args.s, args.add_dir, args.agent, args.agent_args),
+                         ("new", "x", ["/tmp:rw"], "claude", []))
+        self.assertFalse(args.no_history)
+        self.assertTrue(amux.parse(["--no-history", "codex"]).no_history)
+
+    def test_parse_passes_arguments_after_the_agent(self):
+        args = amux.parse(["codex", "resume", "--last"])
+        self.assertEqual((args.agent, args.agent_args), ("codex", ["resume", "--last"]))
+        args = amux.parse(["new", "-s", "x", "-c", "/w", "claude", "-c", "-s", "y"])
+        self.assertEqual((args.s, args.c, args.agent, args.agent_args), ("x", "/w", "claude", ["-c", "-s", "y"]))
+        self.assertEqual(amux.parse(["codex", "exec", "--", "-x"]).agent_args, ["exec", "--", "-x"])
+        self.assertEqual(amux.parse(["claude", "-h"]).agent_args, ["-h"])
         self.assertEqual(amux.parse(["a", "-t", "x"]).t, "x")
         self.assertEqual(amux.parse(["kill-session", "-t", "x"]).func, amux.cmd_kill)
         self.assertEqual(amux.parse(["ls", "-F", "#{session_name}"]).F, "#{session_name}")

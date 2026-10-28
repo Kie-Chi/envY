@@ -14,13 +14,13 @@ RUN sed -i \
       /etc/apt/sources.list.d/debian.sources \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
-      ca-certificates curl git less locales openssh-client procps python3 ripgrep tmux \
+      ca-certificates curl git less locales openssh-client procps python3 ripgrep tmux tzdata \
  && sed -i 's/^# *en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen && locale-gen \
  && printf 'Host *\n  StrictHostKeyChecking accept-new\n' > /etc/ssh/ssh_config.d/amux.conf \
  && rm -rf /var/lib/apt/lists/*
 
 # Pre-create agent state directories so the home volume, seeded from this
-# image, is owned by the user even when read-only skill mounts nest inside.
+# image, is owned by the user even when skill and history mounts nest inside.
 # /nix seeds the shared amux-nix volume for single-user Nix; without
 # /nix/var/nix, Nix would silently use a private store under $HOME instead.
 ARG USER_NAME=amux
@@ -29,7 +29,8 @@ ARG USER_GID=1000
 ARG USER_HOME=/home/amux
 RUN (getent group "${USER_GID}" >/dev/null || groupadd -g "${USER_GID}" amux) \
  && useradd -o -u "${USER_UID}" -g "${USER_GID}" -d "${USER_HOME}" -M -s /bin/bash "${USER_NAME}" \
- && mkdir -p "${USER_HOME}/.claude/skills" "${USER_HOME}/.codex/skills" "${USER_HOME}/.cache" \
+ && mkdir -p "${USER_HOME}/.claude/skills" "${USER_HOME}/.claude/projects" "${USER_HOME}/.codex/skills" \
+      "${USER_HOME}/.codex/sessions" "${USER_HOME}/.codex/archived_sessions" "${USER_HOME}/.cache" \
       "${USER_HOME}/.config" "${USER_HOME}/.local/bin" /nix/var/nix \
  && chown -R "${USER_UID}:${USER_GID}" "${USER_HOME}" /nix
 

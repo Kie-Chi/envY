@@ -32,7 +32,7 @@ Cross-platform Nix configuration for Darwin (aarch64-darwin) and Linux (x86_64-l
 | `modules/mirrors/` | Versioned mirror catalog, common ecosystem environment, and Darwin/Linux implementations. |
 | `modules/cores/secrets.nix` | Core password secret required by host-level activation tasks. |
 | `modules/agents/` | Agent installers, provider wrappers, declarative skill catalog, and shared skill selection. |
-| `modules/agents/amux/` | `amux` host client, session image, tmux baseline, and zsh completion for npm-latest Claude Code/Codex in detachable per-session Docker containers with a shared in-container Nix store. |
+| `modules/agents/amux/` | `amux` host client, session image, tmux baseline, and zsh completion for npm-latest Claude Code/Codex in detachable per-session Docker containers with a shared in-container Nix store. Host session history (`~/.codex/sessions`, `~/.codex/archived_sessions`, `~/.claude/projects`) is bind-mounted at the same paths; agent config, credentials, and SQLite state stay in the container. |
 | `docs/agents.md` | Architecture and maintenance guide for agent providers and skill subpackages. |
 | `install.sh` | Repository-independent bootstrap: clone/reuse a checkout, then hand off to setup with an interactive terminal. |
 | `setup.py` | Python rich + prompt_toolkit sequential CLI for initial setup and config editing. Reuses `envy.config` schema/read-write helpers, manages machine software exclusions, shows a change summary, then saves, encrypts, and offers one scoped Git commit for the selected machine and changed sops files. |
@@ -144,7 +144,7 @@ Hybrid approach (in `setup.py`):
 | `envy doctor apps --only perm` | Check only declared macOS TCC permissions |
 | `envy doctor system` / `network` | Check host workflow prerequisites or explicitly probe evaluated mirror endpoints |
 | `envy key repair` | Repair interrupted key rotations, permissions, and encrypted recovery state |
-| `amux [new] [-s name] [-d] [claude\|codex] [-- args]` | Start an agent in a per-session Docker container with tmux keys; `amux a [-t name]`, `amux ls [-F fmt]`, `amux kill -t name` manage sessions; `amux update` checks npm and rebuilds; `amux gc` collects the container Nix store |
+| `amux [new] [-s name] [-d] [--no-history] [claude\|codex [agent args]]` | Start an agent in a per-session Docker container with tmux keys; words after the agent are its own (`amux codex resume [--last\|ID]`, `amux claude --resume [ID]`, `amux claude -c`), and resuming an ID without `-c` starts in that session's directory; `amux a [-t name]`, `amux ls [-F fmt]`, `amux kill -t name` manage sessions; `amux update` checks npm and rebuilds; `amux gc` collects the container Nix store |
 | `nix develop` | Enter devShell (jq, sops, age, ssh-to-age, Python, Typer, Rich, prompt_toolkit, cargo, and rustc) |
 | `envy apply` | Apply the locally selected `path:.#<machine-id>` target |
 | `sops --decrypt secrets/secrets.yaml` | View encrypted secrets |

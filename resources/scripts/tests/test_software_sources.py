@@ -1,5 +1,4 @@
 """Source identity, trust, parsing, prerequisites, and transactional failure boundaries."""
-import contextlib
 import hashlib
 import json
 import tempfile
@@ -411,7 +410,6 @@ class SourceContractTests(unittest.TestCase):
 class ArtifactTrustTests(unittest.TestCase):
     def test_download_hash_mismatch_rejected_before_installation(self):
         with tempfile.TemporaryDirectory() as temporary:
-            response = contextlib.closing(__import__("io").BytesIO(b"package"))
             # URL response must expose its effective URL to detect insecure redirects.
             stream = __import__("io").BytesIO(b"package")
             stream.geturl = lambda: "https://example.org/package.deb"

@@ -1,4 +1,4 @@
-{ pkgs, config, ... }:
+{ config, ... }:
 {
   system.stateVersion = 6;
   system.primaryUser = config.envy.user.name;

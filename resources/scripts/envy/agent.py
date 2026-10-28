@@ -92,9 +92,7 @@ def read_managed_values(path: Path | None = None) -> tuple[dict[str, Any], bool,
     reader = LiteralReader(block)
     base_line = text.count("\n", 0, match.start()) + 1
     while True:
-        # peek skips comments but restores position. Keep that position to
-        # locate failures without including any assignment values in output.
-        start = reader.position
+        # Errors name the field and line only, never assignment values.
         field = "agent managed block"
         try:
             if not reader.peek():
@@ -127,7 +125,6 @@ def _migration_values(machine_values: dict[str, Any]) -> dict[str, Any]:
     steps_url = str(machine_values.get("envy.llm.steps.url", "") or os.getenv("STEPFUN_BASE_URL", "") or "https://stepfun.com")
     steps_model = str(machine_values.get("envy.llm.steps.model", "") or "step-3.7-flash")
     deepseek_url = str(machine_values.get("envy.llm.deepseek.url", "") or "https://api.deepseek.com")
-    deepseek_model = str(machine_values.get("envy.llm.deepseek.model", "") or "deepseek-v4-pro")
     stepfun_openai = steps_url.rstrip("/")
     if not stepfun_openai.endswith("/v1"):
         stepfun_openai += "/v1"
@@ -901,7 +898,7 @@ def cmd_set(
 ):
     """Set one agent, endpoint, or credential metadata field."""
     try:
-        target = _set(path, value)
+        _set(path, value)
     except (OSError, ValueError, typer.BadParameter) as exc:
         if json_output:
             emit_error("agent.set", str(exc), code="invalid-value")

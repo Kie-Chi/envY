@@ -1,10 +1,6 @@
 { config, pkgs, lib, ... }:
 
 let
-  dracula-colors = pkgs.fetchurl {
-    url = "https://raw.githubusercontent.com/dracula/iterm/master/Dracula.itermcolors";
-    sha256 = "sha256-X+/B1lmyAggD5mIk0zNkuFPsUqVNIJ71PD18niEn/SA=";
-  };
   terminalScratchpadGesture = config.envy.habits.terminalScratchpad.gesture;
   quakeHotkeys = {
     F2 = { keyCode = 120; character = 63237; };

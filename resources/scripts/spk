@@ -8,7 +8,6 @@
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 usage() {
@@ -54,7 +53,10 @@ PUB_KEY_CONTENT=$(cat "$PUB_KEY_PATH" | tr -d '\n')
 echo -e "${GREEN}[INFO] Target: $REMOTE_HOST (Port: $REMOTE_PORT)${NC}"
 echo -e "Connecting to remote server..."
 
-ssh -p "$REMOTE_PORT" "$REMOTE_HOST" "
+# Without pipefail the status below would come from the reader loop and hide
+# connection or authentication failures.
+set -o pipefail
+if ! ssh -p "$REMOTE_PORT" "$REMOTE_HOST" "
     mkdir -p ~/.ssh && \
     chmod 700 ~/.ssh && \
     touch ~/.ssh/authorized_keys && \
@@ -71,9 +73,7 @@ ssh -p "$REMOTE_PORT" "$REMOTE_HOST" "
     elif [[ "$status" == "ADDED" ]]; then
         echo -e "${GREEN}[SUCCESS] Key added successfully.${NC}"
     fi
-done
-
-if [ $? -ne 0 ]; then
+done; then
      echo -e "${RED}[ERROR] Connection failed or password incorrect.${NC}"
      exit 1
 fi

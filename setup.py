@@ -32,8 +32,8 @@ from envy.key import (
     register_device_key,
     prepare_device_age_key, prepare_generated_device_age_key,
     commit_prepared_device_age_key,
-    PreparedDeviceKey,
 )
+from envy.keys.storage import PreparedDeviceKey
 from envy.config import (
     read_machine_nix, read_secrets_yaml, read_secrets_data,
     write_machine_nix, write_secrets_yaml,
@@ -64,7 +64,6 @@ from envy.utils import (
 )
 from envy.secure_io import ensure_private_directory
 from envy.transaction import FileTransaction, transaction_lock
-from envy.keys.identity import get_sops_label
 from envy.keys.recovery import generate_keypair, write_encrypted_recovery_key
 from envy.process import CommandError, render_command_error
 
@@ -502,12 +501,10 @@ def build_application(state: AppState) -> Application:
     @kb.add("up", filter=is_list | is_policy | is_edit_choice)
     def _(event):
         if state.mode == "list":
-            items = get_visible_fields(state.values)
             state.cursor = max(0, state.cursor - 1)
         elif state.mode == "policy":
             state.policy_cursor = max(0, state.policy_cursor - 1)
         elif state.mode == "edit_choice":
-            choices = state.editing_field.choices
             state.choice_cursor = max(0, state.choice_cursor - 1)
         event.app.invalidate()
 

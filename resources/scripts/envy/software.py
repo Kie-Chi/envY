@@ -25,7 +25,6 @@ from envy.evaluation import (
 )
 from envy.jsonio import emit, emit_error
 from envy.mutation import offer_mutation_commit
-from envy.process import run_process
 from envy.search.index import RegistryIndex
 from envy.search.model import SearchResult
 from envy.search.providers import resolve_exact
@@ -2058,7 +2057,6 @@ def _resolve_new_include(
     if source_id and bound_source is None:
         raise SoftwarePolicyError(f"unknown source: {source_id}")
     if bound_source and not bound_source.capabilities.get("configure" if group.kind == "repository" and group.ecosystem == "native" else "exactResolve"):
-        from envy.sources.model import SourceError
         raise SourceError("source does not support exact package resolution", "unsupported")
     if bound_source and bound_source.ecosystem != group.ecosystem:
         raise SoftwarePolicyError("source ecosystem does not match software group")

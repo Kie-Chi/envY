@@ -78,7 +78,7 @@ ui_choose() {
             echo "  [$i] $c"
             i=$((i+1))
         done
-        read -p "> [default: $default_idx] " user_input < /dev/tty
+        read -r -p "> [default: $default_idx] " user_input < /dev/tty
         local read_exit_status=$?
         if [ "$read_exit_status" -ne 0 ]; then
             exit "$read_exit_status"
@@ -101,7 +101,7 @@ ui_input() {
             exit "$gum_exit_status"
         fi
     else
-        read -p "$(echo -e "${GREEN}${prompt}${NC} [default: ${YELLOW}${default}${NC}]: ")" user_input < /dev/tty
+        read -r -p "$(echo -e "${GREEN}${prompt}${NC} [default: ${YELLOW}${default}${NC}]: ")" user_input < /dev/tty
         local read_exit_status=$?
         if [ "$read_exit_status" -ne 0 ]; then
             exit "$read_exit_status"
@@ -121,7 +121,7 @@ ui_confirm() {
         fi
         return "$gum_exit_status"
     else
-        read -p "$(echo -e "${YELLOW}${prompt} (y/N): ${NC}")" choice < /dev/tty
+        read -r -p "$(echo -e "${YELLOW}${prompt} (y/N): ${NC}")" choice < /dev/tty
         local read_exit_status=$?
         if [ "$read_exit_status" -ne 0 ]; then
             exit "$read_exit_status"

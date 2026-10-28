@@ -366,7 +366,7 @@ def write_mirror_overrides(
     if pattern.search(text):
         updated = pattern.sub(block, text, count=1)
     else:
-        anchor = f"  # END ENVY MANAGED CONFIG"
+        anchor = "  # END ENVY MANAGED CONFIG"
         anchor_index = text.find(anchor)
         if anchor_index >= 0:
             insert_at = text.find("\n", anchor_index)
@@ -979,10 +979,10 @@ def set_config_value(path: str, value: str, *, quiet: bool = False) -> None:
             log.hint("Edit the machine file directly for custom policy.")
         raise typer.BadParameter(f"unknown managed machine field: {path}")
     legacy_values = read_legacy_config_nix()
-    for field in MACHINE_FIELDS:
-        if field.path not in values:
-            legacy_value = _legacy_config_value(field.path, values, legacy_values)
-            values[field.path] = legacy_value if str(legacy_value).strip() else field.default_fn()
+    for machine_field in MACHINE_FIELDS:
+        if machine_field.path not in values:
+            legacy_value = _legacy_config_value(machine_field.path, values, legacy_values)
+            values[machine_field.path] = legacy_value if str(legacy_value).strip() else machine_field.default_fn()
     values[path] = value
     field_def = next(field for field in MACHINE_FIELDS if field.path == path)
     validation = RefineReport()
@@ -1206,8 +1206,8 @@ def cmd_show(
     manifest_llm = agent_view["llm"]
     manifest_agents = agent_view["agents"]
     secret_values_for_fields: dict[str, str] = {}
-    for field in SECRET_FIELDS:
-        secret_values_for_fields[field.path] = str(secret_values.get(field.path, ""))
+    for secret_field in SECRET_FIELDS:
+        secret_values_for_fields[secret_field.path] = str(secret_values.get(secret_field.path, ""))
     payload = {
         "schemaVersion": 1,
         "source": "evaluated" if evaluated_values else "source-fallback",
@@ -1249,15 +1249,15 @@ def cmd_show(
     table.add_row("device", "device.sops_label", device_values.get("sops_label", ""))
     for f in MACHINE_FIELDS:
         table.add_row("value", f.path, config_values.get(f.path, ""))
-    for field in dynamic_fields:
-        path = field["path"]
+    for dynamic_field in dynamic_fields:
+        path = dynamic_field["path"]
         if path.startswith("envy.llm.endpoints."):
             kind = "endpoint"
         elif path.startswith("envy.llm.credentials."):
             kind = "credential"
         else:
             kind = "agent"
-        table.add_row(kind, path, field["value"])
+        table.add_row(kind, path, dynamic_field["value"])
     credentials = manifest_llm.get("credentials", {}) if isinstance(manifest_llm, dict) else {}
     if isinstance(credentials, dict):
         for name, credential in sorted(credentials.items()):

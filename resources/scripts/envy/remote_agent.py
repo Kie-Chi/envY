@@ -13,7 +13,6 @@ import shlex
 import shutil
 import socket
 import subprocess
-import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path

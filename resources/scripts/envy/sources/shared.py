@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
 
 from envy.process import prime_flake_sources, run_process
 from envy.secure_io import atomic_write_text

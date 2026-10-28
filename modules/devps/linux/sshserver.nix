@@ -1,4 +1,4 @@
-{ lib, pkgs, sys, ... }:
+{ sys, ... }:
 
 let
   sshdConfig = {
@@ -10,7 +10,6 @@ in
 {
   home.activation.setupSshd = sys.task.activation {
     after = [ "userBoundary" ];
-    asRoot = true;
     name = "setupSshd";
     script = ''
       esudo ${sys.cmds.rm} -f /etc/ssh/sshd_config.d/99-dotfiles.conf

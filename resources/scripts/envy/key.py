@@ -35,11 +35,9 @@ from envy.process import CommandError
 from envy.keys.storage import (
     current_device_public_key as get_current_device_public_key,
     device_public_keys,
-    generate_device_age_key,
     prepare_device_age_key,
     prepare_generated_device_age_key,
     commit_prepared_device_age_key,
-    PreparedDeviceKey,
     read_sops_yaml_keys,
     store_device_age_key,
     write_sops_yaml_keys,
@@ -391,7 +389,6 @@ def scan_usb_key_files() -> List[Path]:
 def key_list() -> None:
     keys = read_sops_yaml_keys()
     current_pub = get_current_device_public_key()
-    current_label = get_sops_label()
 
     table = Table(title="Age Keys in .sops.yaml")
     table.add_column("Label", style="cyan")

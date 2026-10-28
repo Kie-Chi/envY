@@ -153,7 +153,6 @@ in
   home.activation.installWayDroid = lib.mkIf waydroidEnabled (sys.task.activation {
     name = "installWayDroid";
     after = [ "installNativePackages" ];
-    asRoot = true;
     script = ''
       if pkg_installed "waydroid"; then
         WAYDROID_BIN=""

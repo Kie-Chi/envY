@@ -4,7 +4,6 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import typer
@@ -156,7 +155,7 @@ class SafetyWorkflowTests(unittest.TestCase):
                 doctor_config, "_check_secret_write_capability", return_value=[]
             ), patch.object(doctor_config, "_check_device_key_distinct_from_recovery", return_value=[]), patch(
                 "envy.agent.managed_credential_paths", return_value={}
-            ) as credentials:
+            ):
                 for raw_value in (12345, True, False, [], {}):
                     with self.subTest(raw_value=raw_value):
                         doctor_config.read_secrets_data.return_value = ({"home": {"passwd": raw_value}}, True)

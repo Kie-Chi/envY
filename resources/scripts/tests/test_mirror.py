@@ -22,7 +22,6 @@ from envy.mirror import (
     _source_overrides,
     annotate_current_selection,
     complete_measurement_providers,
-    complete_mirror_sources,
     complete_mirror_targets,
     current_selection,
     mirror_entries,

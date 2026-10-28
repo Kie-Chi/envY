@@ -66,7 +66,6 @@ in
 
   home.activation.setupSunshineInput = sys.task.activation {
     name = "setupSunshineInput";
-    asRoot = true;
     message = "Setting up Sunshine uinput permissions...";
     script = ''
       ${sys.deploy {

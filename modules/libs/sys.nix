@@ -389,7 +389,6 @@ let
     task = rec {
       activation = {
         after ? [ "userBoundary" ],
-        asRoot ? false,
         guardDryRun ? true,
         name ? "activation",
         pre ? "",
@@ -411,15 +410,14 @@ let
           ${post}
         '';
 
-      root = args: activation (args // { asRoot = true; });
+      root = activation;
 
       mkAttr     = args: { home.activation.${args.name} = activation args; };
-      mkRootAttr = args: mkAttr (args // { asRoot = true; });
+      mkRootAttr = mkAttr;
     };
 
     mkActivation = {
       after ? [ "userBoundary" ],
-      asRoot ? false,
       guardDryRun ? true,
       name ? "activation",
       script

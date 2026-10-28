@@ -27,7 +27,7 @@ class AgentCompletionTests(unittest.TestCase):
         self.before = self.path.read_bytes()
         self.enterContext(patch.object(agent, "machine_config_file", return_value=self.path))
         self.manifest = self.enterContext(patch.object(agent_completion, "machine_manifest", return_value={
-            "agents": {"inherited": {"adapter": "codex"}, "other-pi": {"adapter": "pi"}, "omp": {"adapter": "oh-my-pi"}, "retired": {"adapter": "oh-my-pi"}},
+            "agents": {"inherited": {"adapter": "codex"}, "other-pi": {"adapter": "pi"}},
             "llm": {"endpoints": {"shared": {"baseUrl": "https://example.test/v1"}},
                     "credentials": {"shared": {"secretPath": "llm/shared/token"}}},
         }))
@@ -54,9 +54,6 @@ class AgentCompletionTests(unittest.TestCase):
             self.assertIn("envy.agentProfiles.fast.model", profile_paths)
             self.assertIn("envy.agents.inherited.model", paths)
             self.assertIn("envy.agents.other-pi.api", paths)
-            self.assertNotIn("envy.agents.omp.api", paths)
-            self.assertNotIn("envy.agents.retired.api", paths)
-            self.assertNotIn("envy.agents.omp.moreThinking", paths)
             self.assertNotIn("envy.agents.local-pi.args", paths)
             self.assertIn("envy.llm.endpoints.custom.protocol", self.complete(group, "set", "path", "envy.llm.endpoints.c"))
             self.assertIn("envy.llm.credentials.shared.kind", self.complete(group, "set", "path", "envy.llm.credentials.s"))
@@ -67,8 +64,6 @@ class AgentCompletionTests(unittest.TestCase):
             ("envy.agents.local-pi.moreThinking", "t", ["true"]),
             ("envy.agents.other-pi.api", "openai-r", ["openai-responses"]),
             ("envy.agents.other-pi.api", "anthropic", ["anthropic-messages"]),
-            ("envy.agents.omp.api", "", []),
-            ("envy.agents.retired.api", "", []),
             ("envy.agents.inherited.endpoint", "c", ["custom"]),
             ("envy.agents.inherited.credential", "s", ["shared"]),
             ("envy.agents.local-pi.profile", "f", ["fast"]),

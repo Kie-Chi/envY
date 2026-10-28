@@ -22,7 +22,7 @@ def _managed_values():
 
 
 def _metadata():
-    from envy.agent import _managed_manifest, is_obsolete_agent
+    from envy.agent import _managed_manifest
 
     try:
         manifest = machine_manifest(completion=True) or {}
@@ -41,11 +41,8 @@ def _metadata():
                 result[name] = result.get(name, {}) | item
         return result
 
-    agents = merge(manifest.get("agents", {}), local_agents)
-    obsolete_agents = {name for name, item in agents.items() if is_obsolete_agent(name, item.get("adapter"))}
     return {
-        "agents": {name: item for name, item in agents.items() if name not in obsolete_agents},
-        "obsolete_agents": obsolete_agents,
+        "agents": merge(manifest.get("agents", {}), local_agents),
         "endpoints": merge(llm.get("endpoints", {}), local_llm["endpoints"]),
         "credentials": merge(llm.get("credentials", {}), local_llm["credentials"]),
     }
@@ -147,17 +144,13 @@ def complete_agent_values(ctx, incomplete):
             return complete_apis(ctx, incomplete)
         return []
     if namespace == "agents":
-        from envy.agent import is_obsolete_agent
-
         if field in {"model", "contextWindow", "maxTokens", "command", "additionalSettings"}:
             return []
         if field == "profile":
             return complete_profile_names(ctx, incomplete)
-        if is_obsolete_agent(name) or field not in {"adapter", "api", "endpoint", "credential", "moreThinking", "profile"}:
+        if field not in {"adapter", "api", "endpoint", "credential", "moreThinking", "profile"}:
             return []
         metadata = _metadata()
-        if name in metadata["obsolete_agents"]:
-            return []
         callbacks = {"adapter": complete_adapters, "api": complete_apis}
         if field in callbacks:
             return callbacks[field](ctx, incomplete)

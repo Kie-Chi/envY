@@ -10,7 +10,7 @@ Cross-platform Nix configuration for Darwin (aarch64-darwin) and Linux (x86_64-l
 
 **Non-sensitive machine config** (`hosts/darwin/<id>.nix` or `hosts/linux/<id>.nix`): the sole source for user name, paths, git info, VS Code mode, local LLM URLs/models, and machine software policy. Darwin hosts additionally own Darwin-only proxy/Homebrew policy; Linux has no proxy schema. Values use the `envy.*` option tree and modules read them through `config.envy.*`.
 
-**Device metadata** (`.device-label`): Gitignored TOML containing `device.machine_id` and `device.sops_label`. It selects the default envY flake target and labels the device age key, but is not a second Nix configuration source. `envy config check/refine` validates and migrates it.
+**Device metadata** (`.device-label`): Gitignored TOML containing `device.machine_id` and `device.sops_label`. It selects the default envY flake target and labels the device age key, but is not a second Nix configuration source. `envy config check/refine` validates and completes it.
 
 **Encrypted secrets** (`secrets/secrets.yaml`): passwords, API keys, and proxy URLs with tokens. Managed by sops-nix, encrypted with age key. Referenced as `config.sops.secrets.xxx` (file path) or `config.sops.placeholder.xxx` (for templates). Decrypted only at activation time — **never available as string values at Nix eval time**.
 
@@ -38,7 +38,6 @@ Cross-platform Nix configuration for Darwin (aarch64-darwin) and Linux (x86_64-l
 | `install.sh` | Repository-independent bootstrap: clone/reuse a checkout, then hand off to setup with an interactive terminal. |
 | `setup.py` | Python rich + prompt_toolkit sequential CLI for initial setup and config editing. Reuses `envy.config` schema/read-write helpers, manages machine software exclusions, shows a change summary, then saves, encrypts, and offers one scoped Git commit for the selected machine and changed sops files. |
 | `resources/scripts/envy/config.py` | Machine managed-block and secret validation/read-write engine used by setup and `envy config`. |
-| `resources/scripts/envy/legacy.py` | Central registry and helpers for legacy config paths, field aliases, and retired agent/software migrations consumed by `envy config refine`. |
 | `resources/scripts/envy/evaluation.py` | Shared reader for the evaluated machine manifest, with process-local and Git-fingerprinted persistent caches used by config views, setup, software policy, and doctor. |
 | `resources/scripts/envy/{process,secure_io,transaction}.py` | Shared command boundary, atomic/private file I/O, and multi-file rollback primitives. |
 | `resources/scripts/envy/jsonio.py` | Stable JSON envelope used by non-interactive frontends and future TUI clients. |
@@ -115,7 +114,7 @@ Hybrid approach (in `setup.py`):
 | `bash setup.sh` | Run setup TUI through the minimal setup runtime; it does not require Cargo/Rustc |
 | `envy status` | Show one coherent machine/Git/generation/software/Doctor snapshot and recommended next actions |
 | `envy config check` | Check `.device-label`, the selected machine file, and secrets.yaml without writing |
-| `envy config refine` | Migrate/refine device metadata, the machine managed block, and secret paths before apply |
+| `envy config refine` | Complete and validate device metadata, the machine and agent managed blocks, and secret paths before apply |
 | `envy config show` | Show evaluated machine scalar values and secret-set status |
 | `envy software` / `envy sw` | List the selected machine's manifest v3 software groups |
 | `envy sw ls --details` | Show structured selections, versions, and canonical references |

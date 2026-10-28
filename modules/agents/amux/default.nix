@@ -111,7 +111,7 @@ let
       claude = {
         command = "claude";
         skipArgs = [ "--dangerously-skip-permissions" ];
-        args = inheritedArgs (config.agents.claude.extraArgs ++ config.envy.agents.cc.args)
+        args = inheritedArgs config.envy.agents.cc.args
           ++ prompts.argsFor "claude-code";
         envFiles = templatePath "envy-agent-cc" ++ [ (runtimeEnv "cc") ];
         # Claude Code asks about custom keys when ANTHROPIC_API_KEY is set.

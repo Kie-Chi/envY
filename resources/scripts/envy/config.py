@@ -16,11 +16,8 @@ from rich.table import Table
 from envy import log
 from envy.evaluation import invalidate_machine_manifest, machine_manifest, manifest_settings
 from envy.jsonio import emit, emit_error
-from envy.legacy import SOFTWARE_OPTION_ALIASES
 from envy.schemas.config import (
     FieldDef,
-    LEGACY_CONFIG_PATHS,
-    LEGACY_MACHINE_KEYS,
     MACHINE_FIELDS,
     OBSOLETE_MACHINE_KEYS,
     OBSOLETE_SECRET_PATHS,
@@ -41,11 +38,9 @@ from envy.utils import (
     AGE_KEY_FILE,
     AGE_KEY_DIR,
     DEVICE_LABEL_FILE,
+    DEVICE_METADATA_HINT,
     ENVY_ROOT,
     SOPS_YAML,
-    LEGACY_MACHINE_SELECTOR,
-    LEGACY_SYSTEM_CONFIG,
-    LEGACY_USER_CONFIG,
     SECRETS_DIR,
     SECRETS_FILE,
     current_machine_id,
@@ -197,37 +192,6 @@ def read_machine_nix(machine_id: str | None = None) -> dict:
     return _read_nix_assignments(machine_config_file(machine_id))
 
 
-def read_legacy_config_nix() -> dict:
-    """Read the old ignored config.nix only as an upgrade source."""
-    for path in (LEGACY_USER_CONFIG, ENVY_ROOT / "config.nix", LEGACY_SYSTEM_CONFIG):
-        if path.exists():
-            try:
-                return _read_nix_assignments(path)
-            except OSError:
-                continue
-    return {}
-
-
-def _legacy_config_value(path: str, values: dict, legacy_values: dict) -> str:
-    sources = LEGACY_CONFIG_PATHS.get(path, ())
-    if isinstance(sources, str):
-        sources = (sources,)
-    for source in sources:
-        value = values.get(source, legacy_values.get(source, ""))
-        if str(value).strip():
-            return value
-    return ""
-
-
-def _legacy_llm_values(values: dict) -> dict:
-    """Resolve both versioned and pre-machine LLM migration sources."""
-    legacy = read_legacy_config_nix()
-    return {
-        key: values.get(key) or legacy.get(key) or _legacy_config_value(key, values, legacy)
-        for key in LEGACY_MACHINE_KEYS
-    }
-
-
 def _render_machine_block(values: dict) -> str:
     groups = sorted(set(f.group for f in MACHINE_FIELDS))
     lines = [MANAGED_START + "\n", "  # `envy config` updates only this block. Other machine policy stays intact.\n"]
@@ -254,20 +218,6 @@ def write_machine_nix(values: dict, machine_id: str | None = None) -> None:
     if not path.exists():
         raise FileNotFoundError(f"machine configuration is missing: {path}")
 
-    # A scalar edit/setup save can also rewrite an old managed block. Preserve
-    # its LLM selections in the agent block before omitting the legacy fields.
-    source_values = _read_nix_assignments(path) | {
-        key: values[key] for key in LEGACY_MACHINE_KEYS if key in values
-    }
-    if any(key in source_values for key in LEGACY_MACHINE_KEYS):
-        from envy.agent import refine_managed
-
-        migration = refine_managed(
-            machine_values=_legacy_llm_values(source_values), write=True, path=path,
-        )
-        if migration["errors"]:
-            raise ValueError("cannot remove legacy LLM fields before agent migration succeeds")
-
     text = path.read_text()
     block = _render_machine_block(values)
     managed_pattern = re.compile(
@@ -275,24 +225,10 @@ def write_machine_nix(values: dict, machine_id: str | None = None) -> None:
     )
     if managed_pattern.search(text):
         updated = managed_pattern.sub(block, text, count=1)
-        # Legacy LLM assignments may still sit outside the managed block.
-        # Remove only those exact scalar assignments; preserve other policy.
-        legacy_paths = set(LEGACY_MACHINE_KEYS)
-        assignment = re.compile(r"^\s*([A-Za-z0-9_.-]+)\s*=.*;\s*$")
-        kept_lines = []
-        for line in updated.splitlines(keepends=True):
-            match = assignment.match(line)
-            if not match or match.group(1) not in legacy_paths:
-                kept_lines.append(line)
-        updated = "".join(kept_lines)
     else:
-        # Move legacy flat assignments for managed fields into the controlled
-        # block while leaving imports and all other machine policy untouched.
-        managed_paths = (
-            {field.path for field in MACHINE_FIELDS}
-            | set(LEGACY_MACHINE_KEYS)
-            | set(OBSOLETE_MACHINE_KEYS)
-        )
+        # Move flat assignments for managed fields into the controlled block
+        # while leaving imports and all other machine policy untouched.
+        managed_paths = {field.path for field in MACHINE_FIELDS} | set(OBSOLETE_MACHINE_KEYS)
         assignment = re.compile(r"^\s*([A-Za-z0-9_.-]+)\s*=.*;\s*$")
         kept_lines = []
         for line in text.splitlines(keepends=True):
@@ -504,19 +440,18 @@ def _validate_field(field_def: FieldDef, value: str, report: RefineReport, scope
 
 
 def refine_device_metadata(*, write: bool = True, strict: bool = False) -> RefineReport:
-    """Validate and migrate the device-local TOML identity document."""
+    """Validate and complete the device-local TOML identity document."""
     report = RefineReport()
     try:
         metadata = read_device_metadata()
     except (OSError, ValueError) as exc:
         report.errors.append(str(DEVICE_LABEL_FILE))
         log.error("device", str(exc))
+        log.hint(DEVICE_METADATA_HINT)
         return report
 
     machine_id = metadata.get("machine_id", "")
     sops_label = metadata.get("sops_label", "")
-    legacy_format = DEVICE_LABEL_FILE.exists() and not device_metadata_is_toml()
-    legacy_selector = LEGACY_MACHINE_SELECTOR.exists()
 
     if not machine_id:
         machine_id = current_machine_id()
@@ -551,18 +486,8 @@ def refine_device_metadata(*, write: bool = True, strict: bool = False) -> Refin
         report.errors.append("device.sops_label")
         log.error("device", "sops label is missing", path=str(DEVICE_LABEL_FILE))
 
-    if legacy_format and not write:
-        report.errors.append("device.version")
-        log.error("device", "legacy one-line .device-label must be migrated to TOML")
-        log.hint("Run: envy config refine")
-
-    if legacy_selector and not write:
-        report.errors.append(str(LEGACY_MACHINE_SELECTOR))
-        log.error("device", "legacy machine selector still exists", path=str(LEGACY_MACHINE_SELECTOR))
-        log.hint("Run: envy config refine")
-
     if write and report.ok:
-        needs_write = legacy_format or legacy_selector or not device_metadata_is_toml()
+        needs_write = not device_metadata_is_toml()
         if needs_write or metadata.get("machine_id") != machine_id:
             set_device_machine_id(machine_id)
             report.changed = True
@@ -634,8 +559,8 @@ def refine_config(*, write: bool = True, strict: bool = False) -> RefineReport:
         log.hint(f"Run: envy host init {current_machine_id()}")
         return report
 
-    # Complete/validate agent migration before rewriting any scalar fields.
-    # This also protects callers that invoke refine_config directly.
+    # Validate the agent block before rewriting any scalar fields. This also
+    # protects callers that invoke refine_config directly.
     agent_report = refine_agents(write=write, strict=strict)
     report.extend(agent_report)
     if not agent_report.ok:
@@ -643,7 +568,6 @@ def refine_config(*, write: bool = True, strict: bool = False) -> RefineReport:
 
     values = read_machine_nix()
     original = dict(values)
-    legacy_values = read_legacy_config_nix()
 
     for key in OBSOLETE_MACHINE_KEYS:
         if key in values:
@@ -651,24 +575,11 @@ def refine_config(*, write: bool = True, strict: bool = False) -> RefineReport:
             report.removed.append(key)
             log.fix("machine", "removed obsolete managed field", field=key)
 
-    for key in LEGACY_MACHINE_KEYS:
-        if key in values:
-            values.pop(key)
-            report.removed.append(key)
-            if write:
-                log.fix("machine", "removed migrated legacy LLM field", field=key)
-            else:
-                report.errors.append(key)
-                log.error("machine", "legacy LLM field needs migration cleanup", field=key)
-                log.hint("Run: envy config refine")
-
     for f in MACHINE_FIELDS:
         if f.path not in values:
-            legacy_value = _legacy_config_value(f.path, original, legacy_values)
-            values[f.path] = legacy_value if str(legacy_value).strip() else f.default_fn()
+            values[f.path] = f.default_fn()
             report.added.append(f.path)
-            action = "migrated legacy field" if str(legacy_value).strip() else "added missing field"
-            log.fix("machine", action, field=f.path)
+            log.fix("machine", "added missing field", field=f.path)
 
     for f in MACHINE_FIELDS:
         _validate_field(f, values.get(f.path, ""), report, "machine")
@@ -693,7 +604,7 @@ def refine_config(*, write: bool = True, strict: bool = False) -> RefineReport:
 
 
 def refine_agents(*, write: bool = True, strict: bool = False) -> RefineReport:
-    """Migrate legacy scalar LLM settings into the dynamic agent block."""
+    """Validate the managed agent block, creating it when it is missing."""
     report = RefineReport()
     log.debug("agents", "starting managed agent validation", write=write, strict=strict)
     path = machine_config_file()
@@ -703,16 +614,9 @@ def refine_agents(*, write: bool = True, strict: bool = False) -> RefineReport:
         return report
     # Keep the parser and writer in agent.py so the CLI and refine workflow
     # cannot gradually acquire different managed-block formats.
-    from envy.agent import read_managed_values, refine_managed
+    from envy.agent import refine_managed
 
-    values = read_machine_nix()
-    _managed, present, _errors = read_managed_values(path)
-    migration_values = (
-        _legacy_llm_values(values)
-        if not present or any(key in values for key in LEGACY_MACHINE_KEYS)
-        else {}
-    )
-    result = refine_managed(machine_values=migration_values, write=write, path=path)
+    result = refine_managed(write=write, path=path)
     report.added.extend(result.get("added", []))
     report.removed.extend(result.get("removed", []))
     report.warnings.extend(result.get("warnings", []))
@@ -734,26 +638,6 @@ def refine_software_policy(*, write: bool = True, strict: bool = False) -> Refin
     """Validate the direct managed software include/exclude assignments."""
     report = RefineReport()
     path = machine_config_file()
-    text = path.read_text()
-    legacy_paths = [old for old in SOFTWARE_OPTION_ALIASES if old in text]
-    if legacy_paths and write:
-        for old in legacy_paths:
-            text = text.replace(old, SOFTWARE_OPTION_ALIASES[old])
-            report.removed.append(old)
-            report.added.append(SOFTWARE_OPTION_ALIASES[old])
-            log.fix(
-                "software", "migrated option path",
-                old=old, new=SOFTWARE_OPTION_ALIASES[old],
-            )
-        atomic_write_text(path, text)
-        invalidate_machine_manifest()
-        report.changed = True
-    elif legacy_paths:
-        report.errors.extend(legacy_paths)
-        for old in legacy_paths:
-            log.error("software", "legacy option path requires migration", option=old)
-        log.hint("Run: envy config refine")
-
     groups = groups_for_manifest(machine_manifest(), include_empty=True)
     try:
         includes, exclusions = read_managed_policy(path, groups)
@@ -941,7 +825,6 @@ def refine_all(*, write: bool = True, strict: bool = False, include_secrets: boo
         log.error("config", "validation failed", count=len(report.errors))
         return report
     report.extend(refine_sensitive_permissions(write=write))
-    # refine_config migrates agents before deleting old LLM scalar fields.
     report.extend(refine_config(write=write, strict=strict))
     report.extend(refine_software_policy(write=write, strict=strict))
     if include_secrets:
@@ -975,11 +858,9 @@ def set_config_value(path: str, value: str, *, quiet: bool = False) -> None:
             log.error("machine", "unknown managed machine field", field=path)
             log.hint("Edit the machine file directly for custom policy.")
         raise typer.BadParameter(f"unknown managed machine field: {path}")
-    legacy_values = read_legacy_config_nix()
     for machine_field in MACHINE_FIELDS:
         if machine_field.path not in values:
-            legacy_value = _legacy_config_value(machine_field.path, values, legacy_values)
-            values[machine_field.path] = legacy_value if str(legacy_value).strip() else machine_field.default_fn()
+            values[machine_field.path] = machine_field.default_fn()
     values[path] = value
     field_def = next(field for field in MACHINE_FIELDS if field.path == path)
     validation = RefineReport()

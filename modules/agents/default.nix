@@ -25,13 +25,6 @@
   # Shared agent defaults. Provider modules define reusable options; this file
   # decides which providers and skills are part of the shared environment.
   agents = {
-    claude = {
-      # Keep this security-sensitive policy visible in the Nix machine
-      # configuration instead of exposing machine-specific agent toggles.
-      extraArgs = [ "--dangerously-skip-permissions" ];
-      ccliAlias = true;
-    };
-
     skills = {
       catalog = import ./skills/catalog.nix {
         inherit academicResearchSkills academicResearchSkillsCodex antiDefensiveWriting emilSkills gptImage2PptSkills pptMaster promptMaster vercelAgentSkills wazaSource;
@@ -107,9 +100,13 @@
     endpoint = lib.mkDefault "stepfun-anthropic";
     credential = lib.mkDefault "stepfun";
     model = lib.mkDefault "step-3.7-flash";
-    # Keep the compatibility alias when no machine block exists. A normal
-    # machine-owned value replaces this mkDefault during migration, avoiding
-    # list concatenation when the block also declares ccli.
+    # Keep this security-sensitive policy visible in the shared Nix
+    # configuration instead of exposing a machine-specific agent toggle.
+    # A plain definition concatenates with machine-owned args.
+    args = [ "--dangerously-skip-permissions" ];
+    # Keep the ccli alias when no machine block exists. A machine-owned value
+    # replaces this mkDefault, avoiding list concatenation when the block also
+    # declares ccli.
     aliases = lib.mkDefault [ "ccli" ];
     # Claude Code installs enabled marketplace plugins and owns their cache.
     additionalSettings.enabledPlugins = {

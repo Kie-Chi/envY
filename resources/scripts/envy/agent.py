@@ -9,7 +9,6 @@ this file only stores non-sensitive selections and secret references.
 from __future__ import annotations
 
 import json
-import os
 import re
 import shlex
 from pathlib import Path
@@ -34,14 +33,6 @@ from envy.agent_completion import (
 from envy.config import _escape_nix_string, machine_config_file, read_secrets_data, set_secret_value
 from envy.evaluation import invalidate_machine_manifest, machine_manifest
 from envy.jsonio import emit, emit_error
-from envy.legacy import (
-    AGENT_FIELD_ALIASES,
-    canonicalize_agent_object,
-    canonicalize_agent_values,
-    is_obsolete_agent,
-    normalize_agent_fields,
-    obsolete_agent_paths,
-)
 from envy.mutation import offer_mutation_commit
 from envy.nix_literals import LiteralError, LiteralReader
 from envy.secure_io import atomic_write_text, ensure_private_directory
@@ -120,39 +111,33 @@ def read_managed_values(path: Path | None = None) -> tuple[dict[str, Any], bool,
     return values, True, errors
 
 
-def _migration_values(machine_values: dict[str, Any]) -> dict[str, Any]:
-    """Build the first managed block from the legacy scalar LLM settings."""
-    steps_url = str(machine_values.get("envy.llm.steps.url", "") or os.getenv("STEPFUN_BASE_URL", "") or "https://stepfun.com")
-    steps_model = str(machine_values.get("envy.llm.steps.model", "") or "step-3.7-flash")
-    deepseek_url = str(machine_values.get("envy.llm.deepseek.url", "") or "https://api.deepseek.com")
-    stepfun_openai = steps_url.rstrip("/")
-    if not stepfun_openai.endswith("/v1"):
-        stepfun_openai += "/v1"
+def _initial_values() -> dict[str, Any]:
+    """Return the managed block written for a machine that has none."""
     return {
         "envy.llm.credentials.stepfun.kind": "api-key",
         "envy.llm.credentials.stepfun.secretPath": "llm/steps/apikey",
         "envy.llm.credentials.deepseek.kind": "api-key",
         "envy.llm.credentials.deepseek.secretPath": "llm/deepseek/apikey",
-        "envy.llm.endpoints.stepfun-openai.baseUrl": stepfun_openai,
+        "envy.llm.endpoints.stepfun-openai.baseUrl": "https://stepfun.com/v1",
         "envy.llm.endpoints.stepfun-openai.protocol": "openai-compatible",
-        "envy.llm.endpoints.stepfun-anthropic.baseUrl": steps_url,
+        "envy.llm.endpoints.stepfun-anthropic.baseUrl": "https://stepfun.com",
         "envy.llm.endpoints.stepfun-anthropic.protocol": "anthropic-compatible",
-        "envy.llm.endpoints.deepseek-openai.baseUrl": deepseek_url,
+        "envy.llm.endpoints.deepseek-openai.baseUrl": "https://api.deepseek.com",
         "envy.llm.endpoints.deepseek-openai.protocol": "openai-compatible",
         "envy.agents.codex.adapter": "codex",
         "envy.agents.codex.endpoint": "stepfun-openai",
         "envy.agents.codex.credential": "stepfun",
-        "envy.agents.codex.model": steps_model,
+        "envy.agents.codex.model": "step-3.7-flash",
         "envy.agents.cc.adapter": "claude-code",
         "envy.agents.cc.endpoint": "stepfun-anthropic",
         "envy.agents.cc.credential": "stepfun",
-        "envy.agents.cc.model": steps_model,
+        "envy.agents.cc.model": "step-3.7-flash",
         "envy.agents.cc.aliases": ["ccli"],
     }
 
 
 def _validate_values(values: dict[str, Any]) -> list[str]:
-    errors: list[str] = obsolete_agent_paths(values)
+    errors: list[str] = []
     agent_names: set[str] = set()
     profile_names: set[str] = set()
     endpoint_names: set[str] = set()
@@ -175,7 +160,7 @@ def _validate_values(values: dict[str, Any]) -> list[str]:
                 errors.append(path)
         elif namespace == "agents":
             agent_names.add(name)
-            if field not in {"profile", "adapter", "api", "endpoint", "credential", "model", "contextWindow", "maxTokens", "command", "args", "aliases", "skills", "additionalSettings", "moreThinking", *AGENT_FIELD_ALIASES}:
+            if field not in {"profile", "adapter", "api", "endpoint", "credential", "model", "contextWindow", "maxTokens", "command", "args", "aliases", "skills", "additionalSettings", "moreThinking"}:
                 errors.append(path)
             elif field in {"contextWindow", "maxTokens"} and value is not None and (
                 isinstance(value, bool) or not isinstance(value, int) or value <= 0
@@ -187,7 +172,7 @@ def _validate_values(values: dict[str, Any]) -> list[str]:
                 errors.append(path)
             elif field == "additionalSettings" and not isinstance(value, dict):
                 errors.append(path)
-            elif field in {"moreThinking", *AGENT_FIELD_ALIASES} and not isinstance(value, bool):
+            elif field == "moreThinking" and not isinstance(value, bool):
                 errors.append(path)
             elif field == "api" and value is not None and value not in API_CHOICES:
                 errors.append(path)
@@ -237,9 +222,7 @@ def _validate_values(values: dict[str, Any]) -> list[str]:
     return sorted(set(errors))
 
 
-def refine_managed(
-    *, machine_values: dict[str, Any], write: bool = True, path: Path | None = None,
-) -> dict[str, Any]:
+def refine_managed(*, write: bool = True, path: Path | None = None) -> dict[str, Any]:
     """Validate or create the agent block used by config refine/check."""
     values, present, errors = read_managed_values(path)
     result: dict[str, Any] = {"added": [], "removed": [], "warnings": [], "errors": list(errors), "changed": False}
@@ -249,72 +232,26 @@ def refine_managed(
         log.hint("Use literal Nix settings or builtins.fromJSON in the managed agent block; no values were changed.")
         return result
     if not present:
-        migrated = _migration_values(machine_values)
-        invalid = _validate_values(migrated)
-        if invalid:
-            result["errors"].extend(invalid)
-            for field in invalid:
-                log.error("agents", "invalid legacy LLM migration source", field=field)
-            return result
-        result["added"] = sorted(migrated)
+        initial = _initial_values()
+        result["added"] = sorted(initial)
         if write:
-            _write_values(migrated, path=path)
+            _write_values(initial, path=path)
             result["changed"] = True
-            log.fix("agents", "created managed agent block from legacy LLM fields", count=len(migrated))
+            log.fix("agents", "created the managed agent block", count=len(initial))
         else:
             result["errors"].append("envy agents managed block")
             log.error("agents", "agent managed block is missing")
             log.hint("Run: envy config refine")
         return result
 
-    # A machine may already have new selections alongside old scalar fields.
-    # Copy missing compatibility selections, keeping every explicit new value.
-    # Once the scalar migration source is gone, do not recreate deleted fields.
-    if any(machine_values.get(key) for key in (
-        "envy.llm.steps.url", "envy.llm.steps.model",
-        "envy.llm.deepseek.url", "envy.llm.deepseek.model",
-    )):
-        migrated = _migration_values(machine_values)
-        result["added"] = sorted(set(migrated) - set(values))
-        values = migrated | values
-
-    values, renamed, legacy_removed, rename_errors = normalize_agent_fields(values)
-    result["added"].extend(renamed)
-    result["removed"].extend(legacy_removed)
-    if rename_errors:
-        for field in rename_errors:
-            log.error("agents", "legacy agent field conflicts with moreThinking", field=field)
-
-    obsolete_removed = obsolete_agent_paths(values)
-    result["removed"].extend(obsolete_removed)
-    for obsolete in obsolete_removed:
-        values.pop(obsolete, None)
-
-    invalid = sorted(set(_validate_values(values) + rename_errors))
+    invalid = _validate_values(values)
     if invalid:
         result["errors"].extend(invalid)
-        for path in invalid:
-            log.error("agents", "invalid agent managed field", field=path)
+        for field in invalid:
+            log.error("agents", "invalid agent managed field", field=field)
         log.hint("Run: envy agent set ... or edit the managed agent block")
     else:
-        if result["added"] or result["removed"]:
-            if write:
-                _write_values(values, path=path)
-                result["changed"] = True
-                if result["added"]:
-                    log.fix("agents", "migrated missing legacy LLM selections", count=len(result["added"]))
-                for obsolete in obsolete_removed:
-                    log.fix("agents", "removed obsolete agent field", field=obsolete)
-            else:
-                result["errors"].extend(result["added"])
-                result["errors"].extend(result["removed"])
-                if result["added"]:
-                    log.error("agents", "legacy LLM selections need migration")
-                for obsolete in obsolete_removed:
-                    log.error("agents", "obsolete agent field needs cleanup", field=obsolete)
-                log.hint("Run: envy config refine")
-        if not result["errors"]:
-            log.ok("agents", "managed agent selections are valid", fields=len(values))
+        log.ok("agents", "managed agent selections are valid", fields=len(values))
     return result
 
 
@@ -342,7 +279,7 @@ def _managed_manifest(values: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
     """Turn the source managed block into the same shape as the Nix manifest."""
     llm: dict[str, Any] = {"credentials": {}, "endpoints": {}}
     agents: dict[str, Any] = {}
-    for path, value in canonicalize_agent_values(values).items():
+    for path, value in values.items():
         if path.startswith("envy.llm."):
             _put_nested(llm, path.split(".")[2:], value)
         elif path.startswith("envy.agents."):
@@ -394,9 +331,9 @@ def config_view(
 
     normalized_agents: dict[str, Any] = {}
     for name, item in agents.items():
-        if not isinstance(item, dict) or is_obsolete_agent(name, item.get("adapter")):
+        if not isinstance(item, dict):
             continue
-        agent = canonicalize_agent_object(item)
+        agent = dict(item)
         if agent.get("adapter") == "pi":
             agent.setdefault("moreThinking", False)
         credential_name = agent.get("credential")
@@ -666,11 +603,6 @@ def _validate_path(path: str) -> None:
 
 def _set(path: str, value: Any) -> Path:
     _validate_path(path)
-    legacy_field = next((field for field in AGENT_FIELD_ALIASES if path.endswith("." + field)), None)
-    if legacy_field is not None:
-        raise typer.BadParameter(
-            f"{path} was renamed to {path[:-len(legacy_field)]}{AGENT_FIELD_ALIASES[legacy_field]}; run envy config refine first"
-        )
     if path.startswith("envy.agents."):
         field = path.rsplit(".", 1)[-1]
         if field in {"args", "aliases", "skills"}:
@@ -709,11 +641,6 @@ def _set(path: str, value: Any) -> Path:
     values, _present, errors = read_managed_values()
     if errors:
         raise ValueError("cannot edit malformed agent managed block")
-    if path.startswith("envy.agents."):
-        name = path.split(".")[2]
-        adapter = value if path.endswith(".adapter") else values.get(f"envy.agents.{name}.adapter")
-        if is_obsolete_agent(name, adapter):
-            raise typer.BadParameter("OMP is retired; run envy config refine to remove its obsolete configuration")
     if path.startswith("envy.agents.") and path.rsplit(".", 1)[-1] in _LIVE_AGENT_FIELDS:
         values.pop(f"envy.agents.{path.split('.')[2]}.profile", None)
     values[path] = value
@@ -732,9 +659,9 @@ def _manifest_agents() -> dict[str, Any]:
     secret_data, decrypt_ok = read_secrets_data()
     result = {}
     for name, agent in agents.items():
-        if not isinstance(agent, dict) or is_obsolete_agent(name, agent.get("adapter")):
+        if not isinstance(agent, dict):
             continue
-        value = canonicalize_agent_object(agent)
+        value = dict(agent)
         credential_name = value.get("credential")
         secret_path = credentials.get(credential_name, {}).get("secretPath") if isinstance(credentials, dict) else None
         current = secret_data if decrypt_ok and isinstance(secret_data, dict) else {}
@@ -932,8 +859,6 @@ def cmd_add(
     """Create an agent instance from an adapter and optional LLM selection."""
     if not re.fullmatch(_NAME, name):
         raise typer.BadParameter(f"invalid agent name: {name}")
-    if is_obsolete_agent(name, adapter):
-        raise typer.BadParameter("OMP is retired and cannot be added")
     values = _read_values()
     prefix = f"envy.agents.{name}."
     if any(key.startswith(prefix) for key in values):

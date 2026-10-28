@@ -756,20 +756,6 @@ class SoftwarePolicyTests(unittest.TestCase):
             report = config.refine_software_policy()
         self.assertFalse(report.ok)
 
-    def test_config_refine_migrates_legacy_software_option_paths(self):
-        self.machine.write_text(self.original.replace(
-            "  # Hand-written policy remains here.",
-            '  envy.packages.home.exclude = [ "okular" ];',
-        ))
-        with patch.object(config, "machine_config_file", return_value=self.machine), patch.object(
-            config, "machine_manifest", return_value=None
-        ):
-            report = config.refine_software_policy(write=True)
-
-        self.assertTrue(report.changed)
-        self.assertIn("envy.software.nix.packages.exclude", self.machine.read_text())
-        self.assertNotIn("envy.packages.home", self.machine.read_text())
-
     def test_audit_finds_machine_include_exclude_pair(self):
         manifest = _manifest("darwin", {
             "homebrew.system.cask": _group(

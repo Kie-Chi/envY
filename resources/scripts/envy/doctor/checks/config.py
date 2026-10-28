@@ -38,6 +38,7 @@ from envy.utils import (
     AGE_KEY_FILE,
     AGE_KEY_DIR,
     DEVICE_LABEL_FILE,
+    DEVICE_METADATA_HINT,
     ENVY_ROOT,
     SECRETS_FILE,
     device_metadata_is_toml,
@@ -60,7 +61,7 @@ def run_checks() -> list[CheckResult]:
             SECTION_CONFIG,
             "device metadata",
             str(exc),
-            hint="Fix .device-label or run: envy config refine",
+            hint=DEVICE_METADATA_HINT,
         ))
         return results
 
@@ -68,7 +69,7 @@ def run_checks() -> list[CheckResult]:
         results.append(error(
             SECTION_CONFIG,
             "device metadata",
-            ".device-label is missing or uses the legacy one-line format",
+            ".device-label is missing or is not versioned TOML device metadata",
             hint="Run: envy config refine",
         ))
         return results

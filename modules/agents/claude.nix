@@ -2,7 +2,6 @@
 
 let
   agentConfig = config.envy.agents.cc;
-  legacyConfig = config.agents.claude;
   packageEnabled = !(builtins.elem "claude" config.envy.software.nix.packages.exclude);
   promptFile = ".config/ccli/prompt";
   prompts = import ./prompts.nix { inherit lib pkgs; };
@@ -10,19 +9,18 @@ let
   wrapper = import ./wrapper.nix { inherit lib pkgs; };
   inherit (wrapper.resolve config agentConfig) endpoint credentialName credential;
   templateName = "envy-agent-cc";
-  agentArgs = legacyConfig.extraArgs ++ agentConfig.args;
-  aliases = lib.unique ([ ] ++ agentConfig.aliases ++ lib.optional legacyConfig.ccliAlias "ccli");
+  aliases = lib.unique agentConfig.aliases;
 
   claudeWithDefaults = wrapper.mkWrapper {
     name = "claude";
     # Call nixpkgs' wrapper by absolute path. It prepares Claude Code's
     # runtime before handing off to its internal .claude-wrapped binary.
-    executable = lib.getExe legacyConfig.package;
+    executable = lib.getExe pkgs.claude-code;
     envFiles = [
       config.sops.templates.${templateName}.path
       (wrapper.runtimeEnvPath config.envy.user.home "cc")
     ];
-    args = agentArgs;
+    args = agentConfig.args;
     beforeEnv = ''
       system_prompt=${lib.escapeShellArg systemPrompt}
       prompt_file="$HOME/${promptFile}"
@@ -43,22 +41,6 @@ let
   aliasesPackages = wrapper.mkAliases "claude" aliases;
 in
 {
-  options.agents.claude = {
-    package = lib.mkPackageOption pkgs "claude-code" { };
-
-    extraArgs = lib.mkOption {
-      type = with lib.types; listOf str;
-      default = [ ];
-      description = "Arguments injected before caller-provided Claude arguments.";
-    };
-
-    ccliAlias = lib.mkOption {
-      type = lib.types.bool;
-      default = true;
-      description = "Keep ccli as a compatibility command that delegates to claude.";
-    };
-  };
-
   config = lib.mkMerge [
     { agents.settingsFiles.claude-code = {
       target = ".claude/settings.json";

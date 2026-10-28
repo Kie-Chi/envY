@@ -4,21 +4,17 @@ from pathlib import Path
 from unittest.mock import patch
 
 from envy import config
-from envy.agent import _read_values
 from envy.schemas.common.config import (
     COMMON_MACHINE_FIELDS,
-    LEGACY_CONFIG_PATHS as COMMON_LEGACY_CONFIG_PATHS,
     OBSOLETE_MACHINE_KEYS as COMMON_OBSOLETE_MACHINE_KEYS,
 )
 from envy.schemas.darwin.config import (
-    LEGACY_CONFIG_PATHS as DARWIN_LEGACY_CONFIG_PATHS,
     MACHINE_FIELDS as DARWIN_MACHINE_FIELDS,
     OBSOLETE_MACHINE_KEYS as PLATFORM_DARWIN_OBSOLETE_MACHINE_KEYS,
 )
 
 
 DARWIN_MACHINE_SCHEMA = COMMON_MACHINE_FIELDS + DARWIN_MACHINE_FIELDS
-DARWIN_LEGACY_SCHEMA = COMMON_LEGACY_CONFIG_PATHS | DARWIN_LEGACY_CONFIG_PATHS
 DARWIN_OBSOLETE_MACHINE_KEYS = (
     COMMON_OBSOLETE_MACHINE_KEYS + PLATFORM_DARWIN_OBSOLETE_MACHINE_KEYS
 )
@@ -26,12 +22,11 @@ DARWIN_OBSOLETE_MACHINE_KEYS = (
 
 class DarwinMachineConfigTests(unittest.TestCase):
     def setUp(self):
-        # This fixture exercises Darwin-only boolean and legacy fields even
+        # This fixture exercises Darwin-only boolean and obsolete fields even
         # when the cross-platform suite is running on a Linux worker.
         self.schema_patch = patch.multiple(
             config,
             MACHINE_FIELDS=DARWIN_MACHINE_SCHEMA,
-            LEGACY_CONFIG_PATHS=DARWIN_LEGACY_SCHEMA,
             OBSOLETE_MACHINE_KEYS=DARWIN_OBSOLETE_MACHINE_KEYS,
         )
         self.schema_patch.start()
@@ -61,7 +56,6 @@ class DarwinMachineConfigTests(unittest.TestCase):
         values["envy.repository.path"] = "/Users/chi/.envy"
         values["envy.git.name"] = "Chi"
         values["envy.git.email"] = "chi@example.com"
-        values["envy.llm.steps.url"] = "https://example.com"
         values["envy.darwin.services.mihomo.tun"] = "false"
         return values
 
@@ -179,68 +173,6 @@ class DarwinMachineConfigTests(unittest.TestCase):
             'envy.habits.terminalScratchpad.gesture = "F8";',
             self.machine.read_text(),
         )
-
-    def test_refine_migrates_legacy_config_into_machine_block(self):
-        legacy = self.root / "legacy-config.nix"
-        legacy.write_text(
-            """{
-  home.user = "chi";
-  home.dir = "/Users/chi";
-  dotfiles.path = "/Users/chi/.envy";
-  git.name = "Chi";
-  git.email = "chi@example.com";
-  proxy.status = "none";
-  proxy.tun = "false";
-  vscode.mode = "remote";
-  llm.steps.url = "https://example.com";
-  llm.steps.model = "step-model";
-  llm.deepseek.url = "https://api.deepseek.com";
-  llm.deepseek.model = "deepseek-model";
-}
-"""
-        )
-        with self.machine_file_patch(), patch.object(
-            config, "current_machine_id", return_value="test-mac"
-        ), patch.object(config, "LEGACY_USER_CONFIG", legacy), patch.object(
-            config, "LEGACY_SYSTEM_CONFIG", self.root / "missing-system-config"
-        ), patch.object(config, "ENVY_ROOT", self.root), patch.object(
-            config, "set_device_machine_id"
-        ):
-            report = config.refine_config(write=True)
-            values = config.read_machine_nix()
-
-        self.assertTrue(report.ok)
-        self.assertEqual(values["envy.user.name"], "chi")
-        self.assertNotIn("envy.llm.steps.model", values)
-        migrated = _read_values(self.machine)
-        self.assertEqual(migrated["envy.llm.endpoints.stepfun-openai.baseUrl"], "https://example.com/v1")
-        self.assertEqual(migrated["envy.agents.cc.model"], "step-model")
-        self.assertIn(config.MANAGED_START, self.machine.read_text())
-
-    def test_refine_migrates_versioned_proxy_paths_without_losing_values(self):
-        values = self.values()
-        values["envy.darwin.services.mihomo.mode"] = "keep"
-        values["envy.darwin.services.mihomo.tun"] = "true"
-        with self.machine_file_patch(), patch.object(
-            config, "current_machine_id", return_value="test-mac"
-        ), patch.object(config, "set_device_machine_id"):
-            config.write_machine_nix(values)
-            text = self.machine.read_text().replace(
-                "envy.darwin.services.mihomo.mode", "envy.darwin.proxy.mode"
-            ).replace(
-                "envy.darwin.services.mihomo.tun", "envy.darwin.proxy.tun"
-            )
-            self.machine.write_text(text)
-
-            report = config.refine_config(write=True)
-            migrated = config.read_machine_nix()
-
-        self.assertTrue(report.ok)
-        self.assertEqual(migrated["envy.darwin.services.mihomo.mode"], "keep")
-        self.assertEqual(migrated["envy.darwin.services.mihomo.tun"], "true")
-        self.assertEqual(migrated["envy.darwin.services.openssh.mode"], "manual")
-        self.assertNotIn("envy.darwin.proxy.mode", self.machine.read_text())
-        self.assertNotIn("envy.darwin.proxy.tun", self.machine.read_text())
 
     def test_writer_removes_obsolete_flat_proxy_assignments(self):
         self.machine.write_text(

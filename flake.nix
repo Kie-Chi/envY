@@ -69,14 +69,6 @@
       linuxSystem = "x86_64-linux";
       darwinMachineDir = ./hosts/darwin;
       linuxMachineDir = ./hosts/linux;
-      legacyHome = builtins.getEnv "HOME";
-      legacyUserConfigPath = legacyHome + "/.config/dotfiles/config.nix";
-      legacySystemConfigPath = "/etc/dotfiles/config.nix";
-      legacyConfigPath =
-        if legacyHome != "" && builtins.pathExists legacyUserConfigPath then legacyUserConfigPath
-        else if builtins.pathExists legacySystemConfigPath then legacySystemConfigPath
-        else null;
-      legacyConfig = if legacyConfigPath == null then null else import legacyConfigPath;
       machineFiles = directory: lib.filterAttrs
         (name: type: type == "regular" && lib.hasSuffix ".nix" name)
         (builtins.readDir directory);
@@ -188,25 +180,6 @@
         mkLinuxConfigurationFor
           (lib.removeSuffix ".nix" fileName)
           (linuxMachineDir + "/${fileName}");
-
-      legacyLinuxConfiguration =
-        if legacyConfig == null then null
-        else
-          let
-            get = path: fallback: lib.attrByPath path fallback legacyConfig;
-            user = get [ "home" "user" ] "chi";
-            userHome = get [ "home" "dir" ] "/home/${user}";
-          in mkLinuxConfigurationFor "default" ({ ... }: {
-            imports = [ ./hosts/default.nix ];
-            envy.user.name = user;
-            envy.user.home = userHome;
-            envy.repository.path = get [ "dotfiles" "path" ] "${userHome}/.envy";
-            envy.git.name = get [ "git" "name" ] user;
-            envy.git.email = get [ "git" "email" ] "${user}@localhost";
-            envy.vscode.mode = get [ "vscode" "mode" ] "remote";
-            envy.linux.option = get [ "home" "option" ] "desktop";
-            envy.linux.desktop = get [ "home" "desktop" ] "all";
-          });
 
       mkDevShell = system: nixpkgs.legacyPackages.${system}.mkShell {
         packages = with nixpkgs.legacyPackages.${system}; [
@@ -384,17 +357,9 @@
       darwinConfigurations = lib.mapAttrs' (fileName: value:
         lib.nameValuePair (lib.removeSuffix ".nix" fileName)
           (mkDarwinConfiguration fileName value)) darwinMachines;
-      namedHomeConfigurations = lib.mapAttrs' (fileName: value:
+      homeConfigurations = lib.mapAttrs' (fileName: value:
         lib.nameValuePair (lib.removeSuffix ".nix" fileName)
           (mkLinuxConfiguration fileName value)) linuxMachines;
-      # The historical Linux CLI invoked .#default after pulling. Expose that
-      # target only when its ignored legacy config exists, and derive identity
-      # from that file instead of guessing one of the versioned hosts.
-      # Test only the path here: importing legacy config to decide the output
-      # names would also break named targets when an old config link is stale.
-      homeConfigurations = namedHomeConfigurations // lib.optionalAttrs
-        (legacyConfigPath != null)
-        { default = legacyLinuxConfiguration; };
 
       platformOptionBoundaries =
         lib.all
@@ -491,7 +456,6 @@
             (builtins.attrValues darwinConfigurations)
           ++ map (configuration: configuration.config) (builtins.attrValues homeConfigurations));
       mkPlatformOptionCheck = system:
-        assert import ./checks/legacy-linux-compatibility.nix { inherit inputs; };
         assert import ./checks/agent-skills.nix { inherit inputs; };
         assert platformOptionBoundaries;
         nixpkgs.legacyPackages.${system}.runCommand "envy-platform-option-boundaries" { } ''

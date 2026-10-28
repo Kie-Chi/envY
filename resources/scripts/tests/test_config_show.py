@@ -140,8 +140,6 @@ class ConfigShowTests(unittest.TestCase):
         agents = {
             "pi": {"adapter": "pi", "moreThinking": True},
             "custom-pi": {"adapter": "pi"},
-            "omp": {"adapter": "oh-my-pi", "moreThinking": False},
-            "renamed": {"adapter": "oh-my-pi"},
             "codex": {"adapter": "codex", "moreThinking": False},
         }
         values = {
@@ -169,13 +167,9 @@ class ConfigShowTests(unittest.TestCase):
                     self.assertEqual(fields[key]["choices"], ["true", "false"])
                     self.assertEqual(payload["values"][key], str(expected).lower())
                     self.assertIs(payload["agents"][name]["moreThinking"], expected)
-                for name in ("omp", "codex"):
-                    key = f"envy.agents.{name}.moreThinking"
-                    self.assertNotIn(key, fields)
-                    self.assertNotIn(key, payload["values"])
-                for name in ("omp", "renamed"):
-                    self.assertNotIn(name, payload["agents"])
-                    self.assertFalse(any(key.startswith(f"envy.agents.{name}.") for key in fields))
+                key = "envy.agents.codex.moreThinking"
+                self.assertNotIn(key, fields)
+                self.assertNotIn(key, payload["values"])
 
     def test_show_hides_legacy_fields_from_source_and_cached_manifest(self):
         legacy = {

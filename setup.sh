@@ -98,12 +98,17 @@ if [ -f "$REQUIRES_SCRIPT" ]; then
         load_nix_path
     fi
     if [ "$(uname -s)" = "Darwin" ]; then
-        if [ -d "/opt/homebrew/bin" ]; then
-            PATH="/opt/homebrew/bin:${PATH:-}"
-        fi
-        if [ -d "/usr/local/bin" ]; then
-            PATH="/usr/local/bin:${PATH:-}"
-        fi
+        # Match requires.sh: ENVY_HOMEBREW_BIN_DIRS overrides the supported
+        # prefixes, which keeps isolated bootstrap tests off the host Homebrew.
+        homebrew_bin_dirs="${ENVY_HOMEBREW_BIN_DIRS:-/opt/homebrew/bin:/usr/local/bin}"
+        previous_ifs="$IFS"
+        IFS=:
+        for homebrew_bin in $homebrew_bin_dirs; do
+            if [ -d "$homebrew_bin" ]; then
+                PATH="$homebrew_bin:${PATH:-}"
+            fi
+        done
+        IFS="$previous_ifs"
         export PATH
     fi
 else

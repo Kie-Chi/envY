@@ -176,10 +176,25 @@ class FlakeSourceMirrorTests(unittest.TestCase):
     def test_non_https_endpoint_is_not_used(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = self.fixture(temporary)
-            env = {**os.environ, "ENVY_MIRROR": "china", "ENVY_FLAKE_MIRROR_URL": "http://mirror.example/"}
+            calls = root / "calls"
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            nix = bin_dir / "nix"
+            nix.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$ENVY_TEST_CALLS\"\nexit 1\n")
+            nix.chmod(0o755)
+            env = {
+                **os.environ,
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "ENVY_MIRROR": "china",
+                "ENVY_FLAKE_MIRROR_URL": "http://mirror.example/",
+                "ENVY_TEST_CALLS": str(calls),
+                "XDG_CACHE_HOME": str(root / "cache"),
+            }
             result = subprocess.run(["bash", str(SCRIPT), str(root), "prime"], env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("non-HTTPS", result.stderr)
+            self.assertFalse(calls.exists())
+            self.assertFalse((root / "cache").exists())
 
     def test_process_primes_only_once_per_checkout(self):
         with tempfile.TemporaryDirectory() as temporary:

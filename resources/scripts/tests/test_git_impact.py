@@ -1,4 +1,5 @@
 from io import StringIO
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,6 +15,13 @@ from envy.workflows import git as git_workflow
 from envy.workflows import system as system_workflow
 
 
+def setUpModule():
+    # Commands under test append to the operation journal. Keep those records
+    # out of the user's real state directory.
+    state = unittest.enterModuleContext(tempfile.TemporaryDirectory())
+    unittest.enterModuleContext(patch.dict(os.environ, {"XDG_STATE_HOME": state}))
+
+
 class GitImpactTests(unittest.TestCase):
     def test_refine_creates_missing_machine_after_explicit_mode_selection(self):
         missing = Path("/tmp/missing-machine.nix")
@@ -26,10 +34,15 @@ class GitImpactTests(unittest.TestCase):
             system_workflow, "refine_all", return_value=report
         ), patch.object(
             system_workflow, "ensure_nix_daemon_trust"
-        ):
+        ), patch.object(
+            # Identity verification evaluates the real machine and decrypts the
+            # real secrets; this test covers only machine creation.
+            system_workflow, "verify_apply_identity"
+        ) as verify:
             system_workflow.refine_before_apply()
 
         initialize.assert_called_once_with("missing-machine", "copy")
+        verify.assert_called_once_with()
 
     def test_refine_noninteractive_missing_machine_stops_before_migration(self):
         missing = Path("/tmp/missing-machine.nix")

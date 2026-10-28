@@ -18,7 +18,15 @@ from envy.workflows import check as check_workflow
 from envy.workflows import update as update_workflow
 
 
-NIX_DARWIN_ETC_SCRIPT = Path(__file__).resolve().parents[1] / "nix-darwin-etc.sh"
+ROOT = Path(os.environ.get("ENVY_TEST_ROOT", Path(__file__).resolve().parents[3]))
+NIX_DARWIN_ETC_SCRIPT = ROOT / "resources/scripts/nix-darwin-etc.sh"
+
+
+def setUpModule():
+    # Commands under test append to the operation journal. Keep those records
+    # out of the user's real state directory.
+    state = unittest.enterModuleContext(tempfile.TemporaryDirectory())
+    unittest.enterModuleContext(patch.dict(os.environ, {"XDG_STATE_HOME": state}))
 
 
 class SafetyWorkflowTests(unittest.TestCase):
@@ -53,7 +61,7 @@ class SafetyWorkflowTests(unittest.TestCase):
             secret.write_text("old ciphertext\n")
             captured = {}
 
-            with patch.object(config, "SOPS_YAML", sops), patch.object(
+            with patch.object(config, "ENVY_ROOT", root), patch.object(config, "SOPS_YAML", sops), patch.object(
                 config, "SECRETS_FILE", secret
             ), patch.object(config, "AGE_KEY_FILE", age_key), patch.object(
                 config, "DEVICE_LABEL_FILE", device
@@ -186,7 +194,7 @@ class SafetyWorkflowTests(unittest.TestCase):
             def write_keys(keys):
                 sops.write_text("\n".join(f"{label}: {value}" for label, value in keys.items()))
 
-            with patch.object(config, "SOPS_YAML", sops), patch.object(
+            with patch.object(config, "ENVY_ROOT", root), patch.object(config, "SOPS_YAML", sops), patch.object(
                 config, "SECRETS_FILE", secret
             ), patch.object(config, "AGE_KEY_FILE", age_key), patch.object(
                 config, "DEVICE_LABEL_FILE", device
@@ -442,6 +450,7 @@ sops:
 
             result = subprocess.run(["bash", str(NIX_DARWIN_ETC_SCRIPT)], env=env, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
+            self.assertIn("refusing to overwrite existing backup", result.stderr)
             self.assertEqual((root / "bashrc").read_text(), "current bash\n")
             self.assertEqual((root / "bashrc.before-nix-darwin").read_text(), "old bash\n")
             self.assertEqual((root / "zshrc").read_text(), "current zsh\n")

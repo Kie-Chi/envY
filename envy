@@ -6,6 +6,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 export ENVY_ROOT="$ROOT"
 export PYTHONPATH="$ROOT/resources/scripts:${PYTHONPATH:-}"
+# Keep build caches out of the checkout: `path:` flake evaluation hashes every
+# file, and bundled sources would capture them in the system closure.
+ENVY_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/envy"
+export PYTHONPYCACHEPREFIX="${PYTHONPYCACHEPREFIX:-$ENVY_CACHE_DIR/pycache}"
 MIRROR_ENV_SCRIPT="$ROOT/resources/scripts/mirror-env.sh"
 FLAKE_SOURCE_MIRROR_SCRIPT="$ROOT/resources/scripts/flake-source-mirror.sh"
 
@@ -63,7 +67,9 @@ if [ "${1:-}" = "tui" ] && [ "$#" -eq 1 ] && [ -z "${_ENVY_COMPLETE:-}" ]; then
     export ENVY_BIN="${ENVY_BIN:-$ROOT/envy}"
     exec envy-tui "$@"
   elif command -v cargo >/dev/null 2>&1 && [ -f "$ROOT/resources/scripts/envy-tui/Cargo.toml" ]; then
-    exec env ENVY_BIN="$ROOT/envy" cargo run --quiet --manifest-path "$ROOT/resources/scripts/envy-tui/Cargo.toml" -- "$@"
+    exec env ENVY_BIN="$ROOT/envy" \
+      CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ENVY_CACHE_DIR/envy-tui-target}" \
+      cargo run --quiet --manifest-path "$ROOT/resources/scripts/envy-tui/Cargo.toml" -- "$@"
   else
     echo "error: envy-tui is not installed; enter the Nix devShell or install the envY package." >&2
     exit 1

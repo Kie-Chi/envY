@@ -220,6 +220,7 @@ For meeting apps such as Tencent Meeting or Feishu, open the app and actually st
 - When adding a new app permission check: add `PermissionReq` entries in `AppSpec.permissions`. Remember that missing TCC records may mean "not requested yet", not necessarily "denied".
 - Modules read non-sensitive machine values from `config.envy.*`; do not reintroduce a separate `cfg` argument.
 - sops-nix on darwin uses activation scripts (not systemd), so secrets are decrypted during `darwin-rebuild switch`.
+- Keep build caches outside the checkout: `path:` flake evaluation hashes every file, and bundled sources capture them in closures. The devShell, `./envy`, and the installed `envy` wrapper place `CARGO_TARGET_DIR` and `PYTHONPYCACHEPREFIX` under `~/.cache/envy`.
 
 - Source definitions live in `envy.software.sources`; custom host definitions use a separate `ENVY MANAGED SOURCES` block. Search/add caches bind concrete source IDs and context fingerprints. Never substitute a global Nix registry lookup for project-locked inputs.
 - Shared source registration owns only flake managed input/binding blocks plus flake.lock, validates every machine, and rolls back all files on failure. Native source configuration owns only envY-named repository/keyring files.

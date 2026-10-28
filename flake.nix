@@ -234,6 +234,10 @@
         shellHook = ''
           export ENVY_DEV_SHELL=1
           export PYTHONPATH="${./resources/scripts}:$PYTHONPATH"
+          # Build caches stay outside the checkout: path: flake evaluation
+          # hashes every file and bundled sources would capture them.
+          export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-''${XDG_CACHE_HOME:-$HOME/.cache}/envy/envy-tui-target}"
+          export PYTHONPYCACHEPREFIX="''${PYTHONPYCACHEPREFIX:-''${XDG_CACHE_HOME:-$HOME/.cache}/envy/pycache}"
           if [ "''${ENVY_DEBUG:-0}" = "1" ]; then
             echo "[DEBUG] devShell: setup environment ready" >&2
             echo "[DEBUG] Available tools: jq, sops, age, ssh-to-age, python3, typer, rich, prompt_toolkit, cargo, rustc, home-manager" >&2

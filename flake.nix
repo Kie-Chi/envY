@@ -368,6 +368,7 @@
           AMUX_PATH=${./modules/agents/amux/amux.py} python ${./modules/agents/tests/test_amux.py}
           zsh -n ${./modules/agents/amux/_amux}
           ENVY_READER_PATH=${./modules/agents/skills/read/scripts/read.py} python ${./modules/agents/tests/test_reader.py}
+          ${import ./modules/agents/tests/wrappers.nix { inherit lib pkgs; }}
           touch "$out"
         '';
 

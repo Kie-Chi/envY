@@ -3,34 +3,18 @@
 let
   agentConfig = config.envy.agents.codex;
   prompts = import ./prompts.nix { inherit lib pkgs; };
-  endpoint = if agentConfig.endpoint == null
-    || !(builtins.hasAttr agentConfig.endpoint config.envy.llm.endpoints) then null
-    else config.envy.llm.endpoints.${agentConfig.endpoint};
-  credentialName = if agentConfig.credential == null then null
-    else "llm-credential-${agentConfig.credential}";
-  credential = if credentialName == null || !(builtins.hasAttr credentialName config.sops.placeholder) then ""
-    else builtins.getAttr credentialName config.sops.placeholder;
+  wrapper = import ./wrapper.nix { inherit lib pkgs; };
+  inherit (wrapper.resolve config agentConfig) endpoint credentialName credential;
   templateName = "envy-agent-codex";
-  codex = pkgs.writeShellApplication {
+  codex = wrapper.mkWrapper {
     name = "codex";
-    text = ''
-      if [ -f "${config.sops.templates.${templateName}.path}" ]; then
-        # shellcheck source=/dev/null
-        source "${config.sops.templates.${templateName}.path}"
-      fi
-      if [ -f "${config.envy.user.home}/.config/envy/agent-runtime/codex.env" ]; then
-        # shellcheck source=/dev/null
-        source "${config.envy.user.home}/.config/envy/agent-runtime/codex.env"
-      fi
-      if [ -f "${config.envy.user.home}/.config/envy/agent-runtime/codex.env" ]; then
-        # shellcheck source=/dev/null
-        source "${config.envy.user.home}/.config/envy/agent-runtime/codex.env"
-      fi
-      cmd=(${lib.escapeShellArg (lib.getExe pkgs.codex)})
-      ${prompts.shellArgs "codex"}
-      ${lib.concatMapStringsSep "\n" (arg: "cmd+=(${lib.escapeShellArg arg})") agentConfig.args}
-      exec "''${cmd[@]}" "$@"
-    '';
+    executable = lib.getExe pkgs.codex;
+    envFiles = [
+      config.sops.templates.${templateName}.path
+      (wrapper.runtimeEnvPath config.envy.user.home "codex")
+    ];
+    beforeArgs = prompts.shellArgs "codex";
+    args = agentConfig.args;
   };
 in
 

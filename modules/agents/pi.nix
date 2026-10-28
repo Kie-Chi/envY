@@ -7,12 +7,8 @@ let
     import ./pi-package.nix { inherit piPackage pkgs; }
     else piPackage;
   providerName = "envy-pi";
-  endpointFor = agent: if agent.endpoint == null
-    || !(builtins.hasAttr agent.endpoint config.envy.llm.endpoints) then null
-    else config.envy.llm.endpoints.${agent.endpoint};
-  credentialNameFor = agent: if agent.credential == null
-    then null
-    else "llm-credential-${agent.credential}";
+  wrapper = import ./wrapper.nix { inherit lib pkgs; };
+  endpointFor = agent: (wrapper.resolve config agent).endpoint;
   apiFor = agent: endpoint:
     if agent.api != null then agent.api
     else if endpoint != null && endpoint.protocol == "anthropic-compatible" then "anthropic-messages"
@@ -20,13 +16,8 @@ let
   isAnthropicApi = api: api == "anthropic-messages";
   templateNameFor = name: "envy-agent-${name}";
   templateFor = agent: let
-    endpoint = endpointFor agent;
+    inherit (wrapper.resolve config agent) endpoint credentialName credential;
     api = apiFor agent endpoint;
-    credentialName = credentialNameFor agent;
-    credential = if credentialName == null
-      || !(builtins.hasAttr credentialName config.sops.placeholder)
-      then ""
-      else builtins.getAttr credentialName config.sops.placeholder;
   in ''
     ${lib.optionalString (endpoint != null && isAnthropicApi api) ''
     export ANTHROPIC_BASE_URL=${lib.escapeShellArg endpoint.baseUrl}
@@ -80,43 +71,30 @@ let
       ];
     };
   };
-  piWrapper = pkgs.writeShellApplication {
+  piWrapper = wrapper.mkWrapper {
     name = "pi";
-    text = ''
+    executable = lib.getExe selectedPiPackage;
+    envFiles = [
+      config.sops.templates.${templateNameFor "pi"}.path
+      (wrapper.runtimeEnvPath config.envy.user.home "pi")
+    ];
+    beforeEnv = ''
       # Pi dispatches management subcommands before parsing session options.
       case "''${1-}" in
         install|remove|uninstall|update|list|config|auth|mcp)
           exec ${lib.getExe selectedPiPackage} "$@"
           ;;
       esac
-      if [ -f "${config.sops.templates.${templateNameFor "pi"}.path}" ]; then
-        # shellcheck source=/dev/null
-        source "${config.sops.templates.${templateNameFor "pi"}.path}"
-      fi
-      if [ -f "${config.envy.user.home}/.config/envy/agent-runtime/pi.env" ]; then
-        # shellcheck source=/dev/null
-        source "${config.envy.user.home}/.config/envy/agent-runtime/pi.env"
-      fi
-      if [ -f "${config.envy.user.home}/.config/envy/agent-runtime/pi.env" ]; then
-        # shellcheck source=/dev/null
-        source "${config.envy.user.home}/.config/envy/agent-runtime/pi.env"
-      fi
-      cmd=(${lib.escapeShellArg (lib.getExe selectedPiPackage)})
-      ${prompts.shellArgs "pi"}
-      ${lib.optionalString (piConfig.model != null) ''
+    '';
+    beforeArgs = prompts.shellArgs "pi" + lib.optionalString (piConfig.model != null) ''
+
       if [[ -n "''${ENVY_AGENT_MODEL:-}" ]]; then
-        cmd+=(--model "${providerName}/''${ENVY_AGENT_MODEL}")
-      else
-        if [[ -n "''${ENVY_AGENT_MODEL:-}" ]]; then
         cmd+=(--model "${providerName}/''${ENVY_AGENT_MODEL}")
       else
         cmd+=(--model ${lib.escapeShellArg "${providerName}/${piConfig.model}"})
       fi
-      fi
-      ''}
-      ${lib.concatMapStringsSep "\n" (arg: "cmd+=(${lib.escapeShellArg arg})") piConfig.args}
-      exec "''${cmd[@]}" "$@"
     '';
+    inherit (piConfig) args;
   };
 in
 {

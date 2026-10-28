@@ -7,20 +7,23 @@ let
   promptFile = ".config/ccli/prompt";
   prompts = import ./prompts.nix { inherit lib pkgs; };
   systemPrompt = prompts.forAdapter "claude-code";
-  endpoint = if agentConfig.endpoint == null
-    || !(builtins.hasAttr agentConfig.endpoint config.envy.llm.endpoints) then null
-    else config.envy.llm.endpoints.${agentConfig.endpoint};
-  credentialName = if agentConfig.credential == null then null
-    else "llm-credential-${agentConfig.credential}";
-  credential = if credentialName == null || !(builtins.hasAttr credentialName config.sops.placeholder) then ""
-    else builtins.getAttr credentialName config.sops.placeholder;
+  wrapper = import ./wrapper.nix { inherit lib pkgs; };
+  inherit (wrapper.resolve config agentConfig) endpoint credentialName credential;
   templateName = "envy-agent-cc";
   agentArgs = legacyConfig.extraArgs ++ agentConfig.args;
   aliases = lib.unique ([ ] ++ agentConfig.aliases ++ lib.optional legacyConfig.ccliAlias "ccli");
 
-  claudeWithDefaults = pkgs.writeShellApplication {
+  claudeWithDefaults = wrapper.mkWrapper {
     name = "claude";
-    text = ''
+    # Call nixpkgs' wrapper by absolute path. It prepares Claude Code's
+    # runtime before handing off to its internal .claude-wrapped binary.
+    executable = lib.getExe legacyConfig.package;
+    envFiles = [
+      config.sops.templates.${templateName}.path
+      (wrapper.runtimeEnvPath config.envy.user.home "cc")
+    ];
+    args = agentArgs;
+    beforeEnv = ''
       system_prompt=${lib.escapeShellArg systemPrompt}
       prompt_file="$HOME/${promptFile}"
 
@@ -29,36 +32,15 @@ let
       elif [[ -f "$prompt_file" ]]; then
         system_prompt=$(<"$prompt_file")
       fi
-
-      # Call nixpkgs' wrapper by absolute path. It prepares Claude Code's
-      # runtime before handing off to its internal .claude-wrapped binary.
-      if [ -f "${config.sops.templates.${templateName}.path}" ]; then
-        # shellcheck source=/dev/null
-        source "${config.sops.templates.${templateName}.path}"
-      fi
-      if [ -f "${config.envy.user.home}/.config/envy/agent-runtime/cc.env" ]; then
-        # shellcheck source=/dev/null
-        source "${config.envy.user.home}/.config/envy/agent-runtime/cc.env"
-      fi
-      if [ -f "${config.envy.user.home}/.config/envy/agent-runtime/cc.env" ]; then
-        # shellcheck source=/dev/null
-        source "${config.envy.user.home}/.config/envy/agent-runtime/cc.env"
-      fi
-
-      cmd=("${lib.getExe legacyConfig.package}")
-      ${lib.concatMapStringsSep "\n" (arg: "cmd+=(${lib.escapeShellArg arg})") agentArgs}
-
+    '';
+    afterArgs = ''
       if [[ -n "$system_prompt" ]]; then
         cmd+=(--system-prompt "$system_prompt")
       fi
-
-      exec "''${cmd[@]}" "$@"
     '';
   };
 
-  aliasesPackages = map (alias: pkgs.writeShellScriptBin alias ''
-    exec claude "$@"
-  '') aliases;
+  aliasesPackages = wrapper.mkAliases "claude" aliases;
 in
 {
   options.agents.claude = {

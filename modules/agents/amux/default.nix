@@ -76,7 +76,7 @@ let
   inheritedArgs = args: lib.filter (arg: !(builtins.elem arg permissionFlags)) args;
   templatePath = name:
     lib.optional (config.sops.templates ? ${name}) config.sops.templates.${name}.path;
-  runtimeEnv = name: "${home}/.config/envy/agent-runtime/${name}.env";
+  runtimeEnv = (import ../wrapper.nix { inherit lib pkgs; }).runtimeEnvPath home;
   # The host's skill links point into its own store, which containers do not
   # see; mount each selected skill directory where the agent discovers it.
   # Reading home.file instead would make this package depend on itself.

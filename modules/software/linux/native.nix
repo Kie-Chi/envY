@@ -46,7 +46,7 @@ let
   '';
 in
 {
-  home.activation.installNativePackages = sys.task.root {
+  home.activation.installNativePackages = sys.task.activation {
     name = "native-packages";
     after = [ "configureNativeRepositories" ];
     pre = ''

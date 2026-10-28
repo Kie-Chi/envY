@@ -21,7 +21,7 @@ in {
       config.envy.linux.software.native.packages.effective;
     message = "Native packages require their source in the effective repository selection";
   }];
-  home.activation.configureNativeRepositories = sys.task.root {
+  home.activation.configureNativeRepositories = sys.task.activation {
     name = "native-repositories";
     after = [ "configureAptMirror" ];
     script = ''esudo_system ${runtime}/bin/envy-native-sources'';

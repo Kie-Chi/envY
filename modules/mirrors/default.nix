@@ -33,7 +33,7 @@ in
 
   # nix.enable is false on Darwin so nix-darwin does not own the installer's
   # daemon configuration. Use the same marked configuration on both platforms.
-  home.activation.configureNixDaemonTrust = sys.task.root {
+  home.activation.configureNixDaemonTrust = sys.task.activation {
     name = "configure-nix-daemon-trust";
     script = ''
       if ${nixTrustCommand} status \

@@ -411,6 +411,15 @@
         && lib.all
           (configuration:
             let
+              users = configuration.config.home-manager.users;
+              sysInit = users.${configuration.config.envy.user.name}.home.activation.sysInit.data;
+            in
+              # Native package helpers are Linux-only activation functions.
+              lib.hasInfix "esudo()" sysInit && !(lib.hasInfix "esudo_system" sysInit))
+          (builtins.attrValues darwinConfigurations)
+        && lib.all
+          (configuration:
+            let
               manual = configuration.extendModules {
                 modules = [{ envy.darwin.services.openssh.mode = lib.mkForce "manual"; }];
               };

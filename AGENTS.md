@@ -31,6 +31,7 @@ Cross-platform Nix configuration for Darwin (aarch64-darwin) and Linux (x86_64-l
 | `modules/llm/default.nix` | Shared LLM sops declarations, environment template, and shell integration. |
 | `modules/mirrors/` | Versioned mirror catalog, common ecosystem environment, and Darwin/Linux implementations. |
 | `modules/cores/secrets.nix` | Core password secret required by host-level activation tasks. |
+| `modules/libs/sys.nix` | Provides the `sys` module argument from `activation.nix` (log/esudo/sops prelude and `task.activation`), `deploy.nix` (render, root deploy, writable merge), and Linux-only `linux-packages.nix`. |
 | `modules/agents/` | Agent installers, provider wrappers, declarative skill catalog, and shared skill selection. |
 | `modules/agents/amux/` | `amux` host client, session image, tmux baseline, and zsh completion for npm-latest Claude Code/Codex in detachable per-session Docker containers with a shared in-container Nix store. Host session history (`~/.codex/sessions`, `~/.codex/archived_sessions`, `~/.claude/projects`) is bind-mounted at the same paths; agent config, credentials, and SQLite state stay in the container. |
 | `docs/agents.md` | Architecture and maintenance guide for agent providers and skill subpackages. |

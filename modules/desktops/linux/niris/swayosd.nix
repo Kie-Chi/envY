@@ -8,7 +8,7 @@ let
 in
 {
   config = lib.mkIf enabled {
-  home.activation.swayosdSystemSetup = sys.task.root {
+  home.activation.swayosdSystemSetup = sys.task.activation {
     after = [ "niriStartUp" ];
     name = "swayosd-system-setup";
     script = ''

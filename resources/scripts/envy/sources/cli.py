@@ -85,7 +85,8 @@ def search(query: str, ecosystem: str | None = typer.Option(None, autocompletion
 
 def mutate(source_id, action, definition, ref, dry_run, yes, json_output):
     command = "software.source." + action
-    from envy.software import machine_file, _apply_desired_state
+    from envy.software.cli import _apply_desired_state
+    from envy.software.policy import machine_file
     try:
         manifest, sources = snapshot()
         target = machine_file()
@@ -152,7 +153,11 @@ def mutate(source_id, action, definition, ref, dry_run, yes, json_output):
         plan = {"sourceId": source_id, "scope": "machine", "files": [str(target)],
                 "sourceDefinition": action, "changed": True}
         # Prepare one complete host result, including its source selection.
-        from envy.software import _parse_managed_policy_source, _update_managed_policy_source, groups_for_manifest, ManagedInclude
+        from envy.software.model import groups_for_manifest, ManagedInclude
+        from envy.software.policy_text import (
+            _parse_managed_policy_source,
+            _update_managed_policy_source,
+        )
         original = target.read_text()
         updated = render_definitions(original, definitions)
         groups = groups_for_manifest(manifest, include_empty=True)

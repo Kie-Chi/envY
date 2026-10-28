@@ -7,11 +7,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import typer
 from rich.console import Console
 from typer.main import get_command
 from typer.testing import CliRunner
 
-from envy import software
+from envy import log
+from envy.software import cli as software_cli, completion, model, planner
 from envy.main import cli
 from envy.search import providers, runner
 from envy.search.model import ProviderReport, ResolveResult, SearchResult
@@ -152,18 +154,18 @@ class SoftwareCliTests(unittest.TestCase):
 
     def test_exact_stable_id_wins_over_another_items_display_name(self):
         items = [
-            software.SoftwareItem(
+            model.SoftwareItem(
                 id="alpha", name="first", version=None, ref=None,
                 included=True, checked=True, managed=False, locked=False,
                 stale=False, changed=False,
             ),
-            software.SoftwareItem(
+            model.SoftwareItem(
                 id="beta", name="alpha", version=None, ref=None,
                 included=True, checked=True, managed=False, locked=False,
                 stale=False, changed=False,
             ),
         ]
-        self.assertEqual(software._resolve_existing_item(items, "alpha").id, "alpha")
+        self.assertEqual(planner._resolve_existing_item(items, "alpha").id, "alpha")
 
     def test_removed_config_software_and_top_level_search_are_unknown(self):
         cli_runner = CliRunner()
@@ -177,10 +179,8 @@ class SoftwareCliTests(unittest.TestCase):
             machine = Path(tempdir) / "machine.nix"
             original = "{ ... }:\n\n{\n}\n"
             machine.write_text(original)
-            with patch.dict("os.environ", {"XDG_CACHE_HOME": tempdir}), patch.object(
-                software, "resolve_exact", return_value=self._resolved_cask()
-            ), patch.object(software, "_manifest_or_exit", return_value=manifest), patch.object(
-                software, "machine_file", return_value=machine
+            with patch.dict("os.environ", {"XDG_CACHE_HOME": tempdir}), patch.object(planner, "resolve_exact", return_value=self._resolved_cask()
+            ), patch.object(software_cli, "_manifest_or_exit", return_value=manifest), patch.object(software_cli, "machine_file", return_value=machine
             ):
                 result = cli_runner.invoke(cli, [
                     "sw", "add", "homebrew.system.cask", "zotero", "--dry-run",
@@ -198,10 +198,8 @@ class SoftwareCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             machine = Path(tempdir) / "machine.nix"
             machine.write_text("{ ... }:\n\n{\n}\n")
-            with patch.dict("os.environ", {"XDG_CACHE_HOME": tempdir}), patch.object(
-                software, "resolve_exact", return_value=self._resolved_cask()
-            ), patch.object(software, "_manifest_or_exit", return_value=manifest), patch.object(
-                software, "machine_file", return_value=machine
+            with patch.dict("os.environ", {"XDG_CACHE_HOME": tempdir}), patch.object(planner, "resolve_exact", return_value=self._resolved_cask()
+            ), patch.object(software_cli, "_manifest_or_exit", return_value=manifest), patch.object(software_cli, "machine_file", return_value=machine
             ):
                 result = cli_runner.invoke(cli, [
                     "sw", "add", "zotero", "--group", "homebrew.system.cask", "--dry-run",
@@ -216,9 +214,8 @@ class SoftwareCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             machine = Path(tempdir) / "machine.nix"
             machine.write_text("{ ... }:\n\n{\n}\n")
-            with patch.dict("os.environ", {"XDG_CACHE_HOME": tempdir}), patch.object(
-                software, "_manifest_or_exit", return_value=manifest
-            ), patch.object(software, "machine_file", return_value=machine):
+            with patch.dict("os.environ", {"XDG_CACHE_HOME": tempdir}), patch.object(software_cli, "_manifest_or_exit", return_value=manifest
+            ), patch.object(software_cli, "machine_file", return_value=machine):
                 result = cli_runner.invoke(cli, ["sw", "add", "zotero", "--dry-run"])
 
         self.assertEqual(result.exit_code, 0, result.stdout)
@@ -231,10 +228,8 @@ class SoftwareCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             machine = Path(tempdir) / "machine.nix"
             machine.write_text("{ ... }:\n\n{\n}\n")
-            with patch.dict("os.environ", {"XDG_CACHE_HOME": tempdir}), patch.object(
-                software, "resolve_exact", return_value=self._resolved_cask()
-            ), patch.object(software, "_manifest_or_exit", return_value=manifest), patch.object(
-                software, "machine_file", return_value=machine
+            with patch.dict("os.environ", {"XDG_CACHE_HOME": tempdir}), patch.object(planner, "resolve_exact", return_value=self._resolved_cask()
+            ), patch.object(software_cli, "_manifest_or_exit", return_value=manifest), patch.object(software_cli, "machine_file", return_value=machine
             ):
                 result = cli_runner.invoke(cli, [
                     "sw", "add", "homebrew.system.cask", "zotero",
@@ -256,11 +251,9 @@ class SoftwareCliTests(unittest.TestCase):
             machine = Path(tempdir) / "machine.nix"
             original = "{ ... }:\n\n{\n}\n"
             machine.write_text(original)
-            with patch.dict("os.environ", {"XDG_CACHE_HOME": tempdir}), patch.object(
-                software, "resolve_exact", return_value=self._resolved_cask()
-            ), patch.object(software, "_manifest_or_exit", return_value=manifest), patch.object(
-                software, "machine_file", return_value=machine
-            ), patch.object(software, "write_and_validate_software_policy") as write:
+            with patch.dict("os.environ", {"XDG_CACHE_HOME": tempdir}), patch.object(planner, "resolve_exact", return_value=self._resolved_cask()
+            ), patch.object(software_cli, "_manifest_or_exit", return_value=manifest), patch.object(software_cli, "machine_file", return_value=machine
+            ), patch.object(software_cli, "write_and_validate_software_policy") as write:
                 result = cli_runner.invoke(cli, [
                     "sw", "add", "homebrew.system.cask", "zotero", "--json",
                 ])
@@ -279,13 +272,10 @@ class SoftwareCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             machine = Path(tempdir) / "machine.nix"
             machine.write_text("{ ... }:\n\n{\n}\n")
-            with patch.dict("os.environ", {"XDG_CACHE_HOME": tempdir}), patch.object(
-                software, "resolve_exact", return_value=self._resolved_cask()
-            ), patch.object(software, "_manifest_or_exit", return_value=manifest), patch.object(
-                software, "machine_file", return_value=machine
-            ), patch.object(
-                software, "write_and_validate_software_policy", return_value=manifest
-            ) as write, patch.object(software, "offer_mutation_commit") as offer:
+            with patch.dict("os.environ", {"XDG_CACHE_HOME": tempdir}), patch.object(planner, "resolve_exact", return_value=self._resolved_cask()
+            ), patch.object(software_cli, "_manifest_or_exit", return_value=manifest), patch.object(software_cli, "machine_file", return_value=machine
+            ), patch.object(software_cli, "write_and_validate_software_policy", return_value=manifest
+            ) as write, patch.object(software_cli, "offer_mutation_commit") as offer:
                 result = cli_runner.invoke(cli, [
                     "sw", "add", "homebrew.system.cask", "zotero",
                     "--yes", "--json",
@@ -306,11 +296,9 @@ class SoftwareCliTests(unittest.TestCase):
             machine = Path(tempdir) / "machine.nix"
             original = "{ ... }:\n\n{\n}\n"
             machine.write_text(original)
-            with patch.dict("os.environ", {"XDG_CACHE_HOME": tempdir}), patch.object(
-                software, "resolve_exact", return_value=self._resolved_cask()
-            ), patch.object(software, "_manifest_or_exit", return_value=manifest), patch.object(
-                software, "machine_file", return_value=machine
-            ), patch.object(software, "write_and_validate_software_policy") as write:
+            with patch.dict("os.environ", {"XDG_CACHE_HOME": tempdir}), patch.object(planner, "resolve_exact", return_value=self._resolved_cask()
+            ), patch.object(software_cli, "_manifest_or_exit", return_value=manifest), patch.object(software_cli, "machine_file", return_value=machine
+            ), patch.object(software_cli, "write_and_validate_software_policy") as write:
                 result = cli_runner.invoke(
                     cli,
                     ["sw", "add", "homebrew.system.cask", "zotero"],
@@ -329,13 +317,10 @@ class SoftwareCliTests(unittest.TestCase):
             machine = Path(tempdir) / "machine.nix"
             original = "{ ... }:\n\n{\n}\n"
             machine.write_text(original)
-            with patch.dict("os.environ", {"XDG_CACHE_HOME": tempdir}), patch.object(
-                software, "resolve_exact", return_value=ResolveResult.not_found("not found")
-            ), patch.object(
-                software, "_manifest_or_exit", return_value=manifest
-            ), patch.object(
-                software, "machine_file", return_value=machine
-            ), patch.object(software, "write_and_validate_software_policy") as write:
+            with patch.dict("os.environ", {"XDG_CACHE_HOME": tempdir}), patch.object(planner, "resolve_exact", return_value=ResolveResult.not_found("not found")
+            ), patch.object(software_cli, "_manifest_or_exit", return_value=manifest
+            ), patch.object(software_cli, "machine_file", return_value=machine
+            ), patch.object(software_cli, "write_and_validate_software_policy") as write:
                 result = cli_runner.invoke(cli, [
                     "sw", "add", "homebrew.system.cask", "does-not-exist", "--yes",
                 ])
@@ -354,9 +339,8 @@ class SoftwareCliTests(unittest.TestCase):
             with patch.dict("os.environ", {"XDG_CACHE_HOME": tempdir}):
                 from envy.search.index import RegistryIndex
                 RegistryIndex().put_results([self._resolved_cask().result])
-                with patch.object(software, "resolve_exact") as resolve, patch.object(
-                    software, "_manifest_or_exit", return_value=manifest
-                ), patch.object(software, "machine_file", return_value=machine):
+                with patch.object(planner, "resolve_exact") as resolve, patch.object(software_cli, "_manifest_or_exit", return_value=manifest
+                ), patch.object(software_cli, "machine_file", return_value=machine):
                     result = cli_runner.invoke(cli, [
                         "sw", "add", "homebrew.system.cask", "zotero", "--dry-run",
                     ])
@@ -374,9 +358,8 @@ class SoftwareCliTests(unittest.TestCase):
             machine = Path(tempdir) / "machine.nix"
             original = "{ ... }:\n\n{\n}\n"
             machine.write_text(original)
-            with patch.object(software, "_manifest_or_exit", return_value=manifest), patch.object(
-                software, "machine_file", return_value=machine
-            ), patch.object(software, "write_and_validate_software_policy") as write:
+            with patch.object(software_cli, "_manifest_or_exit", return_value=manifest), patch.object(software_cli, "machine_file", return_value=machine
+            ), patch.object(software_cli, "write_and_validate_software_policy") as write:
                 result = cli_runner.invoke(cli, [
                     "sw", "add", "homebrew.system.cask", "zotero", "--yes",
                 ])
@@ -395,11 +378,9 @@ class SoftwareCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             machine = Path(tempdir) / "machine.nix"
             machine.write_text("{ ... }:\n\n{\n}\n")
-            with patch.object(software, "_manifest_or_exit", return_value=before), patch.object(
-                software, "machine_file", return_value=machine
-            ), patch.object(
-                software, "write_and_validate_software_policy", return_value=after
-            ) as write, patch.object(software, "offer_mutation_commit"):
+            with patch.object(software_cli, "_manifest_or_exit", return_value=before), patch.object(software_cli, "machine_file", return_value=machine
+            ), patch.object(software_cli, "write_and_validate_software_policy", return_value=after
+            ) as write, patch.object(software_cli, "offer_mutation_commit"):
                 result = cli_runner.invoke(cli, [
                     "sw", "rm", "homebrew.system.cask", "zotero", "--yes",
                 ])
@@ -417,17 +398,16 @@ class SoftwareCliTests(unittest.TestCase):
             "npm.user.tool": [],
         }
         context = SimpleNamespace(params={"group": "nix.user.package"})
-        with patch.object(software, "machine_manifest", return_value=manifest), patch.object(
-            software, "read_managed_exclusions", return_value=managed
+        with patch.object(completion, "machine_manifest", return_value=manifest), patch.object(completion, "read_managed_exclusions", return_value=managed
         ):
-            disable_groups = software.complete_disable_groups(None, "nix")
-            enable_groups = software.complete_enable_groups(None, "nix")
-            disable_items = software.complete_disable_items(context, "")
-            enable_items = software.complete_enable_items(context, "")
-            add_groups = software.complete_add_groups(None, "")
-            remove_groups = software.complete_remove_groups(None, "")
-            add_items = software.complete_add_items(context, "")
-            remove_items = software.complete_remove_items(context, "")
+            disable_groups = completion.complete_disable_groups(None, "nix")
+            enable_groups = completion.complete_enable_groups(None, "nix")
+            disable_items = completion.complete_disable_items(context, "")
+            enable_items = completion.complete_enable_items(context, "")
+            add_groups = completion.complete_add_groups(None, "")
+            remove_groups = completion.complete_remove_groups(None, "")
+            add_items = completion.complete_add_items(context, "")
+            remove_items = completion.complete_remove_items(context, "")
 
         self.assertEqual(disable_groups, [("nix.user.package", "Nix packages")])
         self.assertEqual(enable_groups, [("nix.user.package", "Nix packages")])
@@ -449,10 +429,9 @@ class SoftwareCliTests(unittest.TestCase):
     def test_smart_completion_loads_policy_once(self):
         manifest = self._completion_manifest()
         managed = {"nix.user.package": ["okular"], "npm.user.tool": []}
-        with patch.object(software, "machine_manifest", return_value=manifest), patch.object(
-            software, "read_managed_exclusions", return_value=managed
-        ), patch.object(software, "_completion_policy", wraps=software._completion_policy) as policy:
-            candidates = software.complete_remove_targets(None, "")
+        with patch.object(completion, "machine_manifest", return_value=manifest), patch.object(completion, "read_managed_exclusions", return_value=managed
+        ), patch.object(completion, "_completion_policy", wraps=completion._completion_policy) as policy:
+            candidates = completion.complete_remove_targets(None, "")
 
         self.assertEqual([item[0] for item in candidates], ["nix.user.package", "npm.user.tool", "git", "okular"])
         policy.assert_called_once_with()
@@ -476,11 +455,10 @@ class SoftwareCliTests(unittest.TestCase):
                     version="1.0", ref="npm:wrong-kind",
                 ),
             ])
-            with patch.object(software, "machine_manifest", return_value=manifest), patch.object(
-                software, "read_managed_exclusions", return_value=managed
+            with patch.object(completion, "machine_manifest", return_value=manifest), patch.object(completion, "read_managed_exclusions", return_value=managed
             ):
-                items = software.complete_add_items(context, "pre")
-                wrong_kind = software.complete_add_items(context, "wrong")
+                items = completion.complete_add_items(context, "pre")
+                wrong_kind = completion.complete_add_items(context, "wrong")
 
         self.assertEqual([item[0] for item in items], ["prettier"])
         self.assertIn("registry index", items[0][1])
@@ -502,16 +480,14 @@ class SoftwareCliTests(unittest.TestCase):
             "nix.user.package": ["old-tool"],
             "npm.user.tool": [],
         }
-        with patch.object(software, "machine_manifest", return_value=manifest), patch.object(
-            software, "read_managed_policy", return_value=(includes, exclusions)
-        ), patch.object(
-            software, "read_managed_exclusions", return_value=exclusions
+        with patch.object(completion, "machine_manifest", return_value=manifest), patch.object(completion, "read_managed_policy", return_value=(includes, exclusions)
+        ), patch.object(completion, "read_managed_exclusions", return_value=exclusions
         ):
-            all_items = software.complete_why_items(SimpleNamespace(params={}), "")
-            grouped = software.complete_why_items(
+            all_items = completion.complete_why_items(SimpleNamespace(params={}), "")
+            grouped = completion.complete_why_items(
                 SimpleNamespace(params={"group": "nix.user.package"}), "old"
             )
-            groups = software.complete_why_groups(None, "npm")
+            groups = completion.complete_why_groups(None, "npm")
 
         by_id = dict(all_items)
         self.assertIn("nix.user.package", by_id["git"])
@@ -524,8 +500,8 @@ class SoftwareCliTests(unittest.TestCase):
             "envy.search.providers.available_providers",
             return_value={"nix": object(), "npm": object(), "pypi": object()},
         ):
-            items = software.complete_search_sources(None, "nix,np")
-            repeated = software.complete_search_sources(
+            items = completion.complete_search_sources(None, "nix,np")
+            repeated = completion.complete_search_sources(
                 SimpleNamespace(params={"source": ["nix"]}), "ni"
             )
 
@@ -540,14 +516,12 @@ class SoftwareCliTests(unittest.TestCase):
             include=["okular"], exclude=[], effective=["okular"]
         )
         managed = {"nix.user.package": ["okular"], "npm.user.tool": []}
-        with patch.object(software, "_manifest_or_exit", return_value=before), patch.object(
-            software, "read_managed_exclusions", return_value=managed
-        ), patch.object(
-            software, "write_and_validate_exclusions", return_value=after
-        ), patch.object(software, "offer_mutation_commit"), patch.object(
-            software.log, "ok"
+        with patch.object(software_cli, "_manifest_or_exit", return_value=before), patch.object(software_cli, "read_managed_exclusions", return_value=managed
+        ), patch.object(software_cli, "write_and_validate_exclusions", return_value=after
+        ), patch.object(software_cli, "offer_mutation_commit"), patch.object(
+            log, "ok"
         ) as ok:
-            software._change_one("nix.user.package", "okular", excluded=False)
+            software_cli._change_one("nix.user.package", "okular", excluded=False)
 
         ok.assert_called_with(
             "software", "enabled", group="nix.user.package",
@@ -562,14 +536,11 @@ class SoftwareCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             machine = Path(tempdir) / "machine.nix"
             machine.write_text("{ ... }:\n\n{\n}\n")
-            with patch.object(software, "_manifest_or_exit", return_value=before), patch.object(
-                software, "machine_file", return_value=machine
-            ), patch.object(
-                software, "read_managed_exclusions", return_value=managed
-            ), patch.object(
-                software, "write_and_validate_exclusions"
-            ) as write, patch.object(software.log, "ok") as ok:
-                software._change_one("nix.user.package", "git", excluded=False)
+            with patch.object(software_cli, "_manifest_or_exit", return_value=before), patch.object(software_cli, "machine_file", return_value=machine
+            ), patch.object(software_cli, "read_managed_exclusions", return_value=managed
+            ), patch.object(software_cli, "write_and_validate_exclusions"
+            ) as write, patch.object(log, "ok") as ok:
+                software_cli._change_one("nix.user.package", "git", excluded=False)
 
         write.assert_not_called()
         ok.assert_called_with(
@@ -584,13 +555,11 @@ class SoftwareCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             machine = Path(tempdir) / "machine.nix"
             machine.write_text("{ ... }:\n\n{\n}\n")
-            with patch.object(software, "_manifest_or_exit", return_value=before), patch.object(
-                software, "machine_file", return_value=machine
-            ), patch.object(
-                software, "read_managed_exclusions", return_value=managed
-            ), patch.object(software, "write_and_validate_exclusions") as write:
-                with self.assertRaises(software.typer.Exit):
-                    software._change_one(
+            with patch.object(software_cli, "_manifest_or_exit", return_value=before), patch.object(software_cli, "machine_file", return_value=machine
+            ), patch.object(software_cli, "read_managed_exclusions", return_value=managed
+            ), patch.object(software_cli, "write_and_validate_exclusions") as write:
+                with self.assertRaises(typer.Exit):
+                    software_cli._change_one(
                         "nix.user.package", "old-tool", excluded=True
                     )
 
@@ -600,14 +569,12 @@ class SoftwareCliTests(unittest.TestCase):
         before = self._policy_manifest(include=[], exclude=["old-tool"], effective=[])
         after = self._policy_manifest(include=[], exclude=[], effective=[])
         managed = {"nix.user.package": ["old-tool"], "npm.user.tool": []}
-        with patch.object(software, "_manifest_or_exit", return_value=before), patch.object(
-            software, "read_managed_exclusions", return_value=managed
-        ), patch.object(
-            software, "write_and_validate_exclusions", return_value=after
-        ), patch.object(software, "offer_mutation_commit"), patch.object(
-            software.log, "ok"
-        ) as ok, patch.object(software.log, "hint") as hint:
-            software._change_one("nix.user.package", "old-tool", excluded=False)
+        with patch.object(software_cli, "_manifest_or_exit", return_value=before), patch.object(software_cli, "read_managed_exclusions", return_value=managed
+        ), patch.object(software_cli, "write_and_validate_exclusions", return_value=after
+        ), patch.object(software_cli, "offer_mutation_commit"), patch.object(
+            log, "ok"
+        ) as ok, patch.object(log, "hint") as hint:
+            software_cli._change_one("nix.user.package", "old-tool", excluded=False)
 
         ok.assert_called_with(
             "software", "stale exclusion removed", group="nix.user.package",
@@ -623,14 +590,12 @@ class SoftwareCliTests(unittest.TestCase):
             include=["okular"], exclude=["okular"], effective=[]
         )
         managed = {"nix.user.package": ["okular"], "npm.user.tool": []}
-        with patch.object(software, "_manifest_or_exit", return_value=before), patch.object(
-            software, "read_managed_exclusions", return_value=managed
-        ), patch.object(
-            software, "write_and_validate_exclusions", return_value=after
-        ), patch.object(software, "offer_mutation_commit"), patch.object(
-            software.log, "warn"
-        ) as warn, patch.object(software.log, "hint"):
-            software._change_one("nix.user.package", "okular", excluded=False)
+        with patch.object(software_cli, "_manifest_or_exit", return_value=before), patch.object(software_cli, "read_managed_exclusions", return_value=managed
+        ), patch.object(software_cli, "write_and_validate_exclusions", return_value=after
+        ), patch.object(software_cli, "offer_mutation_commit"), patch.object(
+            log, "warn"
+        ) as warn, patch.object(log, "hint"):
+            software_cli._change_one("nix.user.package", "okular", excluded=False)
 
         warn.assert_called_with(
             "software", "managed exclusion removed; item remains excluded by another policy",
@@ -641,14 +606,12 @@ class SoftwareCliTests(unittest.TestCase):
         before = self._policy_manifest(include=[], exclude=["old-tool"], effective=[])
         after = self._policy_manifest(include=[], exclude=["old-tool"], effective=[])
         managed = {"nix.user.package": ["old-tool"], "npm.user.tool": []}
-        with patch.object(software, "_manifest_or_exit", return_value=before), patch.object(
-            software, "read_managed_exclusions", return_value=managed
-        ), patch.object(
-            software, "write_and_validate_exclusions", return_value=after
-        ), patch.object(software, "offer_mutation_commit"), patch.object(
-            software.log, "warn"
-        ) as warn, patch.object(software.log, "hint"):
-            software._change_one("nix.user.package", "old-tool", excluded=False)
+        with patch.object(software_cli, "_manifest_or_exit", return_value=before), patch.object(software_cli, "read_managed_exclusions", return_value=managed
+        ), patch.object(software_cli, "write_and_validate_exclusions", return_value=after
+        ), patch.object(software_cli, "offer_mutation_commit"), patch.object(
+            log, "warn"
+        ) as warn, patch.object(log, "hint"):
+            software_cli._change_one("nix.user.package", "old-tool", excluded=False)
 
         warn.assert_called_with(
             "software",

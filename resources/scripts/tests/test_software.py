@@ -4,7 +4,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from envy import config, software
+from envy import config
+from envy.software import audit, model, planner, policy, policy_text
 
 
 def _entry(item_id, name=None, version=None, ref=None):
@@ -69,17 +70,17 @@ class SoftwarePolicyTests(unittest.TestCase):
         self.tempdir.cleanup()
 
     def test_round_trip_writes_only_non_empty_groups(self):
-        groups = software.groups_for_platform("darwin")
-        values = software.empty_exclusions(groups)
+        groups = model.groups_for_platform("darwin")
+        values = model.empty_exclusions(groups)
         values["nix.user.package"] = ["okular", "sing-box"]
         values["homebrew.system.cask"] = ["uuremote"]
 
-        software.write_managed_exclusions(values, self.machine, groups=groups)
-        parsed = software.read_managed_exclusions(self.machine, groups)
+        policy.write_managed_exclusions(values, self.machine, groups=groups)
+        parsed = policy.read_managed_exclusions(self.machine, groups)
         text = self.machine.read_text()
 
         self.assertEqual(parsed, values)
-        self.assertIn(software.MANAGED_START, text)
+        self.assertIn(policy_text.MANAGED_START, text)
         self.assertIn('"okular"', text)
         self.assertIn('"uuremote"', text)
         self.assertIn("envy.software.nix.packages.exclude", text)
@@ -88,87 +89,87 @@ class SoftwarePolicyTests(unittest.TestCase):
         self.assertIn("# Hand-written policy remains here.", text)
 
     def test_managed_includes_round_trip_as_direct_option_assignments(self):
-        groups = software.groups_for_platform("darwin")
-        includes = [software.ManagedInclude(
+        groups = model.groups_for_platform("darwin")
+        includes = [model.ManagedInclude(
             group="homebrew.system.cask",
             id="zotero",
             name="zotero",
             ref="homebrew:cask/zotero",
             parameters={},
         )]
-        updated = software._update_managed_policy_source(
-            self.original, includes, software.empty_exclusions(groups), groups
+        updated = policy_text._update_managed_policy_source(
+            self.original, includes, model.empty_exclusions(groups), groups
         )
         self.machine.write_text(updated)
 
-        self.assertEqual(software.read_managed_policy(self.machine, groups)[0], includes)
-        self.assertIn(software.MANAGED_START, updated)
+        self.assertEqual(policy.read_managed_policy(self.machine, groups)[0], includes)
+        self.assertIn(policy_text.MANAGED_START, updated)
         self.assertIn("envy.darwin.software.homebrew.casks.include", updated)
         self.assertNotIn("envy.software.managed", updated)
         self.assertIn("# Hand-written policy remains here.", updated)
 
-        cleaned = software._update_managed_policy_source(
-            updated, [], software.empty_exclusions(groups), groups
+        cleaned = policy_text._update_managed_policy_source(
+            updated, [], model.empty_exclusions(groups), groups
         )
-        self.assertNotIn(software.MANAGED_START, cleaned)
+        self.assertNotIn(policy_text.MANAGED_START, cleaned)
         self.assertIn("# Hand-written policy remains here.", cleaned)
 
     def test_setup_exclusion_write_preserves_managed_include(self):
-        groups = software.groups_for_platform("darwin")
+        groups = model.groups_for_platform("darwin")
         managed_include = self._managed_cask()
-        source = software._update_managed_policy_source(
-            self.original, [managed_include], software.empty_exclusions(groups), groups
+        source = policy_text._update_managed_policy_source(
+            self.original, [managed_include], model.empty_exclusions(groups), groups
         )
         self.machine.write_text(source)
-        exclusions = software.empty_exclusions(groups)
+        exclusions = model.empty_exclusions(groups)
         exclusions["homebrew.system.cask"] = ["uuremote"]
 
-        software.write_managed_exclusions(exclusions, self.machine, groups=groups)
+        policy.write_managed_exclusions(exclusions, self.machine, groups=groups)
 
-        self.assertEqual(software.read_managed_policy(self.machine, groups)[0], [managed_include])
+        self.assertEqual(policy.read_managed_policy(self.machine, groups)[0], [managed_include])
         self.assertEqual(
-            software.read_managed_exclusions(self.machine, groups)["homebrew.system.cask"],
+            policy.read_managed_exclusions(self.machine, groups)["homebrew.system.cask"],
             ["uuremote"],
         )
 
     def test_legacy_exclusion_block_is_read_and_migrated_on_write(self):
-        groups = software.groups_for_platform("darwin")
+        groups = model.groups_for_platform("darwin")
         legacy = (
-            f"{software.LEGACY_MANAGED_START}\n"
+            f"{policy_text.LEGACY_MANAGED_START}\n"
             "  envy.darwin.software.homebrew.casks.exclude = [ \"uuremote\" ];\n"
-            f"{software.LEGACY_MANAGED_END}"
+            f"{policy_text.LEGACY_MANAGED_END}"
         )
         self.machine.write_text(self.original.replace(
             "  # Hand-written policy remains here.", legacy
         ))
 
-        values = software.read_managed_exclusions(self.machine, groups)
-        software.write_managed_exclusions(values, self.machine, groups=groups)
+        values = policy.read_managed_exclusions(self.machine, groups)
+        policy.write_managed_exclusions(values, self.machine, groups=groups)
         updated = self.machine.read_text()
 
         self.assertEqual(values["homebrew.system.cask"], ["uuremote"])
-        self.assertIn(software.MANAGED_START, updated)
-        self.assertNotIn(software.LEGACY_MANAGED_START, updated)
+        self.assertIn(policy_text.MANAGED_START, updated)
+        self.assertNotIn(policy_text.LEGACY_MANAGED_START, updated)
 
     def test_current_and_legacy_blocks_together_are_rejected(self):
         self.machine.write_text(self.original.replace(
             "  # Hand-written policy remains here.",
-            f"{software.MANAGED_START}\n{software.MANAGED_END}\n\n"
-            f"{software.LEGACY_MANAGED_START}\n{software.LEGACY_MANAGED_END}",
+            f"{policy_text.MANAGED_START}\n{policy_text.MANAGED_END}\n\n"
+            f"{policy_text.LEGACY_MANAGED_START}\n{policy_text.LEGACY_MANAGED_END}",
         ))
 
-        with self.assertRaises(software.SoftwarePolicyError):
-            software.read_managed_exclusions(self.machine)
+        with self.assertRaises(model.SoftwarePolicyError):
+            policy.read_managed_exclusions(self.machine)
 
     def test_nix_include_is_direct_and_exposes_pkgs_in_module_header(self):
-        groups = software.groups_for_platform("darwin")
-        managed_include = software.ManagedInclude(
+        groups = model.groups_for_platform("darwin")
+        managed_include = model.ManagedInclude(
             group="nix.user.package", id="hello", name="hello",
             ref="nix:hello", parameters={"attrPath": ["hello"]},
         )
 
-        updated = software._update_managed_policy_source(
-            self.original, [managed_include], software.empty_exclusions(groups), groups
+        updated = policy_text._update_managed_policy_source(
+            self.original, [managed_include], model.empty_exclusions(groups), groups
         )
         self.machine.write_text(updated)
 
@@ -179,31 +180,31 @@ class SoftwarePolicyTests(unittest.TestCase):
         self.assertIn('\\"hello\\":\\"nix:hello\\"', updated)
         self.assertNotIn('"parameters"', updated)
         self.assertNotIn('"version"', updated)
-        self.assertEqual(software.read_managed_policy(self.machine, groups)[0], [managed_include])
+        self.assertEqual(policy.read_managed_policy(self.machine, groups)[0], [managed_include])
 
     def test_nix_reference_mapping_must_match_the_managed_include(self):
-        groups = software.groups_for_platform("darwin")
-        managed_include = software.ManagedInclude(
+        groups = model.groups_for_platform("darwin")
+        managed_include = model.ManagedInclude(
             group="nix.user.package", id="hello", name="hello",
             ref="nix:hello", parameters={"attrPath": ["hello"]},
         )
-        updated = software._update_managed_policy_source(
-            self.original, [managed_include], software.empty_exclusions(groups), groups
+        updated = policy_text._update_managed_policy_source(
+            self.original, [managed_include], model.empty_exclusions(groups), groups
         ).replace('\\"hello\\":\\"nix:hello\\"', '\\"other\\":\\"nix:other\\"')
         self.machine.write_text(updated)
 
-        with self.assertRaisesRegex(software.SoftwarePolicyError, "references do not match"):
-            software.read_managed_policy(self.machine, groups)
+        with self.assertRaisesRegex(model.SoftwarePolicyError, "references do not match"):
+            policy.read_managed_policy(self.machine, groups)
 
     def test_structured_include_is_assigned_directly_to_the_ecosystem(self):
-        groups = software.groups_for_platform("linux")
-        managed_include = software.ManagedInclude(
+        groups = model.groups_for_platform("linux")
+        managed_include = model.ManagedInclude(
             group="npm.user.tool", id="codex", name="@openai/codex",
             ref="npm:@openai/codex", parameters={},
         )
 
-        updated = software._update_managed_policy_source(
-            self.original, [managed_include], software.empty_exclusions(groups), groups
+        updated = policy_text._update_managed_policy_source(
+            self.original, [managed_include], model.empty_exclusions(groups), groups
         )
         self.machine.write_text(updated)
 
@@ -211,50 +212,50 @@ class SoftwarePolicyTests(unittest.TestCase):
         self.assertNotIn("envy.software.managed", updated)
         self.assertNotIn('\\"parameters\\"', updated)
         self.assertNotIn('\\"version\\"', updated)
-        self.assertEqual(software.read_managed_policy(self.machine, groups)[0], [managed_include])
+        self.assertEqual(policy.read_managed_policy(self.machine, groups)[0], [managed_include])
 
     def test_managed_includes_reject_conflicts_and_nix_interpolation(self):
-        groups = software.groups_for_platform("darwin")
-        base = software.ManagedInclude(
+        groups = model.groups_for_platform("darwin")
+        base = model.ManagedInclude(
             group="homebrew.system.cask", id="zotero", name="zotero",
             ref="homebrew:cask/zotero", parameters={},
         )
-        conflict = software.ManagedInclude(
+        conflict = model.ManagedInclude(
             group="homebrew.system.cask", id="zotero", name="zotero-beta",
             ref="homebrew:cask/zotero-beta", parameters={},
         )
-        with self.assertRaises(software.SoftwarePolicyError):
-            software.normalize_managed_includes([base, conflict], groups)
-        with self.assertRaises(software.SoftwarePolicyError):
-            software.normalize_managed_includes([
+        with self.assertRaises(model.SoftwarePolicyError):
+            model.normalize_managed_includes([base, conflict], groups)
+        with self.assertRaises(model.SoftwarePolicyError):
+            model.normalize_managed_includes([
                 {"group": "homebrew.system.cask", "id": 1, "name": "bad"}
             ], groups)
-        with self.assertRaises(software.SoftwarePolicyError):
-            software.normalize_managed_includes([
-                software.ManagedInclude(
+        with self.assertRaises(model.SoftwarePolicyError):
+            model.normalize_managed_includes([
+                model.ManagedInclude(
                     group="homebrew.system.cask", id="${builtins.abort \"bad\"}",
                     name="bad", parameters={},
                 )
             ], groups)
 
     def test_removing_last_exclusion_removes_the_whole_block(self):
-        groups = software.groups_for_platform("darwin")
-        values = software.empty_exclusions(groups)
+        groups = model.groups_for_platform("darwin")
+        values = model.empty_exclusions(groups)
         values["nix.user.package"] = ["okular"]
-        software.write_managed_exclusions(values, self.machine, groups=groups)
-        software.write_managed_exclusions(
-            software.empty_exclusions(groups), self.machine, groups=groups
+        policy.write_managed_exclusions(values, self.machine, groups=groups)
+        policy.write_managed_exclusions(
+            model.empty_exclusions(groups), self.machine, groups=groups
         )
 
-        self.assertNotIn(software.MANAGED_START, self.machine.read_text())
+        self.assertNotIn(policy_text.MANAGED_START, self.machine.read_text())
         self.assertIn("# Hand-written policy remains here.", self.machine.read_text())
 
     def test_concurrent_source_change_is_rejected(self):
-        digest = software.source_digest(self.machine.read_text())
+        digest = policy.source_digest(self.machine.read_text())
         self.machine.write_text(self.machine.read_text().replace("chi", "other"))
 
-        with self.assertRaises(software.ConcurrentMachineEdit):
-            software.write_managed_exclusions(
+        with self.assertRaises(model.ConcurrentMachineEdit):
+            policy.write_managed_exclusions(
                 {"nix.user.package": ["okular"]},
                 self.machine,
                 expected_digest=digest,
@@ -264,10 +265,10 @@ class SoftwarePolicyTests(unittest.TestCase):
         evaluator = MagicMock(return_value=None)
         evaluator.cache_clear = MagicMock()
 
-        with patch.object(software, "machine_manifest", evaluator), self.assertRaises(
-            software.SoftwarePolicyError
+        with patch.object(policy, "machine_manifest", evaluator), self.assertRaises(
+            model.SoftwarePolicyError
         ):
-            software.write_and_validate_exclusions(
+            policy.write_and_validate_exclusions(
                 {"nix.user.package": ["okular"]}, self.machine
             )
 
@@ -282,13 +283,13 @@ class SoftwarePolicyTests(unittest.TestCase):
         }))
         evaluator.cache_clear = MagicMock()
 
-        with patch.object(software, "machine_manifest", evaluator):
-            software.write_and_validate_exclusions(
+        with patch.object(policy, "machine_manifest", evaluator):
+            policy.write_and_validate_exclusions(
                 {"nix.user.package": ["okular"]}, self.machine
             )
 
         self.assertEqual(
-            software.read_managed_exclusions(self.machine)["nix.user.package"],
+            policy.read_managed_exclusions(self.machine)["nix.user.package"],
             ["okular"],
         )
 
@@ -306,13 +307,13 @@ class SoftwarePolicyTests(unittest.TestCase):
                 },
             },
         })
-        groups = software.groups_for_manifest(manifest)
-        original = software.empty_exclusions(groups)
+        groups = model.groups_for_manifest(manifest)
+        original = model.empty_exclusions(groups)
         original["pypi.user.tool"] = ["headroom"]
-        current = software.normalize_exclusions(original, groups)
-        software.set_excluded(current, "pypi.user.tool", "headroom", False, groups)
+        current = model.normalize_exclusions(original, groups)
+        model.set_excluded(current, "pypi.user.tool", "headroom", False, groups)
 
-        item = software.build_software_items(
+        item = model.build_software_items(
             manifest, current, original, groups=groups
         )["pypi.user.tool"][0]
 
@@ -332,12 +333,12 @@ class SoftwarePolicyTests(unittest.TestCase):
                 "homebrew", ["iterm2", "uuremote"], ["uuremote"], ["iterm2"],
             ),
         })
-        groups = software.groups_for_manifest(manifest)
-        original = software.empty_exclusions(groups)
+        groups = model.groups_for_manifest(manifest)
+        original = model.empty_exclusions(groups)
         original["homebrew.system.cask"] = ["uuremote"]
-        current = software.normalize_exclusions(original, groups)
+        current = model.normalize_exclusions(original, groups)
 
-        before = software.build_software_items(
+        before = model.build_software_items(
             manifest, current, original, groups=groups
         )
         formulae = {item.name: item for item in before["homebrew.system.formula"]}
@@ -348,12 +349,12 @@ class SoftwarePolicyTests(unittest.TestCase):
         self.assertFalse(casks["uuremote"].checked)
         self.assertFalse(casks["uuremote"].stale)
 
-        software.set_excluded(
+        model.set_excluded(
             current, "homebrew.system.cask", "uuremote", False, groups
         )
         after = {
             item.name: item
-            for item in software.build_software_items(
+            for item in model.build_software_items(
                 manifest, current, original, groups=groups
             )["homebrew.system.cask"]
         }
@@ -368,11 +369,11 @@ class SoftwarePolicyTests(unittest.TestCase):
                 editable_include=True, kind="cask",
             ),
         })
-        groups = software.groups_for_manifest(manifest)
-        managed = software.empty_exclusions(groups)
+        groups = model.groups_for_manifest(manifest)
+        managed = model.empty_exclusions(groups)
         managed["homebrew.system.cask"] = ["zotero"]
 
-        item = software.build_software_items(
+        item = model.build_software_items(
             manifest, managed, groups=groups
         )["homebrew.system.cask"][0]
 
@@ -388,20 +389,20 @@ class SoftwarePolicyTests(unittest.TestCase):
                 editable_include=True, kind="cask",
             ),
         })
-        groups = software.groups_for_manifest(manifest, include_empty=True)
-        exclusions = software.empty_exclusions(groups)
+        groups = model.groups_for_manifest(manifest, include_empty=True)
+        exclusions = model.empty_exclusions(groups)
         return manifest, groups, exclusions
 
     @staticmethod
     def _managed_cask(item_id="zotero"):
-        return software.ManagedInclude(
+        return model.ManagedInclude(
             group="homebrew.system.cask", id=item_id, name=item_id,
             ref=f"homebrew:cask/{item_id}", parameters={},
         )
 
     def test_add_absent_item_creates_managed_include(self):
         manifest, groups, exclusions = self._cask_policy()
-        plan = software.build_desired_plan(
+        plan = planner.build_desired_plan(
             action="add", group=groups[0], item_value="zotero",
             manifest=manifest, includes=[], exclusions=exclusions, clean=False,
         )
@@ -418,11 +419,11 @@ class SoftwarePolicyTests(unittest.TestCase):
             ),
         })
         manifest["system"] = "aarch64-darwin"
-        groups = software.groups_for_manifest(manifest, include_empty=True)
-        exclusions = software.empty_exclusions(groups)
+        groups = model.groups_for_manifest(manifest, include_empty=True)
+        exclusions = model.empty_exclusions(groups)
         result = SimpleNamespace(returncode=0, stdout='{"name":"hello","version":"1","drvPath":"/nix/store/example.drv"}', stderr="")
         with patch("envy.sources.adapters.run_process", return_value=result):
-            plan = software.build_desired_plan(
+            plan = planner.build_desired_plan(
                 action="add", group=groups[0],
                 item_value="nix:legacyPackages.aarch64-darwin.hello",
                 manifest=manifest, includes=[], exclusions=exclusions,
@@ -440,9 +441,9 @@ class SoftwarePolicyTests(unittest.TestCase):
                 editable_include=True,
             ),
         })
-        groups = software.groups_for_manifest(manifest, include_empty=True)
-        exclusions = software.empty_exclusions(groups)
-        plan = software.build_desired_plan(
+        groups = model.groups_for_manifest(manifest, include_empty=True)
+        exclusions = model.empty_exclusions(groups)
+        plan = planner.build_desired_plan(
             action="add", group=groups[0], item_value="codex",
             explicit_ref="npm:@openai/codex",
             manifest=manifest, includes=[], exclusions=exclusions,
@@ -459,7 +460,7 @@ class SoftwarePolicyTests(unittest.TestCase):
             ["zotero"], ["zotero"], []
         )
         exclusions[groups[0].key] = ["zotero"]
-        plan = software.build_desired_plan(
+        plan = planner.build_desired_plan(
             action="add", group=groups[0], item_value="zotero",
             manifest=manifest, includes=[], exclusions=exclusions, clean=False,
         )
@@ -471,7 +472,7 @@ class SoftwarePolicyTests(unittest.TestCase):
         manifest, groups, exclusions = self._cask_policy(
             ["zotero"], ["zotero"], []
         )
-        plan = software.build_desired_plan(
+        plan = planner.build_desired_plan(
             action="add", group=groups[0], item_value="zotero",
             manifest=manifest, includes=[], exclusions=exclusions, clean=True,
         )
@@ -484,7 +485,7 @@ class SoftwarePolicyTests(unittest.TestCase):
             ["zotero", "zotero"], [], ["zotero"]
         )
         managed = self._managed_cask()
-        plan = software.build_desired_plan(
+        plan = planner.build_desired_plan(
             action="add", group=groups[0], item_value="zotero",
             manifest=manifest, includes=[managed], exclusions=exclusions, clean=True,
         )
@@ -497,7 +498,7 @@ class SoftwarePolicyTests(unittest.TestCase):
             ["zotero", "zotero"], ["zotero"], []
         )
         exclusions[groups[0].key] = ["zotero"]
-        plan = software.build_desired_plan(
+        plan = planner.build_desired_plan(
             action="add", group=groups[0], item_value="zotero",
             manifest=manifest, includes=[self._managed_cask()],
             exclusions=exclusions, clean=True,
@@ -511,7 +512,7 @@ class SoftwarePolicyTests(unittest.TestCase):
             ["zotero"], ["zotero", "zotero"], []
         )
         exclusions[groups[0].key] = ["zotero"]
-        plan = software.build_desired_plan(
+        plan = planner.build_desired_plan(
             action="add", group=groups[0], item_value="zotero",
             manifest=manifest, includes=[], exclusions=exclusions, clean=True,
         )
@@ -522,7 +523,7 @@ class SoftwarePolicyTests(unittest.TestCase):
         manifest, groups, exclusions = self._cask_policy(
             ["zotero"], [], ["zotero"]
         )
-        plan = software.build_desired_plan(
+        plan = planner.build_desired_plan(
             action="rm", group=groups[0], item_value="zotero",
             manifest=manifest, includes=[self._managed_cask()],
             exclusions=exclusions, clean=False,
@@ -537,7 +538,7 @@ class SoftwarePolicyTests(unittest.TestCase):
         manifest, groups, exclusions = self._cask_policy(
             ["zotero"], [], ["zotero"]
         )
-        plan = software.build_desired_plan(
+        plan = planner.build_desired_plan(
             action="rm", group=groups[0],
             item_value="homebrew:cask/zotero",
             manifest=manifest, includes=[self._managed_cask()],
@@ -551,7 +552,7 @@ class SoftwarePolicyTests(unittest.TestCase):
         manifest, groups, exclusions = self._cask_policy(
             ["zotero"], [], ["zotero"]
         )
-        plan = software.build_desired_plan(
+        plan = planner.build_desired_plan(
             action="rm", group=groups[0], item_value="zotero",
             manifest=manifest, includes=[self._managed_cask()],
             exclusions=exclusions, clean=True,
@@ -566,7 +567,7 @@ class SoftwarePolicyTests(unittest.TestCase):
         manifest, groups, exclusions = self._cask_policy(
             ["zotero", "zotero"], [], ["zotero"]
         )
-        plan = software.build_desired_plan(
+        plan = planner.build_desired_plan(
             action="rm", group=groups[0], item_value="zotero",
             manifest=manifest, includes=[self._managed_cask()],
             exclusions=exclusions, clean=True,
@@ -582,7 +583,7 @@ class SoftwarePolicyTests(unittest.TestCase):
             [], ["zotero", "other"], []
         )
         exclusions[groups[0].key] = ["zotero", "other"]
-        plan = software.build_desired_plan(
+        plan = planner.build_desired_plan(
             action="rm", group=groups[0], item_value="zotero",
             manifest=manifest, includes=[], exclusions=exclusions, clean=True,
         )
@@ -593,7 +594,7 @@ class SoftwarePolicyTests(unittest.TestCase):
     def test_rm_without_clean_preserves_stale_machine_intent(self):
         manifest, groups, exclusions = self._cask_policy([], ["zotero"], [])
         exclusions[groups[0].key] = ["zotero"]
-        plan = software.build_desired_plan(
+        plan = planner.build_desired_plan(
             action="rm", group=groups[0], item_value="zotero",
             manifest=manifest, includes=[], exclusions=exclusions, clean=False,
         )
@@ -602,7 +603,7 @@ class SoftwarePolicyTests(unittest.TestCase):
 
     def test_rm_without_clean_adds_stale_machine_intent(self):
         manifest, groups, exclusions = self._cask_policy()
-        plan = software.build_desired_plan(
+        plan = planner.build_desired_plan(
             action="rm", group=groups[0], item_value="zotero",
             manifest=manifest, includes=[], exclusions=exclusions, clean=False,
         )
@@ -616,7 +617,7 @@ class SoftwarePolicyTests(unittest.TestCase):
             ["zotero", "zotero"], ["zotero", "zotero"], []
         )
         exclusions[groups[0].key] = ["zotero"]
-        plan = software.build_desired_plan(
+        plan = planner.build_desired_plan(
             action="rm", group=groups[0], item_value="zotero",
             manifest=manifest, includes=[self._managed_cask()],
             exclusions=exclusions, clean=True,
@@ -633,10 +634,10 @@ class SoftwarePolicyTests(unittest.TestCase):
         evaluator = MagicMock(return_value=manifest)
         evaluator.cache_clear = MagicMock()
 
-        with patch.object(software, "machine_manifest", evaluator), self.assertRaises(
-            software.SoftwarePolicyError
+        with patch.object(policy, "machine_manifest", evaluator), self.assertRaises(
+            model.SoftwarePolicyError
         ):
-            software.write_and_validate_software_policy(
+            policy.write_and_validate_software_policy(
                 [managed_include], exclusions,
                 group_key=groups[0].key,
                 item_id="zotero",
@@ -655,8 +656,8 @@ class SoftwarePolicyTests(unittest.TestCase):
         evaluator = MagicMock(return_value=after)
         evaluator.cache_clear = MagicMock()
 
-        with patch.object(software, "machine_manifest", evaluator):
-            result = software.write_and_validate_software_policy(
+        with patch.object(policy, "machine_manifest", evaluator):
+            result = policy.write_and_validate_software_policy(
                 [self._managed_cask()], exclusions,
                 group_key=groups[0].key,
                 item_id="zotero",
@@ -667,23 +668,23 @@ class SoftwarePolicyTests(unittest.TestCase):
 
         self.assertIs(result, after)
         self.assertEqual(
-            software.read_managed_policy(self.machine, groups)[0],
+            policy.read_managed_policy(self.machine, groups)[0],
             [self._managed_cask()],
         )
         self.assertEqual(
-            software.read_managed_exclusions(self.machine, groups)[groups[0].key],
+            policy.read_managed_exclusions(self.machine, groups)[groups[0].key],
             ["other"],
         )
 
     def test_desired_state_write_rejects_concurrent_machine_change(self):
         manifest, groups, exclusions = self._cask_policy()
-        stale_digest = software.source_digest(self.machine.read_text())
+        stale_digest = policy.source_digest(self.machine.read_text())
         self.machine.write_text(self.original.replace("chi", "other"))
 
-        with patch.object(software, "machine_manifest") as evaluator, self.assertRaises(
-            software.ConcurrentMachineEdit
+        with patch.object(policy, "machine_manifest") as evaluator, self.assertRaises(
+            model.ConcurrentMachineEdit
         ):
-            software.write_and_validate_software_policy(
+            policy.write_and_validate_software_policy(
                 [self._managed_cask()], exclusions,
                 group_key=groups[0].key,
                 item_id="zotero",
@@ -706,11 +707,11 @@ class SoftwarePolicyTests(unittest.TestCase):
                 ["openssh-server"], [], ["openssh-server"],
             ),
         })
-        groups = software.groups_for_manifest(manifest)
-        original = software.empty_exclusions(groups)
+        groups = model.groups_for_manifest(manifest)
+        original = model.empty_exclusions(groups)
         original["nix.user.package"] = ["okular"]
 
-        items = software.build_software_items(manifest, original, original)
+        items = model.build_software_items(manifest, original, original)
 
         self.assertEqual(
             list(items), ["nix.user.package", "native.system.package"]
@@ -725,11 +726,11 @@ class SoftwarePolicyTests(unittest.TestCase):
         self.machine.write_text(
             self.original.replace(
                 "  # Hand-written policy remains here.",
-                f'{software.MANAGED_START}\n  builtins.abort "bad";\n{software.MANAGED_END}',
+                f'{policy_text.MANAGED_START}\n  builtins.abort "bad";\n{policy_text.MANAGED_END}',
             )
         )
-        with self.assertRaises(software.SoftwarePolicyError):
-            software.read_managed_exclusions(self.machine)
+        with self.assertRaises(model.SoftwarePolicyError):
+            policy.read_managed_exclusions(self.machine)
 
         with patch.object(config, "machine_config_file", return_value=self.machine), patch.object(
             config, "machine_manifest", return_value=None
@@ -741,13 +742,13 @@ class SoftwarePolicyTests(unittest.TestCase):
         self.machine.write_text(
             self.original.replace(
                 "  # Hand-written policy remains here.",
-                f'{software.MANAGED_START}\n'
+                f'{policy_text.MANAGED_START}\n'
                 '  envy.software.nix.packages.include = builtins.abort "bad";\n'
-                f'{software.MANAGED_END}',
+                f'{policy_text.MANAGED_END}',
             )
         )
-        with self.assertRaises(software.SoftwarePolicyError):
-            software.read_managed_policy(self.machine)
+        with self.assertRaises(model.SoftwarePolicyError):
+            policy.read_managed_policy(self.machine)
 
         with patch.object(config, "machine_config_file", return_value=self.machine), patch.object(
             config, "machine_manifest", return_value=None
@@ -777,15 +778,15 @@ class SoftwarePolicyTests(unittest.TestCase):
                 editable_include=True, kind="cask",
             ),
         })
-        groups = software.groups_for_manifest(manifest, include_empty=True)
-        includes = [software.ManagedInclude(
+        groups = model.groups_for_manifest(manifest, include_empty=True)
+        includes = [model.ManagedInclude(
             group="homebrew.system.cask", id="maven", name="maven",
             ref="homebrew:cask/maven",
         )]
         exclusions = {"homebrew.system.cask": ["maven"]}
 
-        findings = software.audit_policy(manifest, includes, exclusions, groups)
-        rows = software.explain_policy_item(
+        findings = audit.audit_policy(manifest, includes, exclusions, groups)
+        rows = audit.explain_policy_item(
             manifest, includes, exclusions, groups, "maven",
         )
 

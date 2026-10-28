@@ -65,7 +65,7 @@ def complete_add_source_ids(ctx, incomplete: str):
     group = params.get("group") or params.get("group_or_item")
     ecosystem = None
     if isinstance(group, str):
-        from envy.software import require_group
+        from envy.software.model import require_group
         import typer
         try:
             ecosystem = require_group(group).ecosystem

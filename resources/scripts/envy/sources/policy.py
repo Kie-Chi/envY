@@ -13,7 +13,7 @@ HOMEBREW_BUILTIN_TAPS = {"homebrew/core", "homebrew/cask"}
 
 
 def prerequisite(source_id, manifest, includes, exclusions):
-    from envy.software import ManagedInclude
+    from envy.software.model import ManagedInclude
     source = source_for(source_id, manifest)
     if manifest.get("platform") not in source.platforms:
         raise SourceError("source is incompatible with machine platform", "unsupported-platform")
@@ -59,7 +59,7 @@ def parse_definitions(text):
 
 
 def render_definitions(text, definitions):
-    from envy.software import _insert_managed_source_block
+    from envy.software.policy_text import _insert_managed_source_block
     for sid, raw in definitions.items():
         Source.from_dict(sid, raw)
     payload = json.dumps(json.dumps(definitions, sort_keys=True, ensure_ascii=False), ensure_ascii=False)

@@ -42,15 +42,17 @@ from envy.config import (
 from envy.evaluation import machine_manifest, manifest_settings
 from envy.host import initialize_machine, machine_file, validate_machine_id
 from envy.schemas.config import ALL_FIELDS, MACHINE_FIELDS, SECRET_FIELDS, FieldDef
-from envy.software import (
+from envy.software.model import (
     ConcurrentMachineEdit,
     SoftwarePolicyError,
     build_software_items,
     groups_for_manifest,
     normalize_exclusions,
-    read_managed_exclusions,
     set_excluded,
     software_changes,
+)
+from envy.software.policy import (
+    read_managed_exclusions,
     source_digest,
     write_and_validate_exclusions,
 )

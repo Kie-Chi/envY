@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from typer.main import get_command
 
-from envy import software
+from envy.software import cli, completion as software_completion, model
 from envy.search.index import RegistryIndex
 from envy.search.model import SearchResult
 from envy.sources import completion
@@ -22,7 +22,7 @@ def context(**params):
 
 def manifest(version=3):
     groups = {}
-    for group in software.COMMON_GROUPS:
+    for group in model.COMMON_GROUPS:
         groups[group.key] = {
             "label": group.label, "optionPath": group.option,
             "ecosystem": group.ecosystem, "scope": group.scope, "kind": group.kind,
@@ -56,7 +56,7 @@ class SourceCompletionTests(unittest.TestCase):
             self.assertIsNotNone(parameter._custom_shell_complete)
         parameter = next(p for p in source_commands["search"].params if p.name == "ecosystem")
         self.assertIsNotNone(parameter._custom_shell_complete)
-        software_commands = get_command(software.app).commands
+        software_commands = get_command(cli.app).commands
         for name in ("add", "search", "se"):
             parameter = next(p for p in software_commands[name].params if p.name == "source_id")
             self.assertIsNotNone(parameter._custom_shell_complete)
@@ -93,14 +93,12 @@ class SourceCompletionTests(unittest.TestCase):
                 SearchResult("npm", "npm", "prettier", "tool", ref="npm:prettier"),
                 SearchResult("nix", "nix", "hello", "package", ref="nix:hello"),
             ])
-            with patch.object(software, "machine_manifest", return_value=manifest(2)), patch.object(
-                    software, "read_managed_exclusions", return_value={}), patch.object(
-                    software, "RegistryIndex", return_value=index):
-                self.assertEqual(list(dict(software.complete_add_targets(context(group="npm.user.tool"), ""))),
+            with patch.object(software_completion, "machine_manifest", return_value=manifest(2)), patch.object(software_completion, "read_managed_exclusions", return_value={}), patch.object(software_completion, "RegistryIndex", return_value=index):
+                self.assertEqual(list(dict(software_completion.complete_add_targets(context(group="npm.user.tool"), ""))),
                                  ["prettier"])
-                self.assertEqual(list(dict(software.complete_add_targets(context(), "pre"))), ["npm:prettier"])
-                self.assertEqual(list(dict(software.complete_add_targets(context(), "hel"))), ["nix:hello"])
-                self.assertEqual(software.complete_add_targets(context(group="unknown"), ""), [])
+                self.assertEqual(list(dict(software_completion.complete_add_targets(context(), "pre"))), ["npm:prettier"])
+                self.assertEqual(list(dict(software_completion.complete_add_targets(context(), "hel"))), ["nix:hello"])
+                self.assertEqual(software_completion.complete_add_targets(context(group="unknown"), ""), [])
 
     def test_cached_completion_filters_source_and_current_context(self):
         wanted, other = registry("npm:vendor"), registry("npm:other")
@@ -108,14 +106,12 @@ class SourceCompletionTests(unittest.TestCase):
             index = RegistryIndex(Path(temporary) / "index.sqlite")
             index.put_results([row("current", wanted), row("old-context", wanted, fingerprint="previous"),
                                row("other-source", other)])
-            with patch.object(software, "machine_manifest", return_value=manifest()), patch.object(
-                    software, "read_managed_exclusions", return_value={}), patch.object(
-                    software, "RegistryIndex", return_value=index), patch(
+            with patch.object(software_completion, "machine_manifest", return_value=manifest()), patch.object(software_completion, "read_managed_exclusions", return_value={}), patch.object(software_completion, "RegistryIndex", return_value=index), patch(
                     "envy.sources.catalog.catalog", return_value={wanted.id: wanted, other.id: other}):
                 params = context(group="npm.user.tool", source_id=wanted.id)
-                self.assertEqual(list(dict(software.complete_add_targets(params, ""))), ["current"])
-                self.assertEqual(list(dict(software.complete_add_items(params, ""))), ["current"])
-                self.assertEqual(list(dict(software.complete_add_targets(context(source_id=wanted.id), "cur"))),
+                self.assertEqual(list(dict(software_completion.complete_add_targets(params, ""))), ["current"])
+                self.assertEqual(list(dict(software_completion.complete_add_items(params, ""))), ["current"])
+                self.assertEqual(list(dict(software_completion.complete_add_targets(context(source_id=wanted.id), "cur"))),
                                  ["npm:current"])
 
     def test_source_context_is_filtered_before_index_limit(self):
@@ -131,11 +127,9 @@ class SourceCompletionTests(unittest.TestCase):
     def test_missing_index_never_probes_or_creates_cache(self):
         with tempfile.TemporaryDirectory() as temporary:
             index = RegistryIndex(Path(temporary) / "missing" / "index.sqlite")
-            with patch.object(software, "machine_manifest", return_value=manifest()), patch.object(
-                    software, "read_managed_exclusions", return_value={}), patch.object(
-                    software, "RegistryIndex", return_value=index), patch(
+            with patch.object(software_completion, "machine_manifest", return_value=manifest()), patch.object(software_completion, "read_managed_exclusions", return_value={}), patch.object(software_completion, "RegistryIndex", return_value=index), patch(
                     "envy.sources.catalog.catalog", side_effect=AssertionError("must not probe")):
-                self.assertEqual(software.complete_add_targets(context(), "absent"), [])
+                self.assertEqual(software_completion.complete_add_targets(context(), "absent"), [])
             self.assertFalse(index.path.parent.exists())
 
 

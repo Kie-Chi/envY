@@ -45,7 +45,7 @@ Cross-platform Nix configuration for Darwin (aarch64-darwin) and Linux (x86_64-l
 | `resources/scripts/envy-tui/` | Rust/Ratatui frontend; invokes the envY CLI through its JSON boundary and owns no policy. |
 | `resources/scripts/envy/workflows/` | Check, update, system lifecycle, and shared-branch Git workflows kept out of the CLI registration layer. |
 | `resources/scripts/envy/keys/` | Age/sops storage, device identity, and recovery-key encryption primitives. |
-| `resources/scripts/envy/software.py` | Direct managed include/exclude policy, desired-state planner, checkbox model, atomic writes, and evaluation rollback. |
+| `resources/scripts/envy/software/` | Direct managed include/exclude policy: `model` (groups, items, normalization), `policy_text` (managed block parse/render), `policy` (machine-file writes and evaluation rollback), `planner` (desired state), `completion`, `audit`, and `cli`. |
 | `resources/scripts/envy/sources/` | Unified source catalog, scoped adapters, signed native sources, artifact verification, and registration transactions. |
 | `resources/scripts/envy/search/` | Concurrent registry providers, normalized search results, manifest matching, and TTL cache. |
 | `resources/scripts/envy/search/index.py` | Private SQLite exact-identity index shared by software search/add, with positive and negative TTLs. |

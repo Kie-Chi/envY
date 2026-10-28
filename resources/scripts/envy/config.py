@@ -26,12 +26,9 @@ from envy.schemas.config import (
     OBSOLETE_SECRET_PATHS,
     SECRET_FIELDS,
 )
-from envy.software import (
-    MANAGED_START as SOFTWARE_MANAGED_START,
-    SoftwarePolicyError,
-    groups_for_manifest,
-    read_managed_policy,
-)
+from envy.software.model import SoftwarePolicyError, groups_for_manifest
+from envy.software.policy import read_managed_policy
+from envy.software.policy_text import MANAGED_START as SOFTWARE_MANAGED_START
 from envy.secure_io import (
     atomic_write_text,
     replace_prepared_file,

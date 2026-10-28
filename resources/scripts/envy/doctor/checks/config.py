@@ -20,11 +20,8 @@ from envy.git_safety import (
     assert_worktree_secret_encrypted,
 )
 from envy.schemas.config import MACHINE_FIELDS, SECRET_FIELDS
-from envy.software import (
-    SoftwarePolicyError,
-    groups_for_manifest,
-    read_managed_policy,
-)
+from envy.software.model import SoftwarePolicyError, groups_for_manifest
+from envy.software.policy import read_managed_policy
 from envy.doctor.model import (
     SECTION_CONFIG,
     SECTION_DOCTOR,

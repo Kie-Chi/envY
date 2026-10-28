@@ -105,7 +105,7 @@ def complete_matrix_groups(ctx, incomplete: str) -> list[tuple[str, str]]:
     """Complete canonical groups without evaluating every repository machine."""
     del ctx
     try:
-        from envy.software import groups_for_platform
+        from envy.software.model import groups_for_platform
 
         by_key: dict[str, tuple[str, set[str]]] = {}
         for platform in ("darwin", "linux"):

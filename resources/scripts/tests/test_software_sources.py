@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from envy import software
+from envy.software import model, planner, policy_text
 from envy.search.index import RegistryIndex
 from envy.search.model import SearchResult
 from envy.search.providers import parse_native_search, resolve_native, _command_resolve_failure
@@ -141,7 +141,7 @@ class SourceContractTests(unittest.TestCase):
 
     def test_first_nix_add_uses_scoped_resolution_and_offline_cache(self):
         from envy.search.model import ResolveResult
-        group = software.COMMON_GROUPS[0]
+        group = model.COMMON_GROUPS[0]
         manifest = self.empty_manifest(group)
         source = Source("nix:nixpkgs", "Project", "nix", "flake", parameters={"input": "nixpkgs"},
                         registered=True, ready=True, capabilities={"exactResolve": True})
@@ -149,22 +149,22 @@ class SourceContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             index = RegistryIndex(Path(temporary) / "index.sqlite")
             with patch("envy.sources.catalog.catalog", return_value={source.id: source}), patch(
-                    "envy.software.RegistryIndex", return_value=index), patch(
+                    "envy.software.planner.RegistryIndex", return_value=index), patch(
                     "envy.sources.adapters.resolve", return_value=ResolveResult.found(row)) as resolve:
                 arguments = dict(action="add", group=group, item_value="nix:sl", explicit_ref=None,
                                  manifest=manifest, includes=[], exclusions={}, refresh=False, quiet=True)
-                online = software._resolve_new_include(**arguments, offline=False)
-                offline = software._resolve_new_include(**arguments, offline=True)
+                online = planner._resolve_new_include(**arguments, offline=False)
+                offline = planner._resolve_new_include(**arguments, offline=True)
                 resolve.assert_called_once()
                 self.assertEqual(online.ref, offline.ref)
                 self.assertEqual(offline.source_fingerprint, source.fingerprint)
-                with self.assertRaises(software.SoftwarePolicyError) as failure:
-                    software._resolve_new_include(**{**arguments, "item_value": "nix:missing"}, offline=True)
+                with self.assertRaises(model.SoftwarePolicyError) as failure:
+                    planner._resolve_new_include(**{**arguments, "item_value": "nix:missing"}, offline=True)
                 self.assertEqual(failure.exception.code, "offline-index-miss")
 
     def test_first_artifact_add_resolves_the_requested_definition(self):
         from envy.search.model import ResolveResult
-        group = next(group for group in software.LINUX_GROUPS if group.ecosystem == "url")
+        group = next(group for group in model.LINUX_GROUPS if group.ecosystem == "url")
         manifest = self.empty_manifest(group)
         source = Source.from_dict("url:vendor", {"ecosystem": "url", "type": "artifact", "platforms": ["linux"],
             "parameters": {"url": "https://vendor.example/app.deb", "format": "deb", "packageName": "vendor-app",
@@ -172,26 +172,26 @@ class SourceContractTests(unittest.TestCase):
         source.capabilities["exactResolve"] = True
         row = SearchResult("url", "url", "vendor-app", "artifact", version="1", ref=source.parameters["url"], source_id=source.id)
         with tempfile.TemporaryDirectory() as temporary, patch("envy.sources.catalog.catalog", return_value={source.id: source}), patch(
-                "envy.software.RegistryIndex", return_value=RegistryIndex(Path(temporary) / "index.sqlite")), patch(
+                "envy.software.planner.RegistryIndex", return_value=RegistryIndex(Path(temporary) / "index.sqlite")), patch(
                 "envy.sources.adapters.resolve", return_value=ResolveResult.found(row)) as resolve, patch(
-                "envy.software.source_for", return_value=source), patch("envy.sources.policy.source_for", return_value=source):
-            resolved = software._resolve_new_include(action="add", group=group, item_value=source.id, explicit_ref=None,
+                "envy.software.planner.source_for", return_value=source), patch("envy.sources.policy.source_for", return_value=source):
+            resolved = planner._resolve_new_include(action="add", group=group, item_value=source.id, explicit_ref=None,
                 manifest=manifest, includes=[], exclusions={}, offline=False, refresh=False, quiet=True)
             self.assertEqual(resolve.call_args.args[0].id, source.id)
-            plan = software.build_desired_plan(action="add", group=group, item_value=source.id, manifest=manifest,
-                includes=[], exclusions=software.empty_exclusions(software.groups_for_manifest(manifest, include_empty=True)), clean=False, resolved=resolved)
+            plan = planner.build_desired_plan(action="add", group=group, item_value=source.id, manifest=manifest,
+                includes=[], exclusions=model.empty_exclusions(model.groups_for_manifest(manifest, include_empty=True)), clean=False, resolved=resolved)
             self.assertEqual(plan.includes_after[0].parameters["hash"], "a" * 64)
             self.assertEqual(plan.item_id, "vendor-app")
 
     def test_bound_registry_include_preserves_install_endpoint(self):
         for ecosystem, endpoint_key, group in (
-                ("npm", "registry", next(g for g in software.COMMON_GROUPS if g.ecosystem == "npm")),
-                ("pypi", "index", next(g for g in software.COMMON_GROUPS if g.ecosystem == "pypi"))):
+                ("npm", "registry", next(g for g in model.COMMON_GROUPS if g.ecosystem == "npm")),
+                ("pypi", "index", next(g for g in model.COMMON_GROUPS if g.ecosystem == "pypi"))):
             source = Source.from_dict(ecosystem + ":vendor", {"ecosystem": ecosystem, "type": "registry",
                 "parameters": {endpoint_key: "https://vendor.example/packages"}})
             row = SearchResult(ecosystem, ecosystem, "tool", "tool", ref=ecosystem + ":tool", source_id=source.id)
-            with patch("envy.software.source_for", return_value=source):
-                include = software._include_for_spec(group, "tool", {}, resolved=row)
+            with patch("envy.software.planner.source_for", return_value=source):
+                include = planner._include_for_spec(group, "tool", {}, resolved=row)
             self.assertEqual(include.parameters[endpoint_key], source.parameters[endpoint_key])
             self.assertEqual(include.source_id, source.id)
 
@@ -310,12 +310,12 @@ class SourceContractTests(unittest.TestCase):
         self.assertEqual(dependency.id, "vendor/tools")
 
     def test_flake_writer_parser_keeps_input_binding(self):
-        group = software.COMMON_GROUPS[0]
-        include = software.ManagedInclude(group.key, "hello", "hello", ref="flake:other#default",
+        group = model.COMMON_GROUPS[0]
+        include = model.ManagedInclude(group.key, "hello", "hello", ref="flake:other#default",
             parameters={"input": "other", "attrPath": ["default"]}, source_id="nix:other")
-        source = software._update_managed_policy_source("{ ... }:\n{\n}\n", [include],
-                                                       software.empty_exclusions((group,)), (group,))
-        items, _ = software._parse_managed_policy_source(source, (group,))
+        source = policy_text._update_managed_policy_source("{ ... }:\n{\n}\n", [include],
+                                                       model.empty_exclusions((group,)), (group,))
+        items, _ = policy_text._parse_managed_policy_source(source, (group,))
         self.assertEqual(items[0], include)
         self.assertIn("softwareSourcePackages,", source)
 
@@ -368,15 +368,15 @@ class SourceContractTests(unittest.TestCase):
             "label": group.label, "optionPath": group.option, "ecosystem": group.ecosystem,
             "kind": group.kind, "scope": group.scope, "editable": {"include": True, "exclude": True},
             "selection": {"include": [], "exclude": [], "effective": []}
-        } for group in software.LINUX_GROUPS}
+        } for group in model.LINUX_GROUPS}
         manifest = {"schemaVersion": 3, "platform": "linux", "software": {"groups": groups}}
-        active = software.groups_for_manifest(manifest, include_empty=True)
-        package_group = software.require_group("native.system.package", active)
+        active = model.groups_for_manifest(manifest, include_empty=True)
+        package_group = model.require_group("native.system.package", active)
         resolved = SearchResult("apt", "native", "tool", "package", version="99",
                                 ref="native:tool", source_id=source.id)
         with patch("envy.sources.policy.source_for", return_value=source):
-            plan = software.build_desired_plan(action="add", group=package_group, item_value="tool",
-                manifest=manifest, includes=[], exclusions=software.empty_exclusions(active),
+            plan = planner.build_desired_plan(action="add", group=package_group, item_value="tool",
+                manifest=manifest, includes=[], exclusions=model.empty_exclusions(active),
                 clean=False, resolved=resolved)
         self.assertEqual({item.group for item in plan.includes_after},
                          {"native.system.package", "native.system.repository"})
@@ -385,10 +385,10 @@ class SourceContractTests(unittest.TestCase):
         self.assertEqual(plan.to_dict()["prerequisites"][0]["sourceId"], source.id)
 
     def test_tampered_flake_metadata_is_rejected(self):
-        group = software.COMMON_GROUPS[0]
+        group = model.COMMON_GROUPS[0]
         value = '[\n# envy: {"id":"tool","ref":"flake:wrong#default","sourceId":"nix:wrong"}\nsoftwareSourcePackages."correct"."default"\n]'
-        with self.assertRaises(software.SoftwarePolicyError):
-            software._parse_nix_includes(value, group)
+        with self.assertRaises(model.SoftwarePolicyError):
+            policy_text._parse_nix_includes(value, group)
 
     def test_private_signed_index_disables_system_cache_and_hooks(self):
         from envy.sources.native.apt import signed_options

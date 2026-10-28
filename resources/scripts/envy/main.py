@@ -17,7 +17,7 @@ from envy.key import app as key_app
 from envy.mirror import app as mirror_app
 from envy.overview import show as show_overview
 from envy.host import app as host_app, complete_platforms
-from envy.software import app as software_app
+from envy.software.cli import app as software_app
 from envy.process import run_process
 from envy.workflows.check import check_or_exit
 from envy.workflows.update import update_homebrew, update_inputs

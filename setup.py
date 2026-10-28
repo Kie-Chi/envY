@@ -5,6 +5,7 @@ import atexit
 import os
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from rich.panel import Panel
@@ -157,25 +158,6 @@ class AppState:
         self.policy_notice = ""
         self.error_msg = ""
         self.result: Optional[SetupResult] = None  # set on save/quit
-
-
-def init_values() -> dict:
-    existing_config = read_machine_nix()
-    evaluated_config = manifest_settings(machine_manifest())
-    existing_secrets, _ = read_secrets_yaml()
-    values = {}
-    for f in ALL_FIELDS:
-        if f.condition and not f.condition(values):
-            continue
-        if f.dest == "machine" and f.path in evaluated_config:
-            values[f.path] = field_text_value(f, evaluated_config[f.path])
-        elif f.dest == "machine" and f.path in existing_config:
-            values[f.path] = field_text_value(f, existing_config[f.path])
-        elif f.dest == "secret" and f.path in existing_secrets:
-            values[f.path] = field_text_value(f, existing_secrets[f.path])
-        else:
-            values[f.path] = field_text_value(f, f.default_fn())
-    return values
 
 
 def prompt_input(message: str) -> str:
@@ -391,13 +373,27 @@ def _choice_text(state: AppState) -> list:
     return lines
 
 
-def build_application(state: AppState) -> Application:
-    """Build a single Application with mode-switching layout."""
-    is_list = Condition(lambda: state.mode == "list")
-    is_policy = Condition(lambda: state.mode == "policy")
-    is_policy_search = Condition(lambda: state.mode == "policy_search")
-    is_edit_text = Condition(lambda: state.mode == "edit_text")
-    is_edit_choice = Condition(lambda: state.mode == "edit_choice")
+def _mode_filter(state: AppState, mode: str) -> Condition:
+    return Condition(lambda: state.mode == mode)
+
+
+@dataclass
+class _Screen:
+    """The layout plus the windows that key bindings move focus between."""
+    layout: Layout
+    list_window: Window
+    policy_window: Window
+    search_buffer_window: Window
+    edit_buffer_window: Window
+
+
+def _build_layout(state: AppState) -> _Screen:
+    """Stack every mode's container; filters show only the current mode."""
+    is_list = _mode_filter(state, "list")
+    is_policy = _mode_filter(state, "policy")
+    is_policy_search = _mode_filter(state, "policy_search")
+    is_edit_text = _mode_filter(state, "edit_text")
+    is_edit_choice = _mode_filter(state, "edit_choice")
 
     # --- Title bar (always visible) ---
     title_content = FormattedTextControl(lambda: [("class:title", (
@@ -496,7 +492,17 @@ def build_application(state: AppState) -> Application:
         bottom_window,
     ]))
 
-    # --- Key bindings ---
+    return _Screen(layout, list_window, policy_window, search_buffer_window, edit_buffer_window)
+
+
+def _build_key_bindings(state: AppState, screen: _Screen) -> KeyBindings:
+    """Bind keys per mode; handlers update state and move focus between windows."""
+    is_list = _mode_filter(state, "list")
+    is_policy = _mode_filter(state, "policy")
+    is_policy_search = _mode_filter(state, "policy_search")
+    is_edit_text = _mode_filter(state, "edit_text")
+    is_edit_choice = _mode_filter(state, "edit_choice")
+
     kb = KeyBindings()
 
     # Navigation — only in list and choice modes
@@ -541,7 +547,7 @@ def build_application(state: AppState) -> Application:
             state.edit_buffer.text = current_val
             state.edit_buffer.cursor_position = len(current_val)
             state.mode = "edit_text"
-            event.app.layout.focus(edit_buffer_window)
+            event.app.layout.focus(screen.edit_buffer_window)
         event.app.invalidate()
 
     @kb.add("enter", filter=is_edit_text)
@@ -599,7 +605,7 @@ def build_application(state: AppState) -> Application:
         state.search_buffer.text = state.policy_query
         state.search_buffer.cursor_position = len(state.search_buffer.text)
         state.mode = "policy_search"
-        event.app.layout.focus(search_buffer_window)
+        event.app.layout.focus(screen.search_buffer_window)
         event.app.invalidate()
 
     @kb.add("enter", filter=is_policy_search)
@@ -608,27 +614,27 @@ def build_application(state: AppState) -> Application:
         state.policy_cursor = 0
         state.policy_notice = ""
         state.mode = "policy"
-        event.app.layout.focus(policy_window)
+        event.app.layout.focus(screen.policy_window)
         event.app.invalidate()
 
     @kb.add("escape", filter=is_policy_search)
     def _(event):
         state.mode = "policy"
-        event.app.layout.focus(policy_window)
+        event.app.layout.focus(screen.policy_window)
         event.app.invalidate()
 
     @kb.add("p", filter=is_list)
     def _(event):
         state.mode = "policy"
         state.policy_notice = ""
-        event.app.layout.focus(policy_window)
+        event.app.layout.focus(screen.policy_window)
         event.app.invalidate()
 
     @kb.add("p", filter=is_policy)
     @kb.add("escape", filter=is_policy)
     def _(event):
         state.mode = "list"
-        event.app.layout.focus(list_window)
+        event.app.layout.focus(screen.list_window)
         event.app.invalidate()
 
     # Escape — cancel edit or quit from list
@@ -654,20 +660,32 @@ def build_application(state: AppState) -> Application:
         )
         event.app.exit()
 
-    style = PtStyle.from_dict({
-        "title": "#ansicyan bold",
-        "group": "#ansicyan bold",
-        "cursor": "bg:#ansicyan #ansiblack bold",
-        "normal": "",
-        "dim": "#ansigray",
-        "hint": "#ansigray",
-        "error": "#ansired bold",
-        "bottom": "#ansigray",
-        "frame.border": "#ansigray",
-        "frame.title": "#ansicyan bold",
-    })
+    return kb
 
-    return Application(layout=layout, key_bindings=kb, style=style, full_screen=True)
+
+_STYLE = PtStyle.from_dict({
+    "title": "#ansicyan bold",
+    "group": "#ansicyan bold",
+    "cursor": "bg:#ansicyan #ansiblack bold",
+    "normal": "",
+    "dim": "#ansigray",
+    "hint": "#ansigray",
+    "error": "#ansired bold",
+    "bottom": "#ansigray",
+    "frame.border": "#ansigray",
+    "frame.title": "#ansicyan bold",
+})
+
+
+def build_application(state: AppState) -> Application:
+    """Build a single Application with mode-switching layout."""
+    screen = _build_layout(state)
+    return Application(
+        layout=screen.layout,
+        key_bindings=_build_key_bindings(state, screen),
+        style=_STYLE,
+        full_screen=True,
+    )
 
 
 def menuconfig_loop(
@@ -940,84 +958,85 @@ def ensure_machine_configuration(machine_id: str) -> bool:
         log.hint(f"Create it later with: envy host init {selected}")
         return False
 
-def main() -> int:
-    machine_id = current_machine_id()
-    selected_machine_was_present = machine_file(machine_id).exists()
-    machine_created_for_setup = False
-    reset_secrets = os.environ.get("ENVY_SETUP_RESET_SECRETS", "0") == "1"
-    prepared_key: PreparedDeviceKey | None = None
-    replace_secrets = reset_secrets
-    existing_secrets: dict = {}
-    existing_secret_data: dict = {}
+class _SetupStop(Exception):
+    """Stop setup before saving and release what it prepared."""
 
-    try:
-        if reset_secrets:
-            log.warn("setup", "reset requested: old secret values will be discarded")
-            prepared_key = prepare_generated_device_age_key()
+    def __init__(self, code: int):
+        super().__init__(code)
+        self.code = code
+
+
+class _SetupSession:
+    """Resources that setup releases when it stops before saving."""
+
+    def __init__(self) -> None:
+        self.prepared_key: PreparedDeviceKey | None = None
+        self.created_machine: Path | None = None
+
+    def track_key(self, prepared_key: PreparedDeviceKey | None) -> None:
+        self.prepared_key = prepared_key
+        if prepared_key is not None:
             atexit.register(prepared_key.cleanup)
-        else:
-            existing_secret_data, decrypt_ok = read_secrets_data()
-            existing_secrets = secret_values_from_data(existing_secret_data)
-            if SECRETS_FILE.exists() and not decrypt_ok:
-                prepared_key, existing_secret_data, replace_secrets, cancelled = handle_decrypt_failure()
-                existing_secrets = secret_values_from_data(existing_secret_data)
-                if prepared_key is not None:
-                    atexit.register(prepared_key.cleanup)
-                if cancelled:
-                    if prepared_key is not None:
-                        prepared_key.cleanup()
-                    log.hint("Setup cancelled; no key or secret files were changed.")
-                    return 2
-            else:
-                prepared_key = prepare_setup_age_key()
-                atexit.register(prepared_key.cleanup)
-    except (CommandError, OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
-        if prepared_key is not None:
-            prepared_key.cleanup()
-        log.error("key", f"unable to prepare the local age key: {exc}")
-        return 1
 
+    def track_created_machine(self, path: Path) -> None:
+        self.created_machine = path
+        atexit.register(self.discard_created_machine)
+
+    def keep_created_machine(self) -> None:
+        self.created_machine = None
+
+    def discard_created_machine(self) -> None:
+        if self.created_machine is not None:
+            self.created_machine.unlink(missing_ok=True)
+            self.created_machine = None
+
+    def release(self) -> None:
+        if self.prepared_key is not None:
+            self.prepared_key.cleanup()
+        self.discard_created_machine()
+
+
+def _prepare_key_and_secrets(session: _SetupSession, reset_secrets: bool) -> tuple[dict, dict, bool]:
+    """Prepare the device key; return existing secrets, raw secret data, and whether to replace them."""
+    if reset_secrets:
+        log.warn("setup", "reset requested: old secret values will be discarded")
+        session.track_key(prepare_generated_device_age_key())
+        return {}, {}, True
+    existing_secret_data, decrypt_ok = read_secrets_data()
+    if SECRETS_FILE.exists() and not decrypt_ok:
+        prepared_key, existing_secret_data, replace_secrets, cancelled = handle_decrypt_failure()
+        session.track_key(prepared_key)
+        if cancelled:
+            log.hint("Setup cancelled; no key or secret files were changed.")
+            raise _SetupStop(2)
+        return secret_values_from_data(existing_secret_data), existing_secret_data, replace_secrets
+    session.track_key(prepare_setup_age_key())
+    return secret_values_from_data(existing_secret_data), existing_secret_data, False
+
+
+def _select_machine(session: _SetupSession, machine_id: str) -> Path:
+    """Return the selected machine file, creating it on request."""
+    was_present = machine_file(machine_id).exists()
     if not ensure_machine_configuration(machine_id):
-        if prepared_key is not None:
-            prepared_key.cleanup()
-        return 2
+        raise _SetupStop(2)
+    selected = machine_file(machine_id)
+    if not was_present:
+        session.track_created_machine(selected)
+    return selected
 
-    selected_machine_file = machine_file(machine_id)
-    machine_created_for_setup = not selected_machine_was_present
-    original_machine_source = selected_machine_file.read_text()
-    cleanup_state = {"active": machine_created_for_setup}
 
-    def discard_created_machine() -> None:
-        if cleanup_state["active"] and selected_machine_file.exists():
-            selected_machine_file.unlink()
-            cleanup_state["active"] = False
+def initial_values(
+    evaluated_config: dict,
+    existing_config: dict,
+    existing_secrets: dict,
+    *,
+    empty_secrets: bool,
+) -> dict:
+    """Fill each field from evaluation, the machine file, secrets, or its default.
 
-    def cleanup_created_machine_at_exit() -> None:
-        if cleanup_state["active"]:
-            selected_machine_file.unlink(missing_ok=True)
-
-    if machine_created_for_setup:
-        atexit.register(cleanup_created_machine_at_exit)
-
-    manifest = machine_manifest()
-    policy_groups = groups_for_manifest(manifest, include_empty=True)
-    try:
-        original_exclusions = read_managed_exclusions(selected_machine_file, policy_groups)
-    except SoftwarePolicyError as exc:
-        if prepared_key is not None:
-            prepared_key.cleanup()
-        discard_created_machine()
-        log.error("software", str(exc))
-        log.hint("Fix the managed exclusions block, then reopen envy setup.")
-        return 1
-
-    existing_config = read_machine_nix()
-    evaluated_config = manifest_settings(manifest)
-
-    # Build initial values from config + (possibly restored) secrets. When
-    # secrets are explicitly reset, do not refill them from field defaults
-    # such as the local username; every secret must be entered again.
-    empty_secrets = reset_secrets or replace_secrets
+    When secrets are replaced, do not refill them from field defaults such as
+    the local username; every secret must be entered again.
+    """
     values = {}
     for f in ALL_FIELDS:
         if f.condition and not f.condition(values):
@@ -1032,24 +1051,88 @@ def main() -> int:
             values[f.path] = ""
         else:
             values[f.path] = field_text_value(f, f.default_fn())
-    old_values = dict(values)
+    return values
 
+
+def _edit(values: dict, manifest: dict | None, exclusions: dict[str, list[str]]) -> SetupResult:
     try:
-        result = menuconfig_loop(old_values, manifest, original_exclusions)
+        result = menuconfig_loop(values, manifest, exclusions)
     except (EOFError, KeyboardInterrupt, OSError):
-        if prepared_key is not None:
-            prepared_key.cleanup()
-        discard_created_machine()
         log.hint("Setup needs an interactive terminal. Run it again from a real terminal, or create the machine with: envy host init")
-        return 2
-
+        raise _SetupStop(2)
     if result is None:
         log.hint("Quit without saving.")
-        if prepared_key is not None:
-            prepared_key.cleanup()
-        discard_created_machine()
-        return 2
+        raise _SetupStop(2)
+    return result
 
+
+def _save_needed_without_edits(prepared_key: PreparedDeviceKey | None, existing_config: dict) -> bool:
+    """Whether setup must still write the machine block or register the local key."""
+    current_public = prepared_key.public_key if prepared_key is not None else get_current_device_public_key()
+    key_needs_save = bool(
+        prepared_key is not None
+        and (not AGE_KEY_FILE.exists() or prepared_key.public_key != current_public)
+    ) or bool(current_public and current_public not in read_sops_yaml_keys().values())
+    missing_machine_fields = [
+        field.path for field in MACHINE_FIELDS if field.path not in existing_config
+    ]
+    if missing_machine_fields:
+        log.warn(
+            "machine",
+            "initial managed machine block must be written",
+            fields=len(missing_machine_fields),
+        )
+        return True
+    if key_needs_save:
+        log.hint("Local age key state needs to be registered; continuing setup save.")
+        return True
+    log.hint("No changes to apply.")
+    return False
+
+
+def _offer_apply() -> int:
+    if not prompt_yes_no("Apply configuration now (envy apply)?"):
+        return 0
+    log.step("setup", "running envy apply")
+    from envy.main import cmd_apply
+    try:
+        cmd_apply()
+    except CommandError as exc:
+        render_command_error(exc)
+        log.warn("setup", "files were saved, but apply failed")
+        return exc.returncode or 1
+    return 0
+
+
+def _run_setup(session: _SetupSession) -> int:
+    machine_id = current_machine_id()
+    reset_secrets = os.environ.get("ENVY_SETUP_RESET_SECRETS", "0") == "1"
+    try:
+        existing_secrets, existing_secret_data, replace_secrets = _prepare_key_and_secrets(session, reset_secrets)
+    except (CommandError, OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
+        log.error("key", f"unable to prepare the local age key: {exc}")
+        raise _SetupStop(1)
+
+    selected_machine_file = _select_machine(session, machine_id)
+    original_machine_source = selected_machine_file.read_text()
+
+    manifest = machine_manifest()
+    policy_groups = groups_for_manifest(manifest, include_empty=True)
+    try:
+        original_exclusions = read_managed_exclusions(selected_machine_file, policy_groups)
+    except SoftwarePolicyError as exc:
+        log.error("software", str(exc))
+        log.hint("Fix the managed exclusions block, then reopen envy setup.")
+        raise _SetupStop(1)
+
+    existing_config = read_machine_nix()
+    old_values = initial_values(
+        manifest_settings(manifest),
+        existing_config,
+        existing_secrets,
+        empty_secrets=reset_secrets or replace_secrets,
+    )
+    result = _edit(old_values, manifest, original_exclusions)
     new_values = result.values
     new_exclusions = result.exclusions
 
@@ -1061,32 +1144,8 @@ def main() -> int:
         new_exclusions,
         policy_groups,
     )
-
-    if not has_changes:
-        current_public = prepared_key.public_key if prepared_key is not None else get_current_device_public_key()
-        key_needs_save = bool(
-            prepared_key is not None
-            and (not AGE_KEY_FILE.exists() or prepared_key.public_key != current_public)
-        ) or bool(current_public and current_public not in read_sops_yaml_keys().values())
-        missing_machine_fields = [
-            field.path for field in MACHINE_FIELDS if field.path not in existing_config
-        ]
-        if missing_machine_fields:
-            log.warn(
-                "machine",
-                "initial managed machine block must be written",
-                fields=len(missing_machine_fields),
-            )
-            has_changes = True
-        elif key_needs_save:
-            log.hint("Local age key state needs to be registered; continuing setup save.")
-            has_changes = True
-        else:
-            log.hint("No changes to apply.")
-            if prepared_key is not None:
-                prepared_key.cleanup()
-            discard_created_machine()
-            return 0
+    if not has_changes and not _save_needed_without_edits(session.prepared_key, existing_config):
+        raise _SetupStop(0)
 
     # Catch empty/invalid required fields before the destructive save. Otherwise
     # write_machine_nix persists e.g. `envy.llm.steps.url = ""`, the Nix manifest
@@ -1094,17 +1153,11 @@ def main() -> int:
     # discarding the user's edits with only a cryptic `""` from the evaluator.
     if not validate_required_fields(new_values):
         log.hint("Fix the fields above, then reopen envy setup.")
-        if prepared_key is not None:
-            prepared_key.cleanup()
-        discard_created_machine()
-        return 1
+        raise _SetupStop(1)
 
     if not confirm_save():
         log.warn("setup", "changes cancelled")
-        if prepared_key is not None:
-            prepared_key.cleanup()
-        discard_created_machine()
-        return 2
+        raise _SetupStop(2)
 
     log.console.print()
     try:
@@ -1114,36 +1167,31 @@ def main() -> int:
             original_machine_source,
             replace_secrets=replace_secrets,
             groups=policy_groups,
-            prepared_key=prepared_key,
+            prepared_key=session.prepared_key,
             provided_secrets=existing_secret_data,
-            machine_created_for_setup=machine_created_for_setup,
+            machine_created_for_setup=session.created_machine is not None,
         )
     except CommandError as exc:
-        discard_created_machine()
         render_command_error(exc)
         log.error("setup", "transaction failed; managed files were restored")
-        return exc.returncode or 1
+        raise _SetupStop(exc.returncode or 1)
     except (OSError, RuntimeError, ValueError, SoftwarePolicyError, ConcurrentMachineEdit) as exc:
-        discard_created_machine()
         log.error("setup", str(exc))
         log.error("setup", "transaction failed; managed files were restored")
-        return 1
-    cleanup_state["active"] = False
+        raise _SetupStop(1)
+    session.keep_created_machine()
     log.console.print()
     log.console.print(Panel("[bold green]All files saved successfully![/bold green]", border_style="green"))
+    return _offer_apply()
 
-    # Ask if user wants to apply immediately
-    if prompt_yes_no("Apply configuration now (envy apply)?"):
-        log.step("setup", "running envy apply")
-        from envy.main import cmd_apply
-        try:
-            cmd_apply()
-        except CommandError as exc:
-            render_command_error(exc)
-            log.warn("setup", "files were saved, but apply failed")
-            return exc.returncode or 1
-    return 0
 
+def main() -> int:
+    session = _SetupSession()
+    try:
+        return _run_setup(session)
+    except _SetupStop as stop:
+        session.release()
+        return stop.code
 
 if __name__ == "__main__":
     raise SystemExit(main())

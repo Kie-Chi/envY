@@ -1,0 +1,65 @@
+#compdef amux
+# Completion for amux, whose commands and options follow tmux.
+
+_amux_sessions() {
+  local -a sessions
+  sessions=(${(f)"$(_call_program sessions "amux ls -F '#{session_name}:#{agent} #{workdir}'" 2>/dev/null)"})
+  _describe -t sessions 'session' sessions
+}
+
+_amux_formats() {
+  local -a formats
+  formats=('#{session_name}' '#{agent}' '#{workdir}' '#{created}')
+  _wanted formats expl 'format' compadd -a formats
+}
+
+_amux_new() {
+  _arguments -s -S \
+    '-s[session name]:session name:' \
+    '-d[do not attach]' \
+    '-c[working directory]:directory:_directories' \
+    '*--add-dir[also share a directory, read-only unless suffixed with :rw]:directory:_directories' \
+    '--no-skip-permissions[keep the agent permission prompts]' \
+    '(-h --help)'{-h,--help}'[show help]' \
+    '1:agent:((claude\:"Claude Code" codex\:"Codex"))'
+}
+
+_amux() {
+  local -a commands
+  commands=(
+    'new-session:start a session (default command)'
+    'new:start a session (default command)'
+    'attach-session:attach to a session'
+    'attach:attach to a session'
+    'a:attach to a session'
+    'at:attach to a session'
+    'list-sessions:list sessions'
+    'ls:list sessions'
+    'kill-session:stop a session and its agent'
+    'kill:stop a session and its agent'
+    'update:check npm for newer agents and rebuild the image'
+    'gc:delete container Nix store paths that no session uses'
+  )
+  if (( CURRENT == 2 )) && [[ $words[2] != -* ]]; then
+    _describe -t commands 'amux command' commands
+    _describe -t agents 'agent' '(claude:"start a Claude Code session" codex:"start a Codex session")'
+    return
+  fi
+  local command=$words[2]
+  case $command in
+    new|new-session|claude|codex|-*)
+      [[ $command == (new|new-session) ]] && { shift words; (( CURRENT-- )) }
+      _amux_new
+      ;;
+    attach|attach-session|a|at|kill|kill-session)
+      shift words; (( CURRENT-- ))
+      _arguments '-t[target session]:session:_amux_sessions'
+      ;;
+    ls|list-sessions)
+      shift words; (( CURRENT-- ))
+      _arguments '-F[output format]:format:_amux_formats'
+      ;;
+  esac
+}
+
+_amux "$@"

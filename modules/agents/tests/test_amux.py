@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 spec = importlib.util.spec_from_file_location(
     "amux", Path(os.environ.get("AMUX_PATH", str(Path(__file__).parents[1] / "amux/amux.py")))
@@ -68,8 +69,8 @@ class MountTests(unittest.TestCase):
 
     def plan(self, root, layout=None, add_dirs=(), skills=None, ssh=None):
         return amux.plan_mounts(
-            root=root, home=self.home, layout=layout, add_dirs=list(add_dirs),
-            skills=skills, paste_dir=os.path.join(self.home, ".cache/amux/paste"), ssh_agent=ssh,
+            root=root, home=self.home, layout=layout, add_dirs=list(add_dirs), skills=skills or {},
+            etc="/nix/store/e-amux-etc", paste_dir=os.path.join(self.home, ".cache/amux/paste"), ssh_agent=ssh,
         )
 
     def test_refuses_home_and_ancestors(self):
@@ -86,7 +87,9 @@ class MountTests(unittest.TestCase):
         self.assertIn(amux.Mount(work, work), mounts)
         self.assertIn(amux.Mount("/opt/data", "/opt/data", readonly=True), mounts)
         self.assertEqual([m.target for m in mounts].count(work), 1)
-        self.assertIn(amux.Mount("/nix/store", "/nix/store", readonly=True), mounts)
+        self.assertNotIn("/nix/store", [m.target for m in mounts])
+        self.assertIn(amux.Mount(amux.NIX_VOLUME, "/nix", volume=True), mounts)
+        self.assertIn(amux.Mount("/nix/store/e-amux-etc", amux.ETC_MOUNT, readonly=True), mounts)
         self.assertIn(amux.Mount(amux.HOME_VOLUME, self.home, volume=True), mounts)
         self.assertIn(amux.PASTE_MOUNT, [m.target for m in mounts])
 
@@ -117,14 +120,18 @@ class MountTests(unittest.TestCase):
         self.assertNotIn(amux.Mount(layout.gitdir, layout.gitdir), mounts)
         self.assertIn(amux.Mount(os.path.join(common, "config"), os.path.join(common, "config"), readonly=True), mounts)
 
-    def test_optional_skills_and_ssh_agent(self):
+    def test_skills_mount_sources_and_ssh_agent(self):
         work = os.path.join(self.home, "work")
-        skills = os.path.join(self.home, ".claude/skills")
+        source = os.path.join(self.root, "store-skill")
+        target = os.path.join(self.home, ".claude/skills/read")
         os.makedirs(work)
-        self.assertNotIn(skills, [m.target for m in self.plan(work, skills=skills)])
-        os.makedirs(skills)
+        skills = {target: source}
+        self.assertNotIn(target, [m.target for m in self.plan(work, skills=skills)])
+        os.makedirs(source)
         mounts = self.plan(work, skills=skills, ssh="/run/host-services/ssh-auth.sock")
-        self.assertIn(amux.Mount(skills, skills, readonly=True), mounts)
+        self.assertIn(amux.Mount(source, target, readonly=True), mounts)
+        targets = [m.target for m in mounts]
+        self.assertLess(targets.index(self.home), targets.index(target))
         self.assertIn(amux.Mount("/run/host-services/ssh-auth.sock", amux.SSH_AGENT_MOUNT), mounts)
 
     def test_mount_argument_quotes_commas(self):
@@ -185,6 +192,24 @@ class CommandTests(unittest.TestCase):
         self.assertEqual((args.command, args.s, args.add_dir, args.agent), ("new", "x", ["/tmp:rw"], "claude"))
         self.assertEqual(amux.parse(["a", "-t", "x"]).t, "x")
         self.assertEqual(amux.parse(["kill-session", "-t", "x"]).func, amux.cmd_kill)
+        self.assertEqual(amux.parse(["ls", "-F", "#{session_name}"]).F, "#{session_name}")
+        self.assertEqual(amux.parse(["update"]).func, amux.cmd_update)
+        self.assertEqual(amux.parse(["gc"]).func, amux.cmd_gc)
+
+    def test_format_session(self):
+        session = amux.Session("a", "codex", "/w", "now")
+        self.assertEqual(amux.format_session("#{session_name}:#{agent} #{workdir} #{nope}", session), "a:codex /w ")
+
+    def test_tools_root_ignores_order(self):
+        root = amux.tools_root(["/nix/store/a", "/nix/store/b"])
+        self.assertTrue(root.startswith(amux.TOOLS_ROOTS + "/tools-"))
+        self.assertEqual(root, amux.tools_root(["/nix/store/b", "/nix/store/a"]))
+        self.assertNotEqual(root, amux.tools_root(["/nix/store/a"]))
+
+    def test_gc_refuses_running_sessions(self):
+        with mock.patch.object(amux, "list_sessions", return_value=[amux.Session("a", "claude", "/w", "now")]):
+            with self.assertRaisesRegex(amux.AmuxError, "sessions are running"):
+                amux.cmd_gc(amux.parse(["gc"]), {"nix": {"tools": []}})
 
     def test_stale_clients(self):
         listing = "/dev/pts/1 10:Mon_Oct_1\n/dev/pts/2 11:Mon_Oct_1\n/dev/pts/3 -\n"
@@ -199,6 +224,77 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(amux.next_session(amux.EXIT_CHOOSE, "a", sessions, lambda: None), "a")
         self.assertEqual(amux.next_session(amux.EXIT_NEXT, "gone", sessions, lambda: None), "c")
         self.assertIsNone(amux.next_session(amux.EXIT_NEXT, "a", [], lambda: None))
+
+
+
+class AgentVersionTests(unittest.TestCase):
+    REGISTRY = "https://npm.test/"
+    PACKAGES = {
+        "@anthropic-ai/claude-code-linux-arm64/latest": {
+            "version": "2.0.0", "dist": {"tarball": "https://npm.test/c.tgz", "integrity": "sha512-c"}},
+        "@openai/codex/latest": {"version": "0.9.0"},
+        "@openai/codex/0.9.0-linux-arm64": {
+            "version": "0.9.0-linux-arm64", "dist": {"tarball": "https://npm.test/x.tgz", "integrity": "sha512-x"}},
+    }
+    AGENTS = {"claude": {"version": "2.0.0", "url": "https://npm.test/c.tgz", "integrity": "sha512-c"},
+              "codex": {"version": "0.9.0", "url": "https://npm.test/x.tgz", "integrity": "sha512-x"}}
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cache = os.path.join(self.tmp.name, "amux", "agents.json")
+        self.calls = []
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def get(self, registry, path):
+        self.calls.append(path)
+        self.assertEqual(registry, self.REGISTRY)
+        return self.PACKAGES[path]
+
+    def offline(self, registry, path):
+        raise OSError("offline")
+
+    def resolve(self, get, now=1000.0, **kwargs):
+        return amux.resolve_agents(self.cache, self.REGISTRY, "arm64", now=lambda: now, get=get, **kwargs)
+
+    def test_latest_agents(self):
+        self.assertEqual(amux.latest_agents(self.REGISTRY, "arm64", self.get), self.AGENTS)
+        self.calls.clear()
+        packages = {k.replace("arm64", "x64"): v for k, v in self.PACKAGES.items()}
+        amux.latest_agents(self.REGISTRY, "amd64", lambda r, p: self.calls.append(p) or packages[p])
+        self.assertIn("@openai/codex/0.9.0-linux-x64", self.calls)
+
+    def test_cache_is_fresh_for_a_day(self):
+        self.assertEqual(self.resolve(self.get), self.AGENTS)
+        self.calls.clear()
+        self.assertEqual(self.resolve(self.offline, now=1000.0 + amux.VERSION_TTL - 1), self.AGENTS)
+        self.assertEqual(self.resolve(self.get, now=1000.0 + amux.VERSION_TTL), self.AGENTS)
+        self.assertEqual(len(self.calls), 3)
+        self.resolve(self.get, now=1000.0 + amux.VERSION_TTL, force=True)
+        self.assertEqual(len(self.calls), 6)
+
+    def test_offline_falls_back(self):
+        with self.assertRaises(amux.AmuxError):
+            self.resolve(self.offline)
+        self.assertEqual(self.resolve(self.offline, fallback=lambda: self.AGENTS), self.AGENTS)
+        self.resolve(self.get)
+        stale = 1000.0 + 2 * amux.VERSION_TTL
+        self.assertEqual(self.resolve(self.offline, now=stale, fallback=lambda: None), self.AGENTS)
+        with self.assertRaises(amux.AmuxError):
+            self.resolve(self.offline, now=stale, force=True)
+
+    def test_cache_is_scoped_to_registry_and_arch(self):
+        self.resolve(self.get)
+        with self.assertRaises(amux.AmuxError):
+            amux.resolve_agents(self.cache, self.REGISTRY, "amd64", get=self.offline)
+
+    def test_build_args_carry_agent_packages(self):
+        cfg = {"image": {"buildArgs": {"BASE_IMAGE": "b"}}, "user": "u", "home": "/h"}
+        args = amux.build_args(cfg, self.AGENTS)
+        self.assertEqual(args["CLAUDE_URL"], "https://npm.test/c.tgz")
+        self.assertEqual(args["CODEX_INTEGRITY"], "sha512-x")
+        self.assertEqual(args["BASE_IMAGE"], "b")
 
 
 if __name__ == "__main__":

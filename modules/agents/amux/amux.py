@@ -28,19 +28,29 @@ import sys
 import termios
 import time
 import tty
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
 LABEL = "dev.envy.amux"
 IMAGE_LABEL = "dev.envy.amux.image"
+AGENTS_LABEL = "dev.envy.amux.agents"
 IMAGE_REPOSITORY = "envy-amux"
 CONTAINER_PREFIX = "amux-"
 HOME_VOLUME = "amux-home"
+NIX_VOLUME = "amux-nix"
+ETC_MOUNT = "/amux/etc"
 PASTE_MOUNT = "/amux/paste"
 SSH_AGENT_MOUNT = "/run/amux/ssh-auth.sock"
+TOOLS_ROOTS = "/nix/var/nix/gcroots/amux"
+SYSTEM_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 TMUX = ["tmux", "-L", "amux"]
 AGENTS = ("claude", "codex")
+DOCKER_SYSTEMS = {"arm64": "aarch64-linux", "amd64": "x86_64-linux"}
+NPM_PLATFORMS = {"arm64": "linux-arm64", "amd64": "linux-x64"}
+VERSION_TTL = 24 * 3600
+FORMAT_RE = re.compile(r"#\{(\w+)\}")
 
 # tmux.conf binds these keys to "detach-client -E 'exit N'".
 EXIT_NEXT, EXIT_PREV, EXIT_CHOOSE = 10, 11, 12
@@ -143,13 +153,17 @@ def container_user(name: str) -> str:
     return candidate if re.match(r"[a-z_][a-z0-9_-]{0,31}$", candidate) else "amux"
 
 
-def build_args(cfg: dict) -> dict[str, str]:
+def build_args(cfg: dict, agents: dict) -> dict[str, str]:
     return {
         **cfg["image"]["buildArgs"],
         "USER_NAME": container_user(cfg["user"]),
         "USER_UID": str(os.getuid()),
         "USER_GID": str(os.getgid()),
         "USER_HOME": cfg["home"],
+        "CLAUDE_URL": agents["claude"]["url"],
+        "CLAUDE_INTEGRITY": agents["claude"]["integrity"],
+        "CODEX_URL": agents["codex"]["url"],
+        "CODEX_INTEGRITY": agents["codex"]["integrity"],
     }
 
 
@@ -158,14 +172,27 @@ def image_tag(context: str, args: dict[str, str]) -> str:
     return f"{IMAGE_REPOSITORY}:{hashlib.sha256(payload.encode()).hexdigest()[:16]}"
 
 
-def ensure_image(cfg: dict) -> str:
+def docker_arch(cfg: dict) -> str:
+    """Docker's container architecture, checked against the configured tools."""
+    arch = docker("version", "--format", "{{.Server.Arch}}").stdout.strip()
+    if DOCKER_SYSTEMS.get(arch) != cfg["nix"]["system"]:
+        raise AmuxError(f"Docker runs {arch or 'unknown'} containers, but amux tools target {cfg['nix']['system']}")
+    return arch
+
+
+def agents_cache(cfg: dict) -> str:
+    return os.path.join(cfg["home"], ".cache", "amux", "agents.json")
+
+
+def ensure_image(cfg: dict, arch: str, *, force_check: bool = False) -> tuple[str, dict]:
+    agents = resolve_agents(agents_cache(cfg), cfg["npmRegistry"], arch, force=force_check, fallback=image_agents)
     context = cfg["image"]["context"]
-    args = build_args(cfg)
+    args = build_args(cfg, agents)
     tag = image_tag(context, args)
     if docker("image", "inspect", tag, check=False).returncode == 0:
-        return tag
-    print(f"amux: building {tag}; this happens once per agent update", file=sys.stderr)
-    command = ["docker", "build", "--tag", tag]
+        return tag, agents
+    print(f"amux: building {tag} with {versions_summary(agents)}", file=sys.stderr)
+    command = ["docker", "build", "--tag", tag, "--label", f"{AGENTS_LABEL}={json.dumps(agents, sort_keys=True)}"]
     for key, value in sorted(args.items()):
         command += ["--build-arg", f"{key}={value}"]
     if subprocess.run([*command, context]).returncode != 0:
@@ -175,7 +202,147 @@ def ensure_image(cfg: dict) -> str:
     for image in old.stdout.split():
         if image != tag:
             docker("image", "rm", image, check=False)
-    return tag
+    return tag, agents
+
+
+# --- agent versions -------------------------------------------------------
+
+
+def npm_get(registry: str, path: str) -> dict:
+    with urllib.request.urlopen(f"{registry.rstrip('/')}/{path}", timeout=20) as response:
+        return json.load(response)
+
+
+def latest_agents(registry: str, arch: str, get: Callable[[str, str], dict] = npm_get) -> dict:
+    """Newest Claude Code and Codex Linux packages for the Docker architecture."""
+    platform = NPM_PLATFORMS[arch]
+    claude = get(registry, f"@anthropic-ai/claude-code-{platform}/latest")
+    version = get(registry, "@openai/codex/latest")["version"]
+    codex = get(registry, f"@openai/codex/{version}-{platform}")
+    return {
+        "claude": {"version": claude["version"], "url": claude["dist"]["tarball"],
+                   "integrity": claude["dist"]["integrity"]},
+        "codex": {"version": version, "url": codex["dist"]["tarball"], "integrity": codex["dist"]["integrity"]},
+    }
+
+
+def versions_summary(agents: dict) -> str:
+    return ", ".join(f"{name} {agents[name]['version']}" for name in AGENTS)
+
+
+def read_json(path: str) -> dict | None:
+    try:
+        with open(path) as handle:
+            value = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def write_json(path: str, value: dict) -> None:
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w") as handle:
+        json.dump(value, handle, indent=1, sort_keys=True)
+    os.replace(tmp, path)
+
+
+def resolve_agents(cache: str, registry: str, arch: str, *, force: bool = False,
+                   now: Callable[[], float] = time.time, get: Callable[[str, str], dict] = npm_get,
+                   fallback: Callable[[], dict | None] = lambda: None) -> dict:
+    """Agent packages to install, checking npm at most once per VERSION_TTL."""
+    cached = read_json(cache)
+    if not (cached and cached.get("registry") == registry and cached.get("arch") == arch
+            and isinstance(cached.get("agents"), dict)):
+        cached = None
+    if cached and not force and now() - cached.get("checked", 0) < VERSION_TTL:
+        return cached["agents"]
+    try:
+        agents = latest_agents(registry, arch, get)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        known = None if force else (cached["agents"] if cached else fallback())
+        if not known:
+            raise AmuxError(f"cannot read agent versions from {registry}: {exc}") from None
+        print(f"amux: cannot reach {registry}; using {versions_summary(known)}", file=sys.stderr)
+        return known
+    write_json(cache, {"checked": now(), "registry": registry, "arch": arch, "agents": agents})
+    return agents
+
+
+def image_agents() -> dict | None:
+    """Agent packages recorded on the newest local amux image."""
+    images = docker("images", "--quiet", "--filter", f"label={IMAGE_LABEL}=1", check=False).stdout.split()
+    for image in images:
+        label = docker("image", "inspect", "--format", f'{{{{index .Config.Labels "{AGENTS_LABEL}"}}}}', image,
+                       check=False)
+        try:
+            return json.loads(label.stdout)
+        except ValueError:
+            continue
+    return None
+
+
+# --- container tools ------------------------------------------------------
+
+# Realise the tool store paths into the amux-nix volume once per tool set and
+# link their commands into one PATH entry that is a garbage-collector root.
+TOOLS_SCRIPT = r"""set -eu
+root=$1
+shift
+if [ -d "$root" ]; then exit 0; fi
+echo "amux: installing container tools into the amux-nix volume" >&2
+tmp="$root.tmp.$$"
+rm -rf "$tmp"
+mkdir -p "$tmp/bin"
+nix build --out-link "$tmp/result" "$@"
+for package in "$@"; do
+  for tool in "$package"/bin/*; do
+    name=$(basename "$tool")
+    if [ -e "$tool" ] && [ ! -e "$tmp/bin/$name" ]; then
+      ln -s "$tool" "$tmp/bin/$name"
+    fi
+  done
+done
+mv -T "$tmp" "$root" 2>/dev/null || rm -rf "$tmp"
+"""
+
+GC_SCRIPT = r"""set -eu
+if [ -d /nix/var/nix/gcroots/amux ]; then
+  find /nix/var/nix/gcroots/amux -mindepth 1 -maxdepth 1 ! -path "$1" -exec rm -rf {} +
+fi
+nix store gc
+"""
+
+
+def tools_root(tools: list[str]) -> str:
+    digest = hashlib.sha256(json.dumps(sorted(tools)).encode()).hexdigest()[:16]
+    return f"{TOOLS_ROOTS}/tools-{digest}"
+
+
+def nix_mounts(etc: str) -> list[Mount]:
+    return [Mount(NIX_VOLUME, "/nix", volume=True), Mount(etc, ETC_MOUNT, readonly=True)]
+
+
+def run_nix(cfg: dict, image: str, script: str, *args: str) -> int:
+    """Run a shell script against the shared Nix volume in a throwaway container.
+
+    The home volume is mounted too: profiles created with nix profile live
+    there, and their garbage-collector roots point into it.
+    """
+    command = ["docker", "run", "--rm", "--network", "host", "--cap-drop", "ALL",
+               "--security-opt", "no-new-privileges", "--entrypoint", "sh"]
+    for key, value in sorted(cfg["env"].items()):
+        command += ["--env", f"{key}={value}"]
+    for mount in [Mount(HOME_VOLUME, cfg["home"], volume=True), *nix_mounts(cfg["etc"])]:
+        command += mount.args()
+    return subprocess.run([*command, image, "-c", script, *args]).returncode
+
+
+def ensure_tools(cfg: dict, image: str) -> str:
+    root = tools_root(cfg["nix"]["tools"])
+    if run_nix(cfg, image, TOOLS_SCRIPT, "amux-tools", root, *cfg["nix"]["tools"]) != 0:
+        raise AmuxError("installing container tools failed")
+    return root
 
 
 # --- mounts ---------------------------------------------------------------
@@ -239,7 +406,8 @@ def plan_mounts(
     home: str,
     layout: GitLayout | None,
     add_dirs: list[tuple[str, bool]],
-    skills: str | None,
+    skills: dict[str, str],
+    etc: str,
     paste_dir: str,
     ssh_agent: str | None,
 ) -> list[Mount]:
@@ -264,11 +432,13 @@ def plan_mounts(
         if path not in targets:
             mounts.append(Mount(path, path, readonly=not rw))
             targets.add(path)
-    mounts.append(Mount("/nix/store", "/nix/store", readonly=True))
-    if skills and os.path.isdir(skills):
-        mounts.append(Mount(skills, skills, readonly=True))
-    mounts.append(Mount(paste_dir, PASTE_MOUNT, readonly=True))
     mounts.append(Mount(HOME_VOLUME, home, volume=True))
+    mounts += nix_mounts(etc)
+    # The host's skill links point into its store, so mount each target.
+    for target, source in sorted(skills.items()):
+        if os.path.isdir(source):
+            mounts.append(Mount(source, target, readonly=True))
+    mounts.append(Mount(paste_dir, PASTE_MOUNT, readonly=True))
     if ssh_agent:
         mounts.append(Mount(ssh_agent, SSH_AGENT_MOUNT))
     return mounts
@@ -671,15 +841,15 @@ def cmd_new(args: argparse.Namespace, cfg: dict) -> int:
     paste_dir = os.path.join(home, ".cache", "amux", "paste")
     os.makedirs(paste_dir, mode=0o700, exist_ok=True)
     mounts = plan_mounts(
-        root=root, home=home, layout=layout, add_dirs=add_dirs,
-        skills=os.path.join(home, spec["skills"]) if spec.get("skills") else None,
-        paste_dir=paste_dir, ssh_agent=host_ssh_agent(),
+        root=root, home=home, layout=layout, add_dirs=add_dirs, skills=spec.get("skills", {}),
+        etc=cfg["etc"], paste_dir=paste_dir, ssh_agent=host_ssh_agent(),
     )
     env = load_env(spec["envFiles"], spec["env"])
     skip = cfg["skipPermissions"] and not args.no_skip_permissions
     argv = agent_argv(spec, agent, env, skip, add_dirs, args.agent_args)
 
-    image = ensure_image(cfg)
+    image, _ = ensure_image(cfg, docker_arch(cfg))
+    tools = ensure_tools(cfg, image)
     rows, cols = winsize(sys.stdin.fileno())
     container = container_name(name)
     run = ["run", "--detach", "--rm", "--init", "--name", container,
@@ -687,7 +857,11 @@ def cmd_new(args: argparse.Namespace, cfg: dict) -> int:
            "--label", f"{LABEL}=1", "--label", f"{LABEL}.agent={agent}", "--label", f"{LABEL}.workdir={workdir}",
            "--workdir", workdir,
            "--env", f"AMUX_ROWS={rows}", "--env", f"AMUX_COLS={cols}",
-           "--env", f"GIT_CONFIG_GLOBAL={cfg['gitConfig']}"]
+           "--env", f"GIT_CONFIG_GLOBAL={ETC_MOUNT}/gitconfig",
+           "--env", f"AMUX_PATH={tools}/bin:{home}/.local/bin",
+           "--env", f"PATH={tools}/bin:{home}/.local/bin:{SYSTEM_PATH}"]
+    for key, value in sorted(cfg["env"].items()):
+        run += ["--env", f"{key}={value}"]
     if any(m.target == SSH_AGENT_MOUNT for m in mounts):
         run += ["--env", f"SSH_AUTH_SOCK={SSH_AGENT_MOUNT}"]
     for variable in env:
@@ -720,15 +894,48 @@ def cmd_ls(args: argparse.Namespace, cfg: dict) -> int:
         print("no sessions", file=sys.stderr)
         return 1
     for s in sessions:
+        if args.F is not None:
+            print(format_session(args.F, s))
+            continue
         attached = " (attached)" if reap(container_name(s.name)) > 0 else ""
         print(f"{s.name}: {s.agent} {s.workdir} (created {s.created}){attached}")
     return 0
+
+
+def format_session(fmt: str, session: Session) -> str:
+    fields = {"session_name": session.name, "agent": session.agent,
+              "workdir": session.workdir, "created": session.created}
+    return FORMAT_RE.sub(lambda match: fields.get(match.group(1), ""), fmt)
 
 
 def cmd_kill(args: argparse.Namespace, cfg: dict) -> int:
     name = resolve_target(args.t, list_sessions())
     docker("rm", "--force", container_name(name))
     return 0
+
+
+def cmd_update(args: argparse.Namespace, cfg: dict) -> int:
+    before = (read_json(agents_cache(cfg)) or {}).get("agents") or {}
+    image, agents = ensure_image(cfg, docker_arch(cfg), force_check=True)
+    ensure_tools(cfg, image)
+    for name in AGENTS:
+        old, new = (before.get(name) or {}).get("version"), agents[name]["version"]
+        print(f"{name} {old} -> {new}" if old and old != new else f"{name} {new}")
+    return 0
+
+
+def cmd_gc(args: argparse.Namespace, cfg: dict) -> int:
+    # Nix in one container cannot see store paths that processes in another
+    # container use without a root, such as tools from a running nix shell.
+    if list_sessions():
+        raise AmuxError("sessions are running; stop them with kill-session first")
+    if docker("volume", "inspect", NIX_VOLUME, check=False).returncode != 0:
+        print("amux: nothing to collect", file=sys.stderr)
+        return 0
+    images = docker("images", "--quiet", "--filter", f"label={IMAGE_LABEL}=1").stdout.split()
+    if not images:
+        raise AmuxError("no amux image to run the collector; run amux update first")
+    return run_nix(cfg, images[0], GC_SCRIPT, "amux-gc", tools_root(cfg["nix"]["tools"]))
 
 
 def parser() -> argparse.ArgumentParser:
@@ -751,11 +958,18 @@ def parser() -> argparse.ArgumentParser:
     attach.set_defaults(func=cmd_attach)
 
     ls = commands.add_parser("list-sessions", aliases=["ls"], help="list sessions")
+    ls.add_argument("-F", metavar="FORMAT", help="print each session with FORMAT, such as '#{session_name}'")
     ls.set_defaults(func=cmd_ls)
 
     kill = commands.add_parser("kill-session", aliases=["kill"], help="stop a session and its agent")
     kill.add_argument("-t", metavar="NAME", help="target session (default: newest)")
     kill.set_defaults(func=cmd_kill)
+
+    update = commands.add_parser("update", help="check npm for newer agents and rebuild the image")
+    update.set_defaults(func=cmd_update)
+
+    gc = commands.add_parser("gc", help="delete container Nix store paths that no session uses")
+    gc.set_defaults(func=cmd_gc)
     return root
 
 

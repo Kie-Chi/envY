@@ -376,5 +376,69 @@ class AgentVersionTests(unittest.TestCase):
         self.assertEqual(args["BASE_IMAGE"], "b")
 
 
+COMPLETION = Path(os.environ.get("AMUX_COMPLETION", Path(__file__).with_name("_amux")))
+
+# Load _amux the way autoload does and replace the completion-system helpers
+# with stubs that print what the function asked them to offer.
+COMPLETION_DRIVER = r'''
+file=$1; shift
+words=("$@"); CURRENT=$#words
+_describe() {
+  local -a rest=("$@")
+  while [[ $rest[1] == -* ]]; do
+    if [[ $rest[1] == -t ]]; then rest=("${(@)rest[3,-1]}"); else rest=("${(@)rest[2,-1]}"); fi
+  done
+  local name item
+  for name in "${(@)rest[2,-1]}"; do
+    if [[ ${(Pt)name} != array* ]]; then print -r -- "bad:$name"; continue; fi
+    for item in "${(@P)name}"; do print -r -- "describe:$item"; done
+  done
+}
+_arguments() { local spec; for spec in "$@"; do print -r -- "arguments:$spec"; done }
+_wanted() { : }
+_call_program() { : }
+eval "_amux() { $(<$file) }"
+_amux
+'''
+
+
+class CompletionTests(unittest.TestCase):
+    def complete(self, *words: str) -> list[str]:
+        result = subprocess.run(
+            ["zsh", "-f", "-c", COMPLETION_DRIVER, "zsh", str(COMPLETION), *words],
+            check=True, capture_output=True, text=True,
+        )
+        return result.stdout.splitlines()
+
+    def test_described_candidates_are_arrays_of_name_and_description(self):
+        lines = self.complete("amux", "")
+        self.assertEqual([line for line in lines if line.startswith("bad:")], [])
+        described = [line.removeprefix("describe:") for line in lines if line.startswith("describe:")]
+        self.assertIn("claude:start a Claude Code session", described)
+        self.assertIn("codex:start a Codex session", described)
+        self.assertIn("attach:attach to a session", described)
+        for item in described:
+            self.assertRegex(item, r"^[a-z-]+:[^:]+$")
+
+    def test_codex_commands_follow_an_optional_separator(self):
+        for words in (("codex", ""), ("codex", "--", ""), ("new", "-d", "codex", "--", "")):
+            with self.subTest(words=words):
+                lines = self.complete("amux", *words)
+                self.assertIn("describe:resume:resume a previous session", lines)
+                self.assertIn("describe:fork:fork a previous session", lines)
+
+    def test_agent_options_follow_an_optional_separator(self):
+        self.assertIn("arguments:--last[use the most recent session]",
+                      self.complete("amux", "codex", "--", "resume", "-"))
+        self.assertIn("arguments:--fork-session[use a new session ID when resuming]",
+                      self.complete("amux", "claude", "--", "-"))
+
+    def test_session_commands_complete_their_options(self):
+        self.assertIn("arguments:-t[target session]:session:_amux_sessions", self.complete("amux", "a", "-t", ""))
+        self.assertIn("arguments:-F[output format]:format:_amux_formats", self.complete("amux", "ls", "-"))
+        self.assertTrue(any(line.startswith("arguments:1:agent:") for line in self.complete("amux", "new", "-s", "x", "")))
+
+
+
 if __name__ == "__main__":
     unittest.main()

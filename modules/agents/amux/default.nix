@@ -143,7 +143,7 @@ let
     nativeBuildInputs = [ pkgs.git pkgs.zsh ];
     meta.mainProgram = "amux";
   } ''
-    AMUX_PATH=${./amux.py} ${python} ${./test_amux.py}
+    AMUX_PATH=${./amux.py} AMUX_COMPLETION=${./_amux} ${python} ${./test_amux.py}
     zsh -n ${./_amux}
     install -Dm755 ${launcher} $out/bin/amux
     install -Dm644 ${./_amux} $out/share/zsh/site-functions/_amux

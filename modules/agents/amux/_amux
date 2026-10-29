@@ -17,6 +17,10 @@ _amux_formats() {
 # leave session IDs to the agent's own picker.
 _amux_agent_args() {
   local -a commands
+  # "--" only separates amux options from the agent's own arguments.
+  if [[ $words[2] == -- ]] && (( CURRENT > 2 )); then
+    words[2]=(); (( CURRENT-- ))
+  fi
   case $words[1] in
     codex)
       if (( CURRENT == 2 )); then
@@ -64,7 +68,7 @@ _amux_new() {
 }
 
 _amux() {
-  local -a commands
+  local -a commands agents
   commands=(
     'new-session:start a session (default command)'
     'new:start a session (default command)'
@@ -81,7 +85,8 @@ _amux() {
   )
   if (( CURRENT == 2 )) && [[ $words[2] != -* ]]; then
     _describe -t commands 'amux command' commands
-    _describe -t agents 'agent' '(claude:"start a Claude Code session" codex:"start a Codex session")'
+    agents=('claude:start a Claude Code session' 'codex:start a Codex session')
+    _describe -t agents 'agent' agents
     return
   fi
   local command=$words[2]

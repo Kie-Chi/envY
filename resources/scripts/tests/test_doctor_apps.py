@@ -3,15 +3,17 @@ import os
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import patch
 
+from envy.doctor.checks import apps
 from envy.doctor.checks.apps import auth, checkers, vscode
-from envy.doctor.model import SECTION_AUTH, info
+from envy.doctor.model import SECTION_AUTH, SECTION_RUNTIME, SECTION_SYSTEM, info, ok, warn
 from envy.doctor.probes import command as command_probe
-from envy.doctor.probes import filesystem
+from envy.doctor.probes import filesystem, process
 from envy.doctor.probes import vscode as vscode_probe
 from envy.schemas.apps import EXPECTED_EXTENSIONS, AppSpec, PermissionReq
 
@@ -43,8 +45,7 @@ class TemporaryRootMixin:
 
 class GenericCheckerTests(TemporaryRootMixin, unittest.TestCase):
     def setUp(self):
-        for name, value in (("_tcc_result", None), ("_tcc_warned_flag", False)):
-            self.enterContext(patch.object(checkers, name, value))
+        self.enterContext(patch.object(checkers, "_tcc_result", None))
 
     def test_specs_without_signals_produce_no_results(self):
         self.assertEqual(checkers.run_app_checks(AppSpec(name="Empty")), [])
@@ -95,14 +96,13 @@ class GenericCheckerTests(TemporaryRootMixin, unittest.TestCase):
         self.assertIn("not requested/granted yet", results[1].message)
         self.assertIn("auth_value=0", results[2].message)
 
-    def test_unreadable_tcc_database_is_probed_and_reported_once(self):
+    def test_unreadable_tcc_database_is_probed_once(self):
         spec = AppSpec(name="Meet", bundle_id="com.example.meet",
                        permissions=[PermissionReq("kTCCServiceCamera", "Camera", "calls")])
         with patch.object(checkers.tcc, "permission_records", return_value=({}, False)) as probe:
             first = checkers.check_permissions(spec)
             second = checkers.check_permissions(spec)
-        self.assertEqual([result.name for result in first], ["TCC database"])
-        self.assertEqual(second, [])
+        self.assertEqual([result.name for result in first + second], ["TCC database"] * 2)
         probe.assert_called_once()
 
     def test_declared_custom_checkers_run_and_unknown_names_are_ignored(self):
@@ -115,6 +115,77 @@ class GenericCheckerTests(TemporaryRootMixin, unittest.TestCase):
         result = command_probe.run([sys.executable, "-c", "import time; time.sleep(5)"], timeout=0.2)
         self.assertEqual(result.returncode, 124)
         self.assertIn("timed out", result.stderr)
+
+
+class ProcessProbeTests(unittest.TestCase):
+    def setUp(self):
+        process.reset()
+        self.addCleanup(process.reset)
+        self.calls = []
+        self.outputs = {}
+        self.enterContext(patch.object(process, "run", side_effect=self.run_probe))
+        self.enterContext(patch.object(process, "platform_name", return_value="darwin"))
+
+    def run_probe(self, argv):
+        self.calls.append(argv[0])
+        returncode, stdout = self.outputs.get(argv[0], (1, ""))
+        return completed(returncode, stdout)
+
+    def test_the_process_list_answers_before_per_app_probes(self):
+        self.outputs["ps"] = (0, "/Applications/Foo.app/Contents/MacOS/Foo\nBar Helper (Renderer)\n")
+        self.assertTrue(process.app_running("com.example.foo", ["Foo"]))
+        self.assertTrue(process.app_running(None, ["Bar"]))
+        self.assertEqual(self.calls, ["ps"])
+
+    def test_unlisted_apps_fall_back_and_answers_last_until_reset(self):
+        self.outputs.update({"ps": (0, "other\n"), "osascript": (0, "true\n")})
+        self.assertTrue(process.app_running("com.example.foo", ["Foo"]))
+        self.assertTrue(process.app_running("com.example.foo", ["Foo"]))
+        self.assertEqual(self.calls, ["ps", "osascript"])
+        process.reset()
+        self.outputs["osascript"] = (0, "false\n")
+        self.assertFalse(process.app_running("com.example.foo", ["Foo"]))
+        self.assertEqual(self.calls, ["ps", "osascript", "ps", "osascript", "pgrep"])
+
+    def test_pgrep_finds_processes_missing_from_the_list(self):
+        self.outputs.update({"ps": (0, ""), "pgrep": (0, "42\n")})
+        self.assertTrue(process.app_running(None, ["daemon"]))
+        self.assertNotIn("osascript", self.calls)
+
+
+class AppRunnerTests(unittest.TestCase):
+    def run_apps(self, keys, checks, disabled=()):
+        specs = {key: AppSpec(name=key.title()) for key in keys}
+
+        def run_single_app(key):
+            # Finish in reverse order so the runner has to restore it.
+            time.sleep(0.01 * (len(keys) - keys.index(key)))
+            return checks.get(key, [])
+
+        with patch.object(apps, "ALL_APP_SPECS", specs), \
+                patch.object(apps, "app_keys_for_selection", return_value=keys), \
+                patch.object(apps, "app_policy", side_effect=lambda spec: (spec.name.lower() not in disabled, "excluded")), \
+                patch.object(apps, "machine_manifest", return_value={"id": "box"}), \
+                patch.object(apps, "run_single_app", side_effect=run_single_app):
+            return apps.run_checks(selection=object())
+
+    def test_results_keep_the_declared_app_order(self):
+        checks = {key: [ok(SECTION_RUNTIME, f"{key} running", "process is active")] for key in ("a", "c", "d")}
+        results = self.run_apps(["a", "b", "c", "d"], checks, disabled={"b"})
+        self.assertEqual([result.name for result in results], ["a running", "B", "c running", "d running"])
+        self.assertEqual(results[1].message, "disabled for machine box: excluded")
+
+    def test_an_unreadable_tcc_database_is_reported_once(self):
+        def tcc():
+            return warn(SECTION_SYSTEM, checkers.TCC_DATABASE_CHECK, "Full Disk Access required")
+
+        checks = {
+            "a": [ok(SECTION_RUNTIME, "a running", "process is active")],
+            "b": [tcc(), ok(SECTION_RUNTIME, "b running", "process is active")],
+            "c": [tcc()],
+        }
+        results = self.run_apps(["a", "b", "c"], checks)
+        self.assertEqual([result.name for result in results], ["a running", "TCC database", "b running"])
 
 
 class ChromeAccountTests(SafeOutputMixin, TemporaryRootMixin, unittest.TestCase):

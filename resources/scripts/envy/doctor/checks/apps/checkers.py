@@ -5,6 +5,7 @@ Generic checkers run for every app (skipping if not applicable).
 Custom checkers are declared per-app via spec.checkers and looked up by name.
 """
 
+import threading
 from collections.abc import Callable
 
 from envy.doctor.model import (
@@ -25,26 +26,22 @@ from envy.schemas.apps import AppSpec
 # Checker protocol
 CheckerFn = Callable[[AppSpec], list[CheckResult]]
 
-# TCC probe cache (avoid repeated DB access and duplicate warnings)
+# Every app with permissions reports an unreadable TCC database under this
+# name; the app runner keeps only the first report.
+TCC_DATABASE_CHECK = "TCC database"
+
+# TCC probe cache (avoid repeated DB access)
 _tcc_result: tuple[dict[tuple[str, str], int], bool] | None = None
-_tcc_warned_flag = False
+_tcc_lock = threading.Lock()
 
 
 def _tcc_cache() -> tuple[dict[tuple[str, str], int], bool]:
     """Cached TCC probe — only hits the database once per session."""
     global _tcc_result
-    if _tcc_result is None:
-        _tcc_result = tcc.permission_records()
-    return _tcc_result
-
-
-def _tcc_already_warned() -> bool:
-    """Return True if we already emitted the TCC unreadable warning (and mark it)."""
-    global _tcc_warned_flag
-    if _tcc_warned_flag:
-        return True
-    _tcc_warned_flag = True
-    return False
+    with _tcc_lock:
+        if _tcc_result is None:
+            _tcc_result = tcc.permission_records()
+        return _tcc_result
 
 
 # ==========================================
@@ -148,11 +145,9 @@ def check_permissions(spec: AppSpec) -> list[CheckResult]:
 
     records, readable = _tcc_cache()
     if not readable:
-        if _tcc_already_warned():
-            return []
         return [warn(
             SECTION_SYSTEM,
-            "TCC database",
+            TCC_DATABASE_CHECK,
             "Full Disk Access required — cannot verify app permissions",
             hint="System Settings -> Privacy & Security -> Full Disk Access: enable your terminal app.",
             action={"kind": "open-settings", "target": "privacy-full-disk-access"},

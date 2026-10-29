@@ -6,7 +6,7 @@ let
   evaluate = policy: (lib.evalModules {
     modules = [
       ../modules/agents/options.nix
-      ../modules/agents/skills.nix
+      ../modules/agents/skills/default.nix
       {
         options.assertions = lib.mkOption {
           type = lib.types.listOf lib.types.anything;

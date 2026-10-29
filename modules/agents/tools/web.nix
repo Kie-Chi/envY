@@ -6,10 +6,10 @@ let
     name = "envy-read";
     runtimeInputs = [ pkgs.poppler-utils ];
     checkPhase = ''
-      ENVY_READER_PATH=${./skills/read/scripts/read.py} ${readerPython}/bin/python ${./tests/test_reader.py}
+      ENVY_READER_PATH=${../skills/read/scripts/read.py} ${readerPython}/bin/python ${../tests/test_reader.py}
     '';
     text = ''
-      exec ${readerPython}/bin/python ${./skills/read/scripts/read.py} "$@"
+      exec ${readerPython}/bin/python ${../skills/read/scripts/read.py} "$@"
     '';
   };
   nixMcp = mcpNixosPackage.overrideAttrs (old: {
@@ -81,9 +81,9 @@ in
       envy-browser-mcp = [ "nix:playwright-mcp" ];
     };
     references = {
-      envy-read = "local:modules/agents/web-tools.nix#reader";
-      mcp-nixos = "local:modules/agents/web-tools.nix#nixMcp";
-      envy-browser-mcp = "local:modules/agents/web-tools.nix#browser";
+      envy-read = "local:modules/agents/tools/web.nix#reader";
+      mcp-nixos = "local:modules/agents/tools/web.nix#nixMcp";
+      envy-browser-mcp = "local:modules/agents/tools/web.nix#browser";
     };
   };
   envy.agents.pi.runtimeFiles = [ {

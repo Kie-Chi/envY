@@ -1,6 +1,8 @@
 { pkgs, sys, ... }:
 
 {
+  imports = [ ./web.nix ];
+
   # Registry-installed agent helpers are platform-neutral. Their installation
   # lifecycle belongs to modules/software; this feature owns only selection and
   # the CodeGraph-specific MCP registration step.
@@ -27,7 +29,7 @@
     after = [ "installNpmTools" ];
     script = ''
       CODEX_CONFIG="$HOME/.codex/config.toml"
-      CODEGRAPH_NORMALIZER=${../../resources/helpers/codegraph-codex.py}
+      CODEGRAPH_NORMALIZER=${../../../resources/helpers/codegraph-codex.py}
 
       # Codex formats nested MCP tables with indentation, but CodeGraph 0.9.7
       # only recognizes a table header at column zero. Ensure a canonical entry

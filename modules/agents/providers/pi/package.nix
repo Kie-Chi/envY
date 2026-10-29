@@ -6,7 +6,7 @@
   source = pkgs.applyPatches {
     name = "pi-source-ultra-thinking";
     src = args.source;
-    patches = [ ./patches/pi-ultra-thinking.patch ];
+    patches = [ ../../../../files/agents/patches/pi-ultra-thinking.patch ];
   };
 })).overrideAttrs (old: {
   postInstallCheck = (old.postInstallCheck or "") + ''

@@ -515,7 +515,7 @@ def _runtime_pi_models(values: dict[str, Any], agent: dict[str, Any]) -> dict[st
         model_data["contextWindow"] = agent["contextWindow"]
     if isinstance(agent.get("maxTokens"), int):
         model_data["maxTokens"] = agent["maxTokens"]
-    # Keep in sync with modules/agents/pi.nix: adaptive-thinking Anthropic
+    # Keep in sync with modules/agents/providers/pi/default.nix: adaptive-thinking Anthropic
     # models reject the thinking.type=disabled request Pi sends for "off".
     thinking_level_map: dict[str, str | None] = {"off": None} if api == "anthropic-messages" else {}
     if agent.get("moreThinking"):

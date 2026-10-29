@@ -25,7 +25,7 @@ let
   '';
   subagentAgents = [ "scout" "planner" "reviewer" "worker" ];
   subagentPrompts = [ "implement" "scout-and-plan" "implement-and-review" ];
-  fetchPiExtension = import ./pi-npm-extension.nix { inherit pkgs; };
+  fetchPiExtension = import ./npm-extension.nix { inherit pkgs; };
   # Reviewed npm packages pinned to registry integrity hashes. Check their Pi
   # peer range against the locked Pi before changing a version.
   packages = {

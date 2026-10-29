@@ -32,7 +32,7 @@ Cross-platform Nix configuration for Darwin (aarch64-darwin) and Linux (x86_64-l
 | `modules/mirrors/` | Versioned mirror catalog, common ecosystem environment, and Darwin/Linux implementations. |
 | `modules/cores/secrets.nix` | Core password secret required by host-level activation tasks. |
 | `modules/libs/sys.nix` | Provides the `sys` module argument from `activation.nix` (log/esudo/sops prelude and `task.activation`), `deploy.nix` (render, root deploy, writable merge), and Linux-only `linux-packages.nix`. |
-| `modules/agents/` | Agent installers, provider wrappers, declarative skill catalog, and shared skill selection. |
+| `modules/agents/` | Agent providers (`providers/`), shared defaults (`defaults.nix`), wrappers, declarative skill catalog, and agent tools; platform-only parts live in `darwin/` and `linux/`, static prompts and Pi patches in `files/agents/`. |
 | `modules/agents/amux/` | `amux` host client, session image, tmux baseline, and zsh completion for npm-latest Claude Code/Codex in detachable per-session Docker containers with a shared in-container Nix store. Host session history (`~/.codex/sessions`, `~/.codex/archived_sessions`, `~/.claude/projects`) is bind-mounted at the same paths; agent config, credentials, and SQLite state stay in the container. |
 | `docs/agents.md` | Architecture and maintenance guide for agent providers and skill subpackages. |
 | `install.sh` | Repository-independent bootstrap: clone/reuse a checkout, then hand off to setup with an interactive terminal. |
@@ -214,7 +214,7 @@ For meeting apps such as Tencent Meeting or Feishu, open the app and actually st
 - The `.sops.yaml` file CAN be committed once it has real age public keys.
 - When adding secret fields, place the field in the common or platform config schema, declare it in the consuming feature module (not `home.nix`), gate platform-only declarations to the same platform, and let `envy config refine` create its YAML path.
 - When adding a genuinely machine-specific value, decide common vs platform-only first, declare the Nix option, add the matching Python schema field, expose it in the relevant manifest, and consume it through `config.envy.*`.
-- When adding an LLM agent/provider: keep its installer and stable command wrapper in `modules/agents`; never manage application-owned auth, history, cache, or session files declaratively.
+- When adding an LLM agent/provider: keep its installer and stable command wrapper in `modules/agents/providers` (platform-only parts in `modules/agents/darwin` or `linux`); never manage application-owned auth, history, cache, or session files declaratively.
 - When adding a reusable skill: create `modules/agents/skills/<skill-name>/SKILL.md`, register it in `skills/catalog.nix`, and select it through `agents.skills.active`. Keep detailed references and scripts inside the skill and load them only when needed.
 - When adding an app doctor target, place it in common only if its signals are platform-neutral; otherwise add it to the relevant platform app schema. Prefer generic fields before a custom checker.
 - When adding a new login/auth check: implement it in `resources/scripts/envy/doctor/checks/apps/auth.py` or another focused module, register it in `_load_custom_checkers()`, and never print account names, emails, tokens, API keys, cookies, or raw secret values.

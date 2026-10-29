@@ -4,7 +4,7 @@ let
   genericAgents = lib.filterAttrs
     (_: agent: builtins.elem agent.adapter [ "openai-compatible-cli" "stepgo" ])
     config.envy.agents;
-  wrapper = import ./wrapper.nix { inherit lib pkgs; };
+  wrapper = import ../wrapper.nix { inherit lib pkgs; };
   mkAgent = name: agent:
     let
       inherit (wrapper.resolve config agent) endpoint credentialName credential;
@@ -34,12 +34,12 @@ let
   rendered = lib.mapAttrs mkAgent genericAgents;
   templates = lib.mapAttrs' (_: value: lib.nameValuePair value.templateName { content = value.env; }) rendered;
   packages = lib.attrValues (lib.mapAttrs (_: value: value.package) rendered);
-  references = lib.mapAttrs (name: _: "local:modules/agents/generic.nix#${name}") rendered;
+  references = lib.mapAttrs (name: _: "local:modules/agents/providers/generic.nix#${name}") rendered;
   aliases = lib.concatLists (lib.mapAttrsToList
     (name: value: wrapper.mkAliases name value.aliases)
     rendered);
   aliasReferences = lib.listToAttrs (lib.concatLists (lib.mapAttrsToList
-    (name: value: map (alias: lib.nameValuePair alias "local:modules/agents/generic.nix#${name}") value.aliases)
+    (name: value: map (alias: lib.nameValuePair alias "local:modules/agents/providers/generic.nix#${name}") value.aliases)
     rendered));
 in
 {

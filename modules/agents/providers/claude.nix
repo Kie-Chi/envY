@@ -4,9 +4,9 @@ let
   agentConfig = config.envy.agents.cc;
   packageEnabled = !(builtins.elem "claude" config.envy.software.nix.packages.exclude);
   promptFile = ".config/ccli/prompt";
-  prompts = import ./prompts.nix { inherit lib pkgs; };
+  prompts = import ../prompts.nix { inherit lib pkgs; };
   systemPrompt = prompts.forAdapter "claude-code";
-  wrapper = import ./wrapper.nix { inherit lib pkgs; };
+  wrapper = import ../wrapper.nix { inherit lib pkgs; };
   inherit (wrapper.resolve config agentConfig) endpoint credentialName credential;
   templateName = "envy-agent-cc";
   aliases = lib.unique agentConfig.aliases;
@@ -64,8 +64,8 @@ in
       claudeWithDefaults
     ] ++ aliasesPackages;
     envy.software.nix.packages.references = {
-      claude = "local:modules/agents/claude.nix#claudeWithDefaults";
-    } // lib.listToAttrs (map (alias: lib.nameValuePair alias "local:modules/agents/claude.nix#${alias}") aliases);
+      claude = "local:modules/agents/providers/claude.nix#claudeWithDefaults";
+    } // lib.listToAttrs (map (alias: lib.nameValuePair alias "local:modules/agents/providers/claude.nix#${alias}") aliases);
 
     home.file.${promptFile}.text = systemPrompt;
     })

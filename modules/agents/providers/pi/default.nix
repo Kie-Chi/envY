@@ -2,12 +2,12 @@
 
 let
   piConfig = config.envy.agents.pi;
-  prompts = import ./prompts.nix { inherit lib pkgs; };
+  prompts = import ../../prompts.nix { inherit lib pkgs; };
   selectedPiPackage = if piConfig.moreThinking then
-    import ./pi-package.nix { inherit piPackage pkgs; }
+    import ./package.nix { inherit piPackage pkgs; }
     else piPackage;
   providerName = "envy-pi";
-  wrapper = import ./wrapper.nix { inherit lib pkgs; };
+  wrapper = import ../../wrapper.nix { inherit lib pkgs; };
   endpointFor = agent: (wrapper.resolve config agent).endpoint;
   apiFor = agent: endpoint:
     if agent.api != null then agent.api
@@ -98,6 +98,8 @@ let
   };
 in
 {
+  imports = [ ./extensions.nix ];
+
   config = {
     sops.templates.${templateNameFor "pi"}.content = templateFor piConfig;
 
@@ -118,7 +120,7 @@ in
     envy.software.nix.packages.include = [ piWrapper ];
     envy.software.nix.packages.sourceDependencies = { pi = [ "nix:pi" ]; };
     envy.software.nix.packages.references = {
-      pi = "local:modules/agents/pi.nix#pi";
+      pi = "local:modules/agents/providers/pi/default.nix#pi";
     };
   };
 }

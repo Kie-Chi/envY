@@ -3,7 +3,7 @@
 let
   home = config.home.homeDirectory;
   agentDir = "${home}/.pi/agent";
-  cronExtension = import ./pi-npm-extension.nix { inherit pkgs; } {
+  cronExtension = import ../providers/pi/npm-extension.nix { inherit pkgs; } {
     pname = "pi-extension-cron";
     version = "0.5.0";
     url = "https://registry.npmjs.org/@ryan_nookpi/pi-extension-cron/-/pi-extension-cron-0.5.0.tgz";

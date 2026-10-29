@@ -1,6 +1,6 @@
 # Agent skills 与 Pi 扩展
 
-skill catalog 位于 modules/agents/skills/catalog.nix，由 modules/agents/default.nix 选择，modules/agents/skills.nix 按 adapter 建立发现目录。上游 skill 通过 flake input 锁定，应用时只链接已选择的目录。
+skill catalog 位于 modules/agents/skills/catalog.nix，由 modules/agents/defaults.nix 选择，modules/agents/skills/default.nix 按 adapter 建立发现目录。上游 skill 通过 flake input 锁定，应用时只链接已选择的目录。
 
 ## 当前 skill
 

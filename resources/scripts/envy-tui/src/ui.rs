@@ -13,8 +13,10 @@ use serde_json::Value;
 use crate::{
     app::{App, InputMode},
     model::{
-        journal_entries, mirror_mode, mirror_target_rows, search_entries, text, DetailView,
-        HistoryView, NavigationSection, Screen, SoftwareAction, WorkflowLog,
+        doctor_results, filtered_software_entries, journal_entries, mirror_mode,
+        mirror_target_rows, parse_timestamp, relative_age, search_entries, short_timestamp, text,
+        DetailView, HistoryView, JournalEntry, NavigationSection, Screen, SoftwareAction,
+        SoftwareEntry, WorkflowLog,
     },
     theme::{self, ACCENT, ERROR, NOTE, OK, WARN},
 };
@@ -32,20 +34,51 @@ fn selected_state(selected: usize, offset: usize, empty: bool) -> TableState {
     TableState::default().with_selected((!empty).then(|| selected.saturating_sub(offset)))
 }
 
-/// A table column: header label and width constraint.
+/// A table column: header label, width constraint, and the narrowest table
+/// that still shows it.
 struct Column {
     header: &'static str,
     width: Constraint,
+    min_table_width: u16,
 }
 
 const fn column(header: &'static str, width: Constraint) -> Column {
-    Column { header, width }
+    optional(header, width, 0)
 }
 
-/// Display text and style of one table cell.
+/// A secondary column, hidden when the table is narrower than `min_table_width`.
+const fn optional(header: &'static str, width: Constraint, min_table_width: u16) -> Column {
+    Column {
+        header,
+        width,
+        min_table_width,
+    }
+}
+
+/// A column just wide enough for its header and widest value plus a gap,
+/// up to `cap`.
+fn fitted<'a>(
+    header: &'static str,
+    values: impl Iterator<Item = &'a str>,
+    cap: u16,
+    min_table_width: u16,
+) -> Column {
+    let widest = values
+        .map(|value| Span::raw(value).width())
+        .chain([header.len()])
+        .max()
+        .unwrap_or(0);
+    optional(
+        header,
+        Constraint::Length((widest + 2).min(usize::from(cap)) as u16),
+        min_table_width,
+    )
+}
+
+/// Styled parts of one table cell. When the cell is too narrow, later parts
+/// are cut first, so secondary notes give way to the main text.
 struct TableCell {
-    text: String,
-    style: Style,
+    parts: Vec<(String, Style)>,
 }
 
 impl TableCell {
@@ -55,9 +88,29 @@ impl TableCell {
 
     fn styled(text: impl Into<String>, style: Style) -> Self {
         Self {
-            text: text.into(),
-            style,
+            parts: vec![(text.into(), style)],
         }
+    }
+
+    /// Append dimmed secondary text, such as an age after a time.
+    fn note(mut self, text: impl Into<String>) -> Self {
+        self.parts.push((text.into(), theme::faint()));
+        self
+    }
+
+    fn fit(self, width: u16) -> Line<'static> {
+        let mut room = width;
+        let mut spans = Vec::new();
+        for (text, style) in self.parts {
+            let fits = Span::raw(text.as_str()).width() <= usize::from(room);
+            let text = ellipsize(&text, room);
+            room = room.saturating_sub(Span::raw(text.as_str()).width() as u16);
+            spans.push(Span::styled(text, style));
+            if !fits {
+                break;
+            }
+        }
+        Line::from(spans)
     }
 }
 
@@ -74,7 +127,7 @@ struct DataTable<'a> {
 
 /// Width of each rendered column. This mirrors ratatui's own table layout so
 /// cells can end in a visible ellipsis instead of being clipped silently.
-fn column_widths(columns: &[Column], table_width: u16, selection_width: u16) -> Vec<u16> {
+fn column_widths(columns: &[&Column], table_width: u16, selection_width: u16) -> Vec<u16> {
     let [_, cells] = Layout::horizontal([Constraint::Length(selection_width), Constraint::Fill(0)])
         .areas(Rect::new(0, 0, table_width, 1));
     Layout::horizontal(columns.iter().map(|column| column.width))
@@ -119,7 +172,18 @@ fn render_table(frame: &mut Frame, area: Rect, table: DataTable) {
     } else {
         Span::raw(HIGHLIGHT_SYMBOL).width() as u16
     };
-    let widths = column_widths(table.columns, area.width.saturating_sub(2), selection_width);
+    let shown = table
+        .columns
+        .iter()
+        .map(|column| area.width >= column.min_table_width)
+        .collect::<Vec<_>>();
+    let columns = table
+        .columns
+        .iter()
+        .zip(&shown)
+        .filter_map(|(column, shown)| shown.then_some(column))
+        .collect::<Vec<_>>();
+    let widths = column_widths(&columns, area.width.saturating_sub(2), selection_width);
     let rows = table
         .rows
         .into_iter()
@@ -128,10 +192,10 @@ fn render_table(frame: &mut Frame, area: Rect, table: DataTable) {
             Row::new(
                 cells
                     .into_iter()
+                    .zip(&shown)
+                    .filter_map(|(cell, shown)| shown.then_some(cell))
                     .zip(&widths)
-                    .map(|(cell, width)| {
-                        Cell::from(ellipsize(&cell.text, *width)).style(cell.style)
-                    })
+                    .map(|(cell, width)| Cell::from(cell.fit(*width)))
                     .collect::<Vec<_>>(),
             )
         })
@@ -142,8 +206,8 @@ fn render_table(frame: &mut Frame, area: Rect, table: DataTable) {
             Line::styled(format!(" {selected} / {total} "), theme::muted()).right_aligned(),
         );
     }
-    let widget = Table::new(rows, table.columns.iter().map(|column| column.width))
-        .header(Row::new(table.columns.iter().map(|column| column.header)).style(theme::heading()))
+    let widget = Table::new(rows, columns.iter().map(|column| column.width))
+        .header(Row::new(columns.iter().map(|column| column.header)).style(theme::heading()))
         .row_highlight_style(theme::selection())
         .highlight_symbol(Span::styled(HIGHLIGHT_SYMBOL, Style::new().fg(ACCENT)))
         .block(block);
@@ -241,6 +305,9 @@ fn top_bar_context(app: &App) -> Line<'static> {
     };
     let git = payload.get("git").unwrap_or(&Value::Null);
     let mut spans = Vec::new();
+    if let Some(age) = app.saved_age(Screen::Home) {
+        spans.push(Span::styled(format!("saved {age} · "), theme::muted()));
+    }
     if let Some(machine) = payload
         .pointer("/config/device/machineId")
         .or_else(|| payload.get("machine"))
@@ -300,7 +367,7 @@ fn page_keys(screen: Screen) -> &'static str {
         Screen::Sources => "Enter select source  s sync metadata",
         Screen::Software => "Enter toggle  w why  / filter",
         Screen::Search => "Enter add  / query",
-        Screen::Doctor => "Enter details",
+        Screen::Doctor => "Enter details  f filter",
         Screen::History => "v view  Space mark  d diff",
         Screen::Home => "2 Configure  3 Activity",
         Screen::Config => "Enter edit host / setting",
@@ -314,7 +381,7 @@ fn compact_page_keys(screen: Screen) -> &'static str {
         Screen::Sources => "↵ source  s sync",
         Screen::Software => "↵ toggle  w why  / filter",
         Screen::Search => "↵ add  / query",
-        Screen::Doctor => "↵ details",
+        Screen::Doctor => "↵ details  f filter",
         Screen::History => "v view  Space mark  d diff",
         Screen::Home => "2 Configure  3 Activity",
         Screen::Config => "↵ edit setting",
@@ -468,7 +535,7 @@ fn repository_lines(git: &Value) -> Vec<Line<'static>> {
     ]
 }
 
-fn health_lines(doctor: &Value, generation: &Value) -> Vec<Line<'static>> {
+fn health_lines(doctor: &Value, generation: &Value, now: i64) -> Vec<Line<'static>> {
     let summary = doctor.get("summary").unwrap_or(&Value::Null);
     let mut counts = vec![Span::raw(" ")];
     for status in ["ok", "warn", "error", "info"] {
@@ -488,13 +555,19 @@ fn health_lines(doctor: &Value, generation: &Value) -> Vec<Line<'static>> {
         .and_then(Value::as_u64)
         .map(|count| format!(" · {count} kept"))
         .unwrap_or_default();
+    let activated = generation
+        .pointer("/current/createdAt")
+        .and_then(Value::as_str)
+        .and_then(parse_timestamp)
+        .map(|then| Span::raw(relative_age(then, now)))
+        .unwrap_or_else(|| Span::styled("—", theme::muted()));
     vec![
         Line::from(counts),
-        Line::from(""),
         field_line(
             "generation",
             format!("{}{kept}", text(generation.pointer("/current/number"))),
         ),
+        field_line("activated", activated),
     ]
 }
 
@@ -603,6 +676,44 @@ fn attention_lines(doctor: &Value, width: u16) -> Vec<Line<'static>> {
         .collect()
 }
 
+/// The newest operations from the journal, one per line.
+fn activity_lines(entries: &[JournalEntry], width: u16, now: i64) -> Vec<Line<'static>> {
+    let operation_width = entries
+        .iter()
+        .map(|entry| entry.operation.chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(14);
+    entries
+        .iter()
+        .map(|entry| {
+            let color = if entry.result == "ok" { OK } else { ERROR };
+            let age = parse_timestamp(&entry.timestamp)
+                .map(|then| relative_age(then, now))
+                .unwrap_or_else(|| short_timestamp(&entry.timestamp));
+            let operation = format!(
+                "{:<operation_width$}",
+                ellipsize(&entry.operation, operation_width as u16)
+            );
+            let facts = format!("  {:<4}  {:>7}  {age:<10}  ", entry.result, entry.duration);
+            let used =
+                3 + Span::raw(operation.as_str()).width() + Span::raw(facts.as_str()).width();
+            let room = width.saturating_sub(used.min(usize::from(u16::MAX)) as u16);
+            let detail = if entry.detail == "—" {
+                ""
+            } else {
+                entry.detail.as_str()
+            };
+            Line::from(vec![
+                Span::styled(" ● ", Style::new().fg(color)),
+                Span::raw(operation),
+                Span::styled(facts, theme::muted()),
+                Span::styled(ellipsize(detail, room), theme::faint()),
+            ])
+        })
+        .collect()
+}
+
 fn home_card(title: &str, lines: Vec<Line<'static>>) -> Paragraph<'static> {
     Paragraph::new(lines).block(theme::panel().title(theme::title(title)))
 }
@@ -617,7 +728,11 @@ fn render_home(frame: &mut Frame, app: &App, area: Rect) {
     );
     let health = home_card(
         "Health",
-        health_lines(doctor, payload.get("generation").unwrap_or(&Value::Null)),
+        health_lines(
+            doctor,
+            payload.get("generation").unwrap_or(&Value::Null),
+            app.now(),
+        ),
     );
     let software = home_card(
         "Software",
@@ -663,7 +778,7 @@ fn render_home(frame: &mut Frame, app: &App, area: Rect) {
     };
     let mut attention = attention_lines(doctor, attention_area.width.saturating_sub(2));
     let room = usize::from(attention_area.height.saturating_sub(2));
-    if !attention.is_empty() && room > 0 {
+    let activity_area = if !attention.is_empty() && room > 0 {
         let title = format!("Needs attention · {}", attention.len());
         if attention.len() > room {
             let hidden = attention.len() - room + 1;
@@ -674,10 +789,37 @@ fn render_home(frame: &mut Frame, app: &App, area: Rect) {
             )));
         }
         let height = attention.len() as u16 + 2;
-        let [card, _] = Layout::vertical([Constraint::Length(height), Constraint::Fill(1)])
+        let [card, rest] = Layout::vertical([Constraint::Length(height), Constraint::Fill(1)])
             .areas(attention_area);
         frame.render_widget(home_card(&title, attention), card);
+        rest
+    } else {
+        attention_area
+    };
+    render_recent_activity(frame, app, activity_area);
+}
+
+const RECENT_ACTIVITY_LIMIT: usize = 5;
+
+/// The newest journal entries in whatever room Home has left.
+fn render_recent_activity(frame: &mut Frame, app: &App, area: Rect) {
+    let journal = app
+        .pages
+        .get(&Screen::Journal)
+        .and_then(|page| page.payload.as_ref());
+    let mut entries = journal_entries(journal);
+    let room = usize::from(area.height.saturating_sub(2)).min(RECENT_ACTIVITY_LIMIT);
+    if entries.is_empty() || room == 0 {
+        return;
     }
+    entries.truncate(room);
+    let lines = activity_lines(&entries, area.width.saturating_sub(2), app.now());
+    let [card, _] = Layout::vertical([
+        Constraint::Length(lines.len() as u16 + 2),
+        Constraint::Fill(1),
+    ])
+    .areas(area);
+    frame.render_widget(home_card("Recent operations", lines), card);
 }
 
 const SETTINGS_COLUMNS: [Column; 3] = [
@@ -784,13 +926,19 @@ fn render_sources(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-const SOFTWARE_COLUMNS: [Column; 5] = [
-    column("GROUP", Constraint::Length(28)),
-    column("ITEM", Constraint::Length(22)),
-    column("VERSION", Constraint::Length(12)),
-    column("STATE", Constraint::Length(12)),
-    column("REFERENCE", Constraint::Min(20)),
-];
+/// Software columns sized to the given entries; version and source give way
+/// on narrow terminals.
+fn software_columns(entries: &[SoftwareEntry]) -> [Column; 6] {
+    let values = |field: fn(&SoftwareEntry) -> &str| entries.iter().map(field);
+    [
+        fitted("GROUP", values(|entry| &entry.group), 26, 0),
+        fitted("ITEM", values(|entry| &entry.item), 26, 0),
+        fitted("VERSION", values(|entry| &entry.version), 14, 100),
+        fitted("STATE", values(|entry| &entry.state), 11, 0),
+        fitted("SOURCE", values(|entry| &entry.source_id), 18, 120),
+        column("REFERENCE", Constraint::Min(20)),
+    ]
+}
 
 fn render_software(frame: &mut Frame, app: &App, area: Rect) {
     let table_area = if app.input_bar_height() > 0 {
@@ -831,24 +979,36 @@ fn render_software(frame: &mut Frame, app: &App, area: Rect) {
         render_empty_state(frame, table_area, title, message, action);
         return;
     }
+    // Name each group once per run of rows, and again at the top of the view.
+    let offset = row_offset(app.scroll, entries.len(), table_area);
     let rows = entries
         .iter()
-        .map(|entry| {
+        .enumerate()
+        .map(|(index, entry)| {
             let state_style = match entry.state.as_str() {
                 "effective" => Style::new().fg(OK),
                 "blocked" => Style::new().fg(ERROR),
                 "stale" => Style::new().fg(WARN),
                 _ => theme::faint(),
             };
+            let group_starts =
+                index == 0 || index == offset || entries[index - 1].group != entry.group;
             vec![
-                TableCell::new(entry.group.clone()),
+                TableCell::new(if group_starts {
+                    entry.group.as_str()
+                } else {
+                    ""
+                }),
                 TableCell::new(entry.item.clone()),
                 TableCell::new(entry.version.clone()),
                 TableCell::styled(entry.state.clone(), state_style),
-                TableCell::new(format!("{} · {}", entry.source_id, entry.reference)),
+                TableCell::styled(entry.source_id.clone(), theme::faint()),
+                TableCell::new(entry.reference.clone()),
             ]
         })
         .collect();
+    // Size columns from every entry so filtering does not move them.
+    let columns = software_columns(&filtered_software_entries(app.payload(), ""));
     let title = if app.software_filter.is_empty() {
         format!("Software policy · {total} items")
     } else {
@@ -860,7 +1020,7 @@ fn render_software(frame: &mut Frame, app: &App, area: Rect) {
         DataTable {
             title,
             position: app.selection_position(),
-            columns: &SOFTWARE_COLUMNS,
+            columns: &columns,
             rows,
             selected: app.software_selected,
             scroll: app.scroll,
@@ -961,30 +1121,33 @@ fn render_search(frame: &mut Frame, app: &App, area: Rect) {
 
 const DOCTOR_COLUMNS: [Column; 4] = [
     column("STATUS", Constraint::Length(9)),
-    column("SECTION", Constraint::Length(8)),
+    optional("SECTION", Constraint::Length(8), 100),
     column("CHECK", Constraint::Length(30)),
-    column("RESULT", Constraint::Min(40)),
+    column("RESULT", Constraint::Min(30)),
 ];
 
 fn render_doctor(frame: &mut Frame, app: &App, area: Rect) {
-    let results = app
-        .payload()
-        .and_then(|payload| payload.get("results"))
-        .and_then(Value::as_array);
-    let count = results.map(Vec::len).unwrap_or(0);
+    let results = doctor_results(app.payload(), app.doctor_problems_only);
+    let count = results.len();
     if count == 0 && !app.loading() {
-        render_empty_state(
-            frame,
-            area,
-            "No doctor results",
-            "envY did not return any checks for this machine.",
-            "Press r to run Doctor again.",
-        );
+        let (title, message, action) = if app.doctor_problems_only {
+            (
+                "No warnings or errors",
+                "Every check passed or is informational.",
+                "Press f to show all checks.",
+            )
+        } else {
+            (
+                "No doctor results",
+                "envY did not return any checks for this machine.",
+                "Press r to run Doctor again.",
+            )
+        };
+        render_empty_state(frame, area, title, message, action);
         return;
     }
     let rows = results
         .into_iter()
-        .flatten()
         .map(|result| {
             let status = text(result.get("status"));
             vec![
@@ -1002,7 +1165,11 @@ fn render_doctor(frame: &mut Frame, app: &App, area: Rect) {
         frame,
         area,
         DataTable {
-            title: "Doctor · Enter details".to_string(),
+            title: if app.doctor_problems_only {
+                "Doctor · warnings and errors".to_string()
+            } else {
+                "Doctor · problems first".to_string()
+            },
             position: Some(app.selection_position().unwrap_or((0, count))),
             columns: &DOCTOR_COLUMNS,
             rows,
@@ -1020,12 +1187,32 @@ fn render_history(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 const GENERATION_COLUMNS: [Column; 5] = [
-    column("GENERATION", Constraint::Length(12)),
-    column("STATE", Constraint::Length(18)),
-    column("CREATED", Constraint::Length(28)),
-    column("PROFILE", Constraint::Length(38)),
-    column("STORE TARGET", Constraint::Min(40)),
+    column("GENERATION", Constraint::Length(10)),
+    column("STATE", Constraint::Length(16)),
+    column("CREATED", Constraint::Length(24)),
+    optional("PROFILE", Constraint::Length(38), 150),
+    column("STORE TARGET", Constraint::Min(30)),
 ];
+
+/// Local time of a timestamp with its age as a dimmed note.
+fn time_cell(timestamp: &str, now: i64) -> TableCell {
+    let cell = TableCell::new(short_timestamp(timestamp));
+    match parse_timestamp(timestamp) {
+        Some(then) => cell.note(format!("  {}", relative_age(then, now))),
+        None => cell,
+    }
+}
+
+/// A store path's name, with the start of its hash to tell equal names apart.
+fn store_path_cell(path: &str) -> TableCell {
+    let Some((hash, name)) = path
+        .strip_prefix("/nix/store/")
+        .and_then(|base| base.split_once('-'))
+    else {
+        return TableCell::new(path);
+    };
+    TableCell::new(name).note(format!("  {}", hash.get(..8).unwrap_or(hash)))
+}
 
 fn render_generations(frame: &mut Frame, app: &App, area: Rect) {
     let generations = app
@@ -1058,9 +1245,9 @@ fn render_generations(frame: &mut Frame, app: &App, area: Rect) {
             vec![
                 TableCell::new(text(generation.get("number"))),
                 state,
-                TableCell::new(text(generation.get("createdAt"))),
-                TableCell::new(text(generation.get("path"))),
-                TableCell::new(text(generation.get("target"))),
+                time_cell(&text(generation.get("createdAt")), app.now()),
+                TableCell::styled(text(generation.get("path")), theme::faint()),
+                store_path_cell(&text(generation.get("target"))),
             ]
         })
         .collect();
@@ -1079,11 +1266,11 @@ fn render_generations(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 const JOURNAL_COLUMNS: [Column; 6] = [
-    column("TIME", Constraint::Length(26)),
-    column("OPERATION", Constraint::Length(15)),
+    column("TIME", Constraint::Length(24)),
+    column("OPERATION", Constraint::Length(14)),
     column("RESULT", Constraint::Length(8)),
-    column("DURATION", Constraint::Length(10)),
-    column("MACHINE", Constraint::Length(24)),
+    column("DURATION", Constraint::Length(9)),
+    optional("MACHINE", Constraint::Length(24), 150),
     column("DETAIL", Constraint::Min(20)),
 ];
 
@@ -1109,11 +1296,11 @@ fn render_journal(frame: &mut Frame, app: &App, area: Rect) {
                 TableCell::styled(entry.result.clone(), Style::new().fg(ERROR))
             };
             vec![
-                TableCell::new(entry.timestamp.clone()),
+                time_cell(&entry.timestamp, app.now()),
                 TableCell::new(entry.operation.clone()),
                 result,
                 TableCell::new(entry.duration.clone()),
-                TableCell::new(entry.machine.clone()),
+                TableCell::styled(entry.machine.clone(), theme::faint()),
                 TableCell::new(entry.detail.clone()),
             ]
         })
@@ -1207,17 +1394,31 @@ fn render_section_navigation(frame: &mut Frame, app: &App, area: Rect) {
             )
         }
     };
+    // Health carries its warning and error count.
+    let problems = (app.screen.section() == NavigationSection::Activity)
+        .then(|| app.doctor_summary())
+        .flatten()
+        .map(|summary| {
+            let count = |status| summary.get(status).and_then(Value::as_u64).unwrap_or(0);
+            (count("warn") + count("error"), count("error") > 0)
+        })
+        .filter(|(count, _)| *count > 0);
     let mut spans = vec![
         Span::styled(format!(" {title} "), theme::heading()),
         Span::styled("›", theme::muted()),
     ];
     for (index, label) in labels.iter().enumerate() {
-        spans.push(Span::raw(" "));
-        spans.push(if index == selected {
-            Span::styled(format!(" {label} "), theme::selection().fg(ACCENT))
+        let style = if index == selected {
+            theme::selection().fg(ACCENT)
         } else {
-            Span::raw(format!(" {label} "))
-        });
+            Style::new()
+        };
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(format!(" {label} "), style));
+        if let (0, Some((count, errors))) = (index, problems) {
+            let color = if errors { ERROR } else { WARN };
+            spans.push(Span::styled(format!("{count} "), style.fg(color)));
+        }
     }
     let tabs = Line::from(spans);
     let hint = Line::from(hint_spans("v switch view"));
@@ -1397,14 +1598,44 @@ fn software_detail_lines(payload: &Value) -> Vec<Line<'static>> {
     ]
 }
 
-fn json_lines(value: Option<&Value>) -> Vec<Line<'static>> {
+/// A detail value on one line: scalars as text, lists of scalars joined.
+fn detail_value(value: &Value) -> String {
     match value {
-        None | Some(Value::Null) => vec![Line::from("None")],
-        Some(value) => serde_json::to_string_pretty(value)
-            .unwrap_or_else(|_| value.to_string())
-            .lines()
-            .map(|line| Line::from(line.to_string()))
-            .collect(),
+        Value::Array(items)
+            if items
+                .iter()
+                .all(|item| !item.is_array() && !item.is_object()) =>
+        {
+            items
+                .iter()
+                .map(|item| text(Some(item)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+        Value::Array(_) | Value::Object(_) => value.to_string(),
+        scalar => text(Some(scalar)),
+    }
+}
+
+/// What a doctor action would do, in words.
+fn action_text(action: &Value) -> String {
+    let field = |key| action.get(key).and_then(Value::as_str).unwrap_or("—");
+    match action.get("kind").and_then(Value::as_str) {
+        Some("run") => format!(
+            "Run {}",
+            action
+                .get("argv")
+                .and_then(Value::as_array)
+                .map(|argv| argv
+                    .iter()
+                    .map(|part| text(Some(part)))
+                    .collect::<Vec<_>>()
+                    .join(" "))
+                .unwrap_or_default()
+        ),
+        Some("open-app") => format!("Open {}", field("name")),
+        Some("open-settings") => format!("Open System Settings › {}", field("target")),
+        _ => action.to_string(),
     }
 }
 
@@ -1415,29 +1646,60 @@ fn doctor_detail_lines(result: &Value) -> Vec<Line<'static>> {
             theme::chip(status.to_uppercase(), theme::status_color(&status)),
             Span::styled(format!("  {}", text(result.get("name"))), theme::strong()),
         ]),
-        Line::from(format!("Section  {}", text(result.get("section")))),
-        Line::from(""),
-        Line::from(Span::styled("Result", theme::heading())),
-        Line::from(text(result.get("message"))),
-        Line::from(""),
-        Line::from(Span::styled("Hint", theme::heading())),
-        Line::from(text(result.get("hint"))),
-        Line::from(""),
-        Line::from(Span::styled("Details", theme::heading())),
+        Line::from(vec![
+            Span::styled("Section  ", theme::muted()),
+            Span::raw(text(result.get("section"))),
+        ]),
     ];
-    lines.extend(json_lines(result.get("details")));
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "Suggested action",
-        theme::heading(),
-    )));
-    lines.extend(json_lines(result.get("action")));
-    if result.get("action").is_some_and(|value| !value.is_null()) {
+    let mut section = |title: &str, body: Vec<Line<'static>>| {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "Press x to run an allow-listed action; envY will return here afterward.",
-            Style::new().fg(WARN),
+            title.to_string(),
+            theme::heading(),
         )));
+        lines.extend(body);
+    };
+    section("Result", vec![Line::from(text(result.get("message")))]);
+    if let Some(hint) = result
+        .get("hint")
+        .and_then(Value::as_str)
+        .filter(|hint| !hint.is_empty())
+    {
+        section("Hint", vec![Line::from(hint.to_string())]);
+    }
+    match result.get("details") {
+        Some(Value::Object(details)) if !details.is_empty() => {
+            let width = details
+                .keys()
+                .map(|key| key.chars().count())
+                .max()
+                .unwrap_or(0)
+                .min(20);
+            section(
+                "Details",
+                details
+                    .iter()
+                    .map(|(key, value)| {
+                        Line::from(vec![
+                            Span::styled(format!("{key:<width$}  "), theme::muted()),
+                            Span::raw(detail_value(value)),
+                        ])
+                    })
+                    .collect(),
+            );
+        }
+        Some(Value::Object(_)) | Some(Value::Null) | None => {}
+        Some(other) => section("Details", vec![Line::from(detail_value(other))]),
+    }
+    if let Some(action) = result.get("action").filter(|action| !action.is_null()) {
+        let mut body = vec![Line::from(action_text(action))];
+        if App::doctor_workflow(result).is_some() {
+            body.push(Line::from(Span::styled(
+                "Press x to run it; envY returns here afterward.",
+                Style::new().fg(WARN),
+            )));
+        }
+        section("Suggested action", body);
     }
     lines
 }
@@ -2101,6 +2363,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
             Line::from(Span::styled("Activity", theme::heading())),
             Line::from("Health / Generations / Operations are secondary views"),
             Line::from("Health Enter opens details; x runs an allow-listed safe action"),
+            Line::from("Health f shows only warnings and errors"),
             Line::from("v cycles Activity views; Space marks generations, d compares"),
             Line::from(""),
             Line::from("Every mutation: dry-run → contract validation → explicit confirmation."),
@@ -2283,9 +2546,23 @@ mod tests {
 
     use super::*;
 
+    /// 2026-10-29T03:50:44+08:00, a little over three hours after the
+    /// sample generation was activated.
+    const NOW: i64 = 1_793_206_124 + 3 * 3600 + 120;
+
     fn test_app() -> App {
         let (tx, rx) = mpsc::channel();
-        App::new(tx, rx)
+        let mut app = App::new(tx, rx);
+        app.fixed_now = Some(NOW);
+        app
+    }
+
+    fn plain(lines: &[Line]) -> String {
+        lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn row_containing(buffer: &Buffer, needle: &str) -> Option<u16> {
@@ -2452,7 +2729,9 @@ mod tests {
             "status": "warn",
             "message": "inspect the complete result",
             "hint": "scroll to the end",
-            "details": {"items": (0..40).collect::<Vec<_>>()},
+            "details": (0..40)
+                .map(|index| (format!("item{index}"), json!(index)))
+                .collect::<serde_json::Map<_, _>>(),
             "action": null
         })));
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
@@ -2563,7 +2842,7 @@ mod tests {
                 "values": {"envy.user.name": "chi"}
             },
             "git": {"branch": "master", "upstream": "origin/master", "ahead": 2, "behind": 0, "changes": 3},
-            "generation": {"current": {"number": 112}, "count": 2},
+            "generation": {"current": {"number": 112, "createdAt": "2026-10-29T00:48:44+08:00"}, "count": 2},
             "software": {"available": 95, "groups": 8, "included": 91, "effective": 82, "excluded": 9},
             "doctor": {"summary": {"ok": 40, "warn": warn, "error": 0, "info": 5}, "results": results},
             "recommendations": recommendations
@@ -2583,11 +2862,95 @@ mod tests {
             ]),
             1,
         ));
-        let (text, buffer) = render(&mut app, 120, 16);
+        app.pages.insert(
+            Screen::Journal,
+            crate::model::PageState {
+                payload: Some(journal_payload()),
+                ..Default::default()
+            },
+        );
+        let (text, buffer) = render(&mut app, 120, 21);
         assert_snapshot(&text, WIDE_HOME);
         assert_terminal_palette(&buffer);
         assert_eq!(cell_at(&buffer, "1 warn").bg, WARN);
         assert_eq!(cell_at(&buffer, "3 changed").fg, WARN);
+        let failed = row_containing(&buffer, "sync").unwrap();
+        assert_eq!(buffer[(2, failed)].fg, ERROR, "failed operation is marked");
+    }
+
+    #[test]
+    fn restored_home_names_its_age() {
+        let mut app = home_app(status_payload(json!([]), json!([]), 0));
+        app.pages.get_mut(&Screen::Home).unwrap().saved_at = Some(NOW - 600);
+        let (text, _) = render(&mut app, 120, 16);
+        assert!(text
+            .lines()
+            .next()
+            .unwrap()
+            .ends_with("saved 10 min ago · mac · master ● 3 changed"));
+    }
+
+    fn journal_payload() -> Value {
+        json!({"entries": [
+            {"timestamp": "2026-10-29T03:40:00+08:00", "operation": "apply", "result": "ok",
+             "durationMs": 34319, "machine": "mac", "detail": {}},
+            {"timestamp": "2026-10-29T01:12:05+08:00", "operation": "push", "result": "ok",
+             "durationMs": 11431, "machine": "mac", "detail": {"remote": "all", "branch": "master"}},
+            {"timestamp": "2026-10-26T22:00:00+08:00", "operation": "sync", "result": "fail",
+             "durationMs": 212525, "machine": "mac", "detail": {"error": "merge conflict in flake.lock"}}
+        ]})
+    }
+
+    #[test]
+    fn activity_tables_show_local_times_with_their_age() {
+        let mut app = test_app();
+        app.screen = Screen::History;
+        app.status = "History ready".to_string();
+        app.pages.insert(
+            Screen::History,
+            crate::model::PageState {
+                payload: Some(json!({"generations": [
+                    {"number": 113, "current": true, "createdAt": "2026-10-29T03:40:00+08:00",
+                     "path": "/nix/var/nix/profiles/system-113-link",
+                     "target": "/nix/store/ypk8n1d1bbnzfy53lzbv5f1frqp36rvx-darwin-system-26.05.56c666e"},
+                    {"number": 112, "current": false, "createdAt": "2026-10-27T00:48:44+08:00",
+                     "path": "/nix/var/nix/profiles/system-112-link",
+                     "target": "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-darwin-system-26.05.0246b24"}
+                ]})),
+                ..Default::default()
+            },
+        );
+        let (text, buffer) = render(&mut app, 120, 8);
+        assert_snapshot(&text, GENERATIONS_TABLE);
+        assert!(cell_at(&buffer, "10 min ago")
+            .modifier
+            .contains(Modifier::DIM));
+        assert!(cell_at(&buffer, "ypk8n1d1")
+            .modifier
+            .contains(Modifier::DIM));
+        assert!(!cell_at(&buffer, "darwin-system")
+            .modifier
+            .contains(Modifier::DIM));
+
+        app.history_view = HistoryView::Operations;
+        app.pages.insert(
+            Screen::Journal,
+            crate::model::PageState {
+                payload: Some(journal_payload()),
+                ..Default::default()
+            },
+        );
+        let (text, buffer) = render(&mut app, 100, 9);
+        assert_snapshot(&text, JOURNAL_TABLE);
+        assert_eq!(cell_at(&buffer, "fail").fg, ERROR);
+    }
+
+    #[test]
+    fn cell_notes_give_way_before_the_main_text() {
+        let cell = || TableCell::new("10-29 00:48").note("  3 h ago");
+        assert_eq!(cell().fit(20).to_string(), "10-29 00:48  3 h ago");
+        assert_eq!(cell().fit(15).to_string(), "10-29 00:48  3…");
+        assert_eq!(cell().fit(8).to_string(), "10-29 0…");
     }
 
     #[test]
@@ -2638,6 +3001,58 @@ mod tests {
     }
 
     #[test]
+    fn software_columns_follow_the_width_and_groups_are_named_once() {
+        let mut app = software_app(40);
+        app.scroll = 10;
+        app.software_selected = 12;
+        let (text, _) = render(&mut app, 80, 10);
+        assert!(!text.contains("VERSION") && !text.contains("SOURCE"));
+        let rows = text
+            .lines()
+            .filter(|line| line.contains("pkg-"))
+            .collect::<Vec<_>>();
+        assert!(rows[0].contains("pkg-10") && rows[0].contains("nix.user.package"));
+        assert!(rows[1..]
+            .iter()
+            .all(|row| !row.contains("nix.user.package")));
+
+        let (text, buffer) = render(&mut app, 130, 10);
+        assert!(text.contains("VERSION") && text.contains("SOURCE"));
+        assert!(cell_at(&buffer, "nix:nixpkgs")
+            .modifier
+            .contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn doctor_details_hide_empty_sections_and_offer_only_runnable_actions() {
+        let mut result = json!({
+            "status": "warn", "section": "apps", "name": "GitHub CLI auth",
+            "message": "not authenticated", "hint": "",
+            "details": {"command": "gh", "paths": ["/a", "/b"], "exit": {"code": 1}},
+            "action": {"kind": "run", "argv": ["gh", "auth", "login"]}
+        });
+        let text = plain(&doctor_detail_lines(&result));
+        assert!(!text.contains("Hint"));
+        assert!(text.contains("command  gh"));
+        assert!(text.contains("paths    /a, /b"));
+        assert!(text.contains(r#"exit     {"code":1}"#));
+        assert!(text.contains("Run gh auth login"));
+        assert!(!text.contains("Press x"), "only allow-listed actions run");
+
+        result["details"] = json!({});
+        result["action"] = json!({"kind": "run", "argv": ["envy", "apply"]});
+        let text = plain(&doctor_detail_lines(&result));
+        assert!(!text.contains("Details"));
+        assert!(text.contains("Run envy apply") && text.contains("Press x"));
+
+        result["action"] = Value::Null;
+        result["hint"] = json!("run gh auth login");
+        let text = plain(&doctor_detail_lines(&result));
+        assert!(text.contains("Hint\nrun gh auth login"));
+        assert!(!text.contains("Suggested action"));
+    }
+
+    #[test]
     fn page_height_matches_the_rendered_table_rows() {
         for (height, input) in [(12, false), (30, false), (16, true)] {
             let mut app = software_app(40);
@@ -2663,11 +3078,14 @@ mod tests {
         app.pages.insert(
             Screen::Doctor,
             crate::model::PageState {
-                payload: Some(json!({"results": [
-                    {"status": "ok", "section": "conf", "name": "machine file", "message": "found"},
-                    {"status": "warn", "section": "apps", "name": "GitHub CLI auth", "message": "not authenticated"},
-                    {"status": "error", "section": "secr", "name": "decrypt", "message": "sops decrypt failed"}
-                ]})),
+                payload: Some(json!({
+                    "summary": {"ok": 1, "warn": 1, "error": 1, "info": 0},
+                    "results": [
+                        {"status": "ok", "section": "conf", "name": "machine file", "message": "found"},
+                        {"status": "warn", "section": "apps", "name": "GitHub CLI auth", "message": "not authenticated"},
+                        {"status": "error", "section": "secr", "name": "decrypt", "message": "sops decrypt failed"}
+                    ]
+                })),
                 ..Default::default()
             },
         );
@@ -2675,6 +3093,24 @@ mod tests {
         assert_snapshot(&text, DOCTOR_TABLE);
         assert_terminal_palette(&buffer);
         assert_eq!(cell_at(&buffer, "● error").fg, ERROR);
+        let nav = row_containing(&buffer, "Health 2").unwrap();
+        let badge = (0..buffer.area.width)
+            .find(|x| buffer[(*x, nav)].symbol() == "2")
+            .unwrap();
+        assert_eq!(
+            buffer[(badge, nav)].fg,
+            ERROR,
+            "badge takes the worst status"
+        );
+
+        app.doctor_problems_only = true;
+        app.pages.get_mut(&Screen::Doctor).unwrap().payload = Some(json!({
+            "summary": {"ok": 1, "warn": 0, "error": 0, "info": 0},
+            "results": [{"status": "ok", "section": "conf", "name": "machine file", "message": "found"}]
+        }));
+        let (text, _) = render(&mut app, 100, 12);
+        assert!(text.contains("No warnings or errors") && text.contains("Press f to show all"));
+        assert!(!text.contains("Health 0"), "no badge without problems");
     }
 
     #[test]
@@ -2690,8 +3126,8 @@ mod tests {
  envY   1 Home   2 Configure   3 Activity                                                      mac · master ● 3 changed
 ╭ Machine ─────────────────────────────╮╭ Repository ──────────────────────────╮╭ Health ──────────────────────────────╮
 │ mac                                  ││ master → origin/master               ││  40 ok   1 warn   0 error   5 info   │
-│ user       chi                       ││ remote     ↑2 ↓0                     ││                                      │
-│ platform   darwin                    ││ worktree   3 changed                 ││ generation 112 · 2 kept              │
+│ user       chi                       ││ remote     ↑2 ↓0                     ││ generation 112 · 2 kept              │
+│ platform   darwin                    ││ worktree   3 changed                 ││ activated  3 h ago                   │
 ╰──────────────────────────────────────╯╰──────────────────────────────────────╯╰──────────────────────────────────────╯
 ╭ Software ────────────────────────────╮╭ Recommended ─────────────────────────────────────────────────────────────────╮
 │ effective  82                        ││ ▸ envy plan  3 repository path(s) changed                                    │
@@ -2701,6 +3137,11 @@ mod tests {
 ╰──────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────────────────╯
 ╭ Needs attention · 1 ─────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ ● GitHub CLI auth  GitHub CLI is not authenticated                                                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭ Recent operations ───────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ● apply  ok      34.3s  10 min ago                                                                                   │
+│ ● push   ok      11.4s  2 h ago     branch=master  remote=all                                                        │
+│ ● sync   fail   3m 32s  2 d ago     error=merge conflict in flake.lock                                               │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
  NORMAL   Home ready               2 Configure  3 Activity  │  ↑↓ select  Tab section  v view  r refresh  ? help  q quit"#;
     const NARROW_HEALTHY_HOME: &str = r#"
@@ -2712,8 +3153,8 @@ mod tests {
 ╰──────────────────────────────────────╯╰──────────────────────────────────────╯
 ╭ Health ──────────────────────────────╮╭ Software ────────────────────────────╮
 │  40 ok   0 warn   0 error   5 info   ││ effective  82                        │
-│                                      ││ included   91                        │
-│ generation 112 · 2 kept              ││ excluded   9                         │
+│ generation 112 · 2 kept              ││ included   91                        │
+│ activated  3 h ago                   ││ excluded   9                         │
 │                                      ││ groups     8                         │
 ╰──────────────────────────────────────╯╰──────────────────────────────────────╯
 ╭ Recommended ─────────────────────────────────────────────────────────────────╮
@@ -2727,21 +3168,40 @@ mod tests {
  envY   1 Home   2 Configure   3 Activity
  Configure ›  Software   Search   Sources   Mirrors   Settings              v switch view
 ╭ Software policy · 6 items ────────────────────────────────────────────────────── 1 / 6 ╮
-│  GROUP               ITEM                VERSION      STATE        REFERENCE           │
-│▸ nix.user.package    pkg-0               1.0          effective    nix:nixpkgs · nix:a…┃
-│  nix.user.package    pkg-1               1.0          excluded     nix:nixpkgs · nix:a…┃
-│  nix.user.package    pkg-2               1.0          effective    nix:nixpkgs · nix:a…┃
-│  nix.user.package    pkg-3               1.0          effective    nix:nixpkgs · nix:a…│
+│  GROUP              ITEM    STATE       REFERENCE                                      │
+│▸ nix.user.package   pkg-0   effective   nix:a-very-long-attribute-path-for-package-num…┃
+│                     pkg-1   excluded    nix:a-very-long-attribute-path-for-package-num…┃
+│                     pkg-2   effective   nix:a-very-long-attribute-path-for-package-num…┃
+│                     pkg-3   effective   nix:a-very-long-attribute-path-for-package-num…│
 ╰────────────────────────────────────────────────────────────────────────────────────────╯
  NORMAL   Software ready                      ↵ toggle  w why  / filter  │  ? help  q quit"#;
-    const DOCTOR_TABLE: &str = r#"
+    const GENERATIONS_TABLE: &str = r#"
+ envY   1 Home   2 Configure   3 Activity
+ Activity ›  Health   Generations   Operations                                                            v switch view
+╭ Generations · Space mark · d diff ──────────────────────────────────────────────────────────────────────────── 1 / 2 ╮
+│  GENERATION STATE            CREATED                  STORE TARGET                                                   │
+│▸ 113        current          10-29 03:40  10 min ago  darwin-system-26.05.56c666e  ypk8n1d1                          │
+│  112                         10-27 00:48  2 d ago     darwin-system-26.05.0246b24  01234567                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ NORMAL   History ready         v view  Space mark  d diff  │  ↑↓ select  Tab section  v view  r refresh  ? help  q quit"#;
+    const JOURNAL_TABLE: &str = r#"
  envY   1 Home   2 Configure   3 Activity
  Activity ›  Health   Generations   Operations                                        v switch view
-╭ Doctor · Enter details ─────────────────────────────────────────────────────────────────── 1 / 3 ╮
-│  STATUS    SECTION  CHECK                          RESULT                                        │
-│▸ ● ok      conf     machine file                   found                                         │
-│  ● warn    apps     GitHub CLI auth                not authenticated                             │
-│  ● error   secr     decrypt                        sops decrypt failed                           │
+╭ Operation journal ──────────────────────────────────────────────────────────────────────── 1 / 3 ╮
+│  TIME                     OPERATION      RESULT   DURATION  DETAIL                               │
+│▸ 10-29 03:40  10 min ago  apply          ok       34.3s     —                                    │
+│  10-29 01:12  2 h ago     push           ok       11.4s     branch=master  remote=all            │
+│  10-26 22:00  2 d ago     sync           fail     3m 32s    error=merge conflict in flake.lock   │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
- NORMAL   Doctor ready   Enter details  │  ↑↓ select  Tab section  v view  r refresh  ? help  q quit"#;
+ NORMAL   History ready           v view  Space mark  d diff  │  Tab section  v view  ? help  q quit"#;
+    const DOCTOR_TABLE: &str = r#"
+ envY   1 Home   2 Configure   3 Activity
+ Activity ›  Health 2   Generations   Operations                                      v switch view
+╭ Doctor · problems first ────────────────────────────────────────────────────────────────── 1 / 3 ╮
+│  STATUS    SECTION  CHECK                          RESULT                                        │
+│▸ ● error   secr     decrypt                        sops decrypt failed                           │
+│  ● warn    apps     GitHub CLI auth                not authenticated                             │
+│  ● ok      conf     machine file                   found                                         │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+ NORMAL   Doctor ready                   ↵ details  f filter  │  Tab section  v view  ? help  q quit"#;
 }

@@ -1,6 +1,7 @@
 mod app;
 mod backend;
 mod model;
+mod snapshot;
 mod theme;
 mod ui;
 
@@ -67,6 +68,8 @@ fn run_workflow(
 fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, rx);
+    app.snapshot_path = snapshot::default_path();
+    app.restore_home_snapshot();
     app.load_current(false);
     while !app.should_quit {
         let page_height = ui::page_height(&app, terminal.size()?.height);

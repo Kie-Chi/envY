@@ -1,6 +1,8 @@
 use std::{
     collections::{HashMap, VecDeque},
+    path::PathBuf,
     sync::mpsc::{Receiver, Sender},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind};
@@ -13,14 +15,15 @@ use crate::{
         spawn_software_why, spawn_workflow,
     },
     model::{
-        compatible_groups, count_rows, filtered_software_entries, generation_number,
-        generation_rows, mirror_measurements, mirror_mode, mirror_sources, mirror_target_rows,
-        result_rows, search_entries, settings_rows, DetailView, GroupChooser, HistoryView,
-        LoadTarget, Message, MirrorChooser, MirrorPreview, MirrorSource, MutationIntent,
-        MutationPreview, MutationStage, NavigationSection, PageState, Pages, PendingSetting,
-        Screen, SettingChooser, SettingEdit, SettingRow, SoftwareAction, WorkflowAction,
-        WorkflowLog,
+        compatible_groups, count_rows, doctor_results, filtered_software_entries,
+        generation_number, generation_rows, mirror_measurements, mirror_mode, mirror_sources,
+        mirror_target_rows, result_rows, search_entries, settings_rows, DetailView, GroupChooser,
+        HistoryView, LoadTarget, Message, MirrorChooser, MirrorPreview, MirrorSource,
+        MutationIntent, MutationPreview, MutationStage, NavigationSection, PageState, Pages,
+        PendingSetting, Screen, SettingChooser, SettingEdit, SettingRow, SoftwareAction,
+        WorkflowAction, WorkflowLog,
     },
+    snapshot,
 };
 
 const SEARCH_CACHE_LIMIT: usize = 12;
@@ -66,6 +69,8 @@ pub struct App {
     pub sources_selected: usize,
     pub search_selected: usize,
     pub doctor_selected: usize,
+    /// Health lists only warnings and errors.
+    pub doctor_problems_only: bool,
     pub history_selected: usize,
     pub journal_selected: usize,
     pub hosts_selected: usize,
@@ -104,6 +109,10 @@ pub struct App {
     pub mirror_measuring: bool,
     mirror_request: Option<u64>,
     mirror_measure_request: Option<u64>,
+    /// Where the last Home payload is kept between sessions; unset in tests.
+    pub snapshot_path: Option<PathBuf>,
+    /// Current Unix time override, so tests render stable relative ages.
+    pub fixed_now: Option<i64>,
 }
 
 impl App {
@@ -126,6 +135,7 @@ impl App {
             sources_selected: 0,
             search_selected: 0,
             doctor_selected: 0,
+            doctor_problems_only: false,
             history_selected: 0,
             journal_selected: 0,
             hosts_selected: 0,
@@ -164,7 +174,50 @@ impl App {
             mirror_measuring: false,
             mirror_request: None,
             mirror_measure_request: None,
+            snapshot_path: None,
+            fixed_now: None,
         }
+    }
+
+    pub fn now(&self) -> i64 {
+        self.fixed_now.unwrap_or_else(|| {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_secs() as i64)
+                .unwrap_or(0)
+        })
+    }
+
+    /// Show the Home payload saved by the previous session until a fresh one
+    /// arrives; `load_current` still refreshes it.
+    pub fn restore_home_snapshot(&mut self) {
+        let Some((payload, saved_at)) = self.snapshot_path.as_deref().and_then(snapshot::load)
+        else {
+            return;
+        };
+        let state = self.pages.entry(Screen::Home).or_default();
+        if state.payload.is_none() {
+            state.payload = Some(payload);
+            state.saved_at = Some(saved_at);
+        }
+    }
+
+    /// Age of a page restored from the previous session, such as "3 h ago".
+    pub fn saved_age(&self, screen: Screen) -> Option<String> {
+        let saved_at = self.pages.get(&screen)?.saved_at?;
+        Some(crate::model::relative_age(saved_at, self.now()))
+    }
+
+    /// Doctor summary from Health or, before it loads, from Home.
+    pub fn doctor_summary(&self) -> Option<&Value> {
+        let page = |screen| {
+            self.pages
+                .get(&screen)
+                .and_then(|state: &PageState| state.payload.as_ref())
+        };
+        page(Screen::Doctor)
+            .and_then(|doctor| doctor.get("summary"))
+            .or_else(|| page(Screen::Home).and_then(|home| home.pointer("/doctor/summary")))
     }
 
     pub fn current_target(&self) -> Option<LoadTarget> {
@@ -247,7 +300,7 @@ impl App {
         self.prepare_target(&target);
         let should_start = self
             .state_for_target(&target)
-            .map(|state| !state.loading && (force || !state.has_content()))
+            .map(|state| state.needs_load(force))
             .unwrap_or(true);
         if !should_start {
             self.sync_status();
@@ -265,12 +318,21 @@ impl App {
             state.error = None;
             state.request = Some(request);
         }
-        self.status = if has_content {
-            format!("Refreshing {}", target.title().to_lowercase())
-        } else {
-            format!("Loading {}", target.title().to_lowercase())
+        let saved_age = match &target {
+            LoadTarget::Screen(screen) => self.saved_age(*screen),
+            LoadTarget::Search(_) => None,
         };
+        self.status = match saved_age {
+            Some(age) => format!("Showing {} from {age}", target.title().to_lowercase()),
+            None if has_content => format!("Refreshing {}", target.title().to_lowercase()),
+            None => format!("Loading {}", target.title().to_lowercase()),
+        };
+        let home = target == LoadTarget::Screen(Screen::Home);
         spawn_request(self.tx.clone(), request, target);
+        if home {
+            // Home lists recent operations; refresh them alongside it.
+            self.ensure_loaded(Screen::Journal, true);
+        }
         self.ensure_config_dependencies();
     }
 
@@ -280,17 +342,17 @@ impl App {
         if self.screen != Screen::Config {
             return;
         }
-        self.ensure_loaded(Screen::Hosts);
+        self.ensure_loaded(Screen::Hosts, false);
     }
 
-    /// Start a background load for an off-tab screen if it has no cached payload,
-    /// without touching the current screen's status or selection.
-    fn ensure_loaded(&mut self, screen: Screen) {
+    /// Start a background load for an off-tab screen if it has no cached payload
+    /// or `force` is set, without touching the current screen's status or selection.
+    fn ensure_loaded(&mut self, screen: Screen, force: bool) {
         let target = LoadTarget::Screen(screen);
         self.prepare_target(&target);
         let should_start = self
             .state_for_target(&target)
-            .map(|state| !state.loading && !state.has_content())
+            .map(|state| state.needs_load(force))
             .unwrap_or(true);
         if !should_start {
             return;
@@ -314,7 +376,14 @@ impl App {
             self.status = format!("{} not loaded", target.title());
             return;
         };
-        self.status = if state.loading && state.has_content() {
+        let saved_age = state
+            .saved_at
+            .map(|saved_at| crate::model::relative_age(saved_at, self.now()));
+        self.status = if let (true, Some(age)) = (state.loading, &saved_age) {
+            format!("Showing {} from {age}", target.title().to_lowercase())
+        } else if let (Some(_), Some(age)) = (&state.error, &saved_age) {
+            format!("{} refresh failed; showing data from {age}", target.title())
+        } else if state.loading && state.has_content() {
             format!("Refreshing {}", target.title().to_lowercase())
         } else if state.loading {
             format!("Loading {}", target.title().to_lowercase())
@@ -422,7 +491,8 @@ impl App {
         match self.screen {
             Screen::Software => self.software_entries().len(),
             Screen::Sources => count_rows(self.payload(), "sources"),
-            Screen::Search | Screen::Doctor => result_rows(self.payload()),
+            Screen::Search => result_rows(self.payload()),
+            Screen::Doctor => doctor_results(self.payload(), self.doctor_problems_only).len(),
             Screen::History => match self.history_view {
                 HistoryView::Generations => generation_rows(self.payload()),
                 HistoryView::Operations => crate::model::journal_rows(self.payload()),
@@ -721,12 +791,9 @@ impl App {
     }
 
     fn open_doctor_detail(&mut self) {
-        let Some(result) = self
-            .payload()
-            .and_then(|payload| payload.get("results"))
-            .and_then(Value::as_array)
-            .and_then(|results| results.get(self.doctor_selected))
-            .cloned()
+        let Some(result) = doctor_results(self.payload(), self.doctor_problems_only)
+            .get(self.doctor_selected)
+            .map(|result| (*result).clone())
         else {
             return;
         };
@@ -1033,7 +1100,7 @@ impl App {
         };
     }
 
-    fn doctor_workflow(result: &Value) -> Option<WorkflowAction> {
+    pub fn doctor_workflow(result: &Value) -> Option<WorkflowAction> {
         let action = result.get("action")?;
         match action.get("kind").and_then(Value::as_str)? {
             "run" => {
@@ -1065,6 +1132,13 @@ impl App {
                     let home_doctor = (target == LoadTarget::Screen(Screen::Home))
                         .then(|| payload.get("doctor").cloned())
                         .flatten();
+                    let saved = (target == LoadTarget::Screen(Screen::Home))
+                        .then(|| {
+                            self.snapshot_path
+                                .clone()
+                                .map(|path| (path, payload.clone()))
+                        })
+                        .flatten();
                     let accepted = self
                         .state_for_target_mut(&target)
                         .filter(|state| state.request == Some(request))
@@ -1073,9 +1147,14 @@ impl App {
                             state.loading = false;
                             state.error = None;
                             state.request = None;
+                            state.saved_at = None;
                         })
                         .is_some();
                     if accepted {
+                        if let Some((path, payload)) = saved {
+                            // Best effort: a missing cache only slows the next start.
+                            let _ = snapshot::save(&path, &payload, self.now());
+                        }
                         if let Some(doctor) = home_doctor {
                             let state = self.pages.entry(Screen::Doctor).or_default();
                             if !state.loading {
@@ -1817,6 +1896,17 @@ impl App {
             KeyCode::Enter | KeyCode::Char('i') if self.screen == Screen::Doctor => {
                 self.open_doctor_detail();
             }
+            KeyCode::Char('f') if self.screen == Screen::Doctor => {
+                self.doctor_problems_only = !self.doctor_problems_only;
+                self.doctor_selected = 0;
+                self.scroll = 0;
+                let count = self.row_count();
+                self.status = if self.doctor_problems_only {
+                    format!("Showing {count} warning(s) and error(s)")
+                } else {
+                    format!("Showing all {count} checks")
+                };
+            }
             KeyCode::Char(' ')
                 if self.screen == Screen::History
                     && self.history_view == HistoryView::Generations =>
@@ -1857,6 +1947,96 @@ mod tests {
     fn app() -> App {
         let (tx, rx) = mpsc::channel();
         App::new(tx, rx)
+    }
+
+    #[test]
+    fn only_missing_forced_or_restored_pages_need_a_load() {
+        let loaded = PageState {
+            payload: Some(json!({})),
+            ..PageState::default()
+        };
+        assert!(PageState::default().needs_load(false));
+        assert!(!loaded.needs_load(false));
+        assert!(loaded.needs_load(true));
+        let restored = PageState {
+            saved_at: Some(1),
+            ..loaded
+        };
+        assert!(restored.needs_load(false));
+        let in_flight = PageState {
+            loading: true,
+            ..restored
+        };
+        assert!(!in_flight.needs_load(true));
+    }
+
+    #[test]
+    fn restored_home_is_shown_until_a_fresh_status_replaces_it() {
+        let root = crate::snapshot::tests::temporary_dir("restore");
+        let path = root.join("home.json");
+        crate::snapshot::save(&path, &json!({"machine": "old"}), 1_000).unwrap();
+        let mut app = app();
+        app.snapshot_path = Some(path.clone());
+        app.fixed_now = Some(1_000 + 3 * 3600);
+        app.restore_home_snapshot();
+        assert_eq!(app.payload(), Some(&json!({"machine": "old"})));
+        assert_eq!(app.saved_age(Screen::Home).as_deref(), Some("3 h ago"));
+
+        // Pretend the refresh started by load_current is in flight.
+        let state = app.pages.get_mut(&Screen::Home).unwrap();
+        state.loading = true;
+        state.request = Some(7);
+        app.sync_status();
+        assert_eq!(app.status, "Showing home from 3 h ago");
+        app.tx
+            .send(Message::Loaded {
+                request: 7,
+                target: LoadTarget::Screen(Screen::Home),
+                payload: json!({"machine": "new"}),
+            })
+            .unwrap();
+        app.receive_messages();
+        assert_eq!(app.payload(), Some(&json!({"machine": "new"})));
+        assert_eq!(app.saved_age(Screen::Home), None);
+        assert_eq!(
+            crate::snapshot::load(&path),
+            Some((json!({"machine": "new"}), 1_000 + 3 * 3600))
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn health_filter_and_details_follow_the_displayed_order() {
+        let mut app = app();
+        app.screen = Screen::Doctor;
+        app.pages.insert(
+            Screen::Doctor,
+            PageState {
+                payload: Some(json!({"results": [
+                    {"name": "fine", "status": "ok"},
+                    {"name": "gh", "status": "warn"},
+                    {"name": "sops", "status": "error"}
+                ]})),
+                ..PageState::default()
+            },
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            matches!(&app.detail, Some(DetailView::Doctor(result)) if result["name"] == "sops")
+        );
+        app.detail = None;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
+        assert_eq!(app.row_count(), 2);
+        assert_eq!(app.status, "Showing 2 warning(s) and error(s)");
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(&app.detail, Some(DetailView::Doctor(result)) if result["name"] == "gh"));
+        app.detail = None;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
+        assert_eq!((app.row_count(), app.doctor_selected), (3, 0));
+        assert_eq!(app.status, "Showing all 3 checks");
     }
 
     #[test]

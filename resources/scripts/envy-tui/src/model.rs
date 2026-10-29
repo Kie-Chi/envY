@@ -118,11 +118,20 @@ pub struct PageState {
     pub loading: bool,
     pub error: Option<String>,
     pub request: Option<u64>,
+    /// Unix time the payload was saved at when it was restored from an earlier
+    /// session rather than loaded now.
+    pub saved_at: Option<i64>,
 }
 
 impl PageState {
     pub fn has_content(&self) -> bool {
         self.payload.is_some()
+    }
+
+    /// Whether to request the page: forced, never loaded, or only restored
+    /// from an earlier session, and not already in flight.
+    pub fn needs_load(&self, force: bool) -> bool {
+        !self.loading && (force || !self.has_content() || self.saved_at.is_some())
     }
 }
 
@@ -671,9 +680,89 @@ pub struct JournalEntry {
 
 fn duration_text(duration_ms: Option<&Value>) -> String {
     match duration_ms.and_then(Value::as_u64) {
-        Some(ms) => format!("{:.1}s", ms as f64 / 1000.0),
+        Some(ms) if ms < 60_000 => format!("{:.1}s", ms as f64 / 1000.0),
+        Some(ms) if ms < 3_600_000 => format!("{}m {:02}s", ms / 60_000, ms / 1000 % 60),
+        Some(ms) => format!("{}h {:02}m", ms / 3_600_000, ms / 60_000 % 60),
         None => "—".to_string(),
     }
+}
+
+/// Unix seconds of an RFC 3339 timestamp such as `2026-10-29T00:48:44+08:00`.
+pub fn parse_timestamp(value: &str) -> Option<i64> {
+    let bytes = value.as_bytes();
+    let number = |range: std::ops::Range<usize>| -> Option<i64> { value.get(range)?.parse().ok() };
+    if bytes.len() < 19 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[13] != b':' {
+        return None;
+    }
+    let (year, month, day) = (number(0..4)?, number(5..7)?, number(8..10)?);
+    let (hour, minute, second) = (number(11..13)?, number(14..16)?, number(17..19)?);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    // Skip fractional seconds, then read the UTC offset.
+    let mut rest = value.get(19..)?;
+    if let Some(fraction) = rest.strip_prefix('.') {
+        rest = fraction.trim_start_matches(|character: char| character.is_ascii_digit());
+    }
+    let offset = match rest {
+        "Z" | "z" => 0,
+        _ if rest.len() == 6 && rest.as_bytes()[3] == b':' => {
+            let sign = match rest.as_bytes()[0] {
+                b'+' => 1,
+                b'-' => -1,
+                _ => return None,
+            };
+            let hours = rest.get(1..3)?.parse::<i64>().ok()?;
+            let minutes = rest.get(4..6)?.parse::<i64>().ok()?;
+            sign * (hours * 3600 + minutes * 60)
+        }
+        _ => return None,
+    };
+    // Days since 1970-01-01 in the proleptic Gregorian calendar.
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let year_of_era = year - era * 400;
+    let day_of_year = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+    Some(days * 86_400 + hour * 3600 + minute * 60 + second - offset)
+}
+
+/// How long ago `then` was, in the coarsest unit that is at least one.
+pub fn relative_age(then: i64, now: i64) -> String {
+    match now.saturating_sub(then) {
+        seconds if seconds < 60 => "just now".to_string(),
+        seconds if seconds < 3600 => format!("{} min ago", seconds / 60),
+        seconds if seconds < 86_400 => format!("{} h ago", seconds / 3600),
+        seconds => format!("{} d ago", seconds / 86_400),
+    }
+}
+
+/// `MM-DD HH:MM` in the timestamp's own offset, or the value itself.
+pub fn short_timestamp(value: &str) -> String {
+    match (value.get(5..10), value.get(11..16)) {
+        (Some(date), Some(time)) if parse_timestamp(value).is_some() => format!("{date} {time}"),
+        _ => value.to_string(),
+    }
+}
+
+/// Doctor results in display order: errors, then warnings, then everything
+/// else as reported. `problems_only` keeps just the errors and warnings.
+pub fn doctor_results(payload: Option<&Value>, problems_only: bool) -> Vec<&Value> {
+    let rank = |result: &Value| match result.get("status").and_then(Value::as_str) {
+        Some("error") => 0,
+        Some("warn") => 1,
+        _ => 2,
+    };
+    let mut results = payload
+        .and_then(|value| value.get("results"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|result| !problems_only || rank(result) < 2)
+        .collect::<Vec<_>>();
+    results.sort_by_key(|result| rank(result));
+    results
 }
 
 pub fn journal_entries(payload: Option<&Value>) -> Vec<JournalEntry> {
@@ -938,6 +1027,70 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn timestamps_are_read_with_their_offset() {
+        // 2026-10-28T16:48:44Z
+        let utc = 1_793_206_124;
+        assert_eq!(parse_timestamp("2026-10-29T00:48:44+08:00"), Some(utc));
+        assert_eq!(parse_timestamp("2026-10-28T16:48:44Z"), Some(utc));
+        assert_eq!(parse_timestamp("2026-10-28T11:48:44.250-05:00"), Some(utc));
+        assert_eq!(parse_timestamp("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(parse_timestamp("2024-02-29T00:00:00Z"), Some(1_709_164_800));
+        for invalid in [
+            "",
+            "2026-10-29",
+            "2026-13-01T00:00:00Z",
+            "2026-10-29T00:48:44",
+            "2026-10-29T00:48:44+0800",
+        ] {
+            assert_eq!(parse_timestamp(invalid), None, "{invalid}");
+        }
+        assert_eq!(short_timestamp("2026-10-29T00:48:44+08:00"), "10-29 00:48");
+        assert_eq!(short_timestamp("yesterday"), "yesterday");
+    }
+
+    #[test]
+    fn ages_and_durations_use_the_coarsest_unit() {
+        let now = 1_000_000;
+        let ages = [
+            (now + 5, "just now"),
+            (now - 59, "just now"),
+            (now - 60, "1 min ago"),
+            (now - 3599, "59 min ago"),
+            (now - 7199, "1 h ago"),
+            (now - 86_400 * 3, "3 d ago"),
+        ];
+        for (then, age) in ages {
+            assert_eq!(relative_age(then, now), age);
+        }
+        let durations = [
+            (18_400, "18.4s"),
+            (212_525, "3m 32s"),
+            (3_725_000, "1h 02m"),
+        ];
+        for (ms, text) in durations {
+            assert_eq!(duration_text(Some(&json!(ms))), text);
+        }
+    }
+
+    #[test]
+    fn doctor_problems_come_first_in_reported_order() {
+        let payload = json!({"results": [
+            {"name": "a", "status": "ok"}, {"name": "b", "status": "warn"},
+            {"name": "c", "status": "info"}, {"name": "d", "status": "error"},
+            {"name": "e", "status": "warn"}, {"name": "f"}
+        ]});
+        let names = |problems_only| {
+            doctor_results(Some(&payload), problems_only)
+                .iter()
+                .map(|result| text(result.get("name")))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(false), ["d", "b", "e", "a", "c", "f"]);
+        assert_eq!(names(true), ["d", "b", "e"]);
+        assert!(doctor_results(None, false).is_empty());
+    }
 
     #[test]
     fn local_filter_matches_identity_reference_and_state() {

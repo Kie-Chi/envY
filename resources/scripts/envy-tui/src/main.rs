@@ -1,6 +1,7 @@
 mod app;
 mod backend;
 mod model;
+mod theme;
 mod ui;
 
 use std::{
@@ -68,12 +69,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
     let mut app = App::new(tx, rx);
     app.load_current(false);
     while !app.should_quit {
-        let body_height = terminal
-            .size()?
-            .height
-            .saturating_sub(4)
-            .saturating_sub(app.input_bar_height());
-        app.clamp_scroll(body_height);
+        let page_height = ui::page_height(&app, terminal.size()?.height);
+        app.clamp_scroll(page_height);
         terminal.draw(|frame| ui::draw(frame, &mut app))?;
         if event::poll(POLL_INTERVAL)? {
             match event::read()? {

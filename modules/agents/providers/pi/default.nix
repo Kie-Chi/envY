@@ -3,9 +3,10 @@
 let
   piConfig = config.envy.agents.pi;
   prompts = import ../../prompts.nix { inherit lib pkgs; };
-  selectedPiPackage = if piConfig.moreThinking then
-    import ./package.nix { inherit piPackage pkgs; }
-    else piPackage;
+  selectedPiPackage = import ./package.nix {
+    inherit lib piPackage;
+    inherit (piConfig) moreThinking;
+  };
   providerName = "envy-pi";
   wrapper = import ../../wrapper.nix { inherit lib pkgs; };
   endpointFor = agent: (wrapper.resolve config agent).endpoint;

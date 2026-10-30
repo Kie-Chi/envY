@@ -11,11 +11,6 @@ from typing import List, Optional
 import typer
 from rich.prompt import Confirm
 from rich.table import Table
-from prompt_toolkit import prompt as pt_prompt
-from prompt_toolkit.application import Application
-from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import Layout, Window, FormattedTextControl
-from prompt_toolkit.styles import Style as PtStyle
 
 from envy import log
 from envy.utils import (
@@ -54,6 +49,9 @@ from envy.keys.recovery import (
 
 def prompt_input(message: str) -> str:
     """Read one interactive value without background output moving the cursor."""
+    # prompt_toolkit costs ~0.1 s to import; only interactive key flows need it.
+    from prompt_toolkit import prompt as pt_prompt
+
     with log.interactive_prompt():
         return pt_prompt(message)
 
@@ -285,6 +283,10 @@ def _select_menu(items: list, title: str = "Select") -> Optional[tuple]:
     """Arrow-key navigation menu using prompt_toolkit Application.
     items: list of (fragments, action_type, data)
     Returns (action_type, data) on Enter, None on Esc/q."""
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.layout import FormattedTextControl, Layout, Window
+    from prompt_toolkit.styles import Style as PtStyle
 
     class MenuState:
         cursor = 0

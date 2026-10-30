@@ -1,5 +1,7 @@
 mod activity;
+mod choosers;
 mod configure;
+mod detail;
 mod home;
 mod popups;
 mod table;

@@ -6,7 +6,8 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
-from envy import key, main
+from envy import main
+from envy.keys import importing, operations, prompts, rotation
 from envy.keys.storage import PreparedDeviceKey
 
 from key_harness import KeyWorld, real_tools_available
@@ -42,7 +43,7 @@ class ImportScenarios:
         tablet = world.identity("tablet")
         before = world.snapshot()
 
-        self.assertEqual(key.key_import(age_path=str(self.key_file("tablet.txt", tablet))), tablet.public)
+        self.assertEqual(importing.key_import(age_path=str(self.key_file("tablet.txt", tablet))), tablet.public)
 
         self.assertEqual(world.local_publics(), [tablet.public])
         self.assertEqual(mode(world.age_key), 0o600)
@@ -54,8 +55,8 @@ class ImportScenarios:
         self.assertEqual(world.leftovers(), [])
 
         world.install(world.identity("laptop"))
-        key.run_sops_updatekeys()
-        key.reencrypt_recovery_key(world.keys())
+        operations.run_sops_updatekeys()
+        operations.reencrypt_recovery_key(world.keys())
 
         self.assertEqual(world.read_secrets(tablet), SECRETS)
         self.assertEqual(world.read_recovery(tablet), world.identity("recovery").private)
@@ -65,8 +66,8 @@ class ImportScenarios:
         world = self.world
         old = world.identity("laptop")
 
-        with patch.object(key, "confirm", return_value=True):
-            public = key.key_import(generate=True)
+        with patch.object(prompts, "confirm", return_value=True):
+            public = importing.key_import(generate=True)
 
         new = world.generated[-1]
         self.assertEqual(public, new.public)
@@ -85,7 +86,7 @@ class ImportScenarios:
         world.build(local=None, label=None)
         before = world.snapshot()
 
-        prepared = key.key_import(generate=True, register=False)
+        prepared = importing.key_import(generate=True, register=False)
 
         self.assertIsInstance(prepared, PreparedDeviceKey)
         self.assertEqual(prepared.public_key, world.generated[-1].public)
@@ -98,7 +99,7 @@ class ImportScenarios:
         world = self.world
         world.build(recovery=False)
 
-        key.key_add_recovery()
+        rotation.key_add_recovery()
 
         recovery = world.generated[-1]
         self.assertEqual(world.keys()["recovery"], recovery.public)
@@ -107,12 +108,12 @@ class ImportScenarios:
             self.assertEqual(world.read_recovery(world.identity(device)), recovery.private)
 
         output = world.inputs / "recovered.txt"
-        key.key_recover_recovery(str(output))
+        rotation.key_recover_recovery(str(output))
         self.assertEqual(output.read_text().strip(), recovery.private)
         self.assertEqual(mode(output), 0o600)
 
         world.recovery_file.unlink()
-        key.key_seal_recovery(str(output))
+        rotation.key_seal_recovery(str(output))
         self.assertEqual(world.read_recovery(world.identity("desk")), recovery.private)
         world.assert_consistent(self)
         output.unlink()
@@ -124,8 +125,8 @@ class FakeImportTests(ImportScenarios, KeyWorldTest):
         world = self.world
         before = world.snapshot()
 
-        with patch.object(key, "confirm", return_value=False):
-            self.assertIsNone(key.key_import(generate=True))
+        with patch.object(prompts, "confirm", return_value=False):
+            self.assertIsNone(importing.key_import(generate=True))
 
         self.assertEqual(world.snapshot(), before)
         self.assertEqual(world.generated, [])
@@ -137,7 +138,7 @@ class FakeImportTests(ImportScenarios, KeyWorldTest):
         ssh_key = world.inputs / "id_ed25519"
         ssh_key.write_text("FAKE-SSH-KEY tablet\n")
 
-        self.assertEqual(key.key_import(ssh_path=str(ssh_key)), world.identity("tablet").public)
+        self.assertEqual(importing.key_import(ssh_path=str(ssh_key)), world.identity("tablet").public)
 
         self.assertEqual(world.local_publics(), [world.identity("tablet").public])
         self.assertIn(["ssh-to-age", "-private-key", "-i", str(ssh_key)], world.calls)
@@ -155,7 +156,7 @@ class FakeImportTests(ImportScenarios, KeyWorldTest):
             {"ssh_path": str(world.inputs / "missing_ssh")},
         ):
             with self.subTest(arguments=arguments):
-                self.assertIsNone(key.key_import(**arguments))
+                self.assertIsNone(importing.key_import(**arguments))
                 self.assertEqual(world.snapshot(), before)
         self.assertEqual(world.leftovers(), [])
 
@@ -165,7 +166,7 @@ class FakeImportTests(ImportScenarios, KeyWorldTest):
         before = world.snapshot()
 
         with self.assertRaisesRegex(ValueError, "duplicate age public key"):
-            key.key_import(age_path=str(self.key_file("recovery.txt", world.identity("recovery"))))
+            importing.key_import(age_path=str(self.key_file("recovery.txt", world.identity("recovery"))))
 
         self.assertEqual(world.snapshot(), before)
         self.assertEqual(world.leftovers(), [])
@@ -185,10 +186,10 @@ class FakeImportTests(ImportScenarios, KeyWorldTest):
         for choice, typed, expected in cases:
             with self.subTest(choice=choice):
                 world.build(local=None, label=None)
-                with patch.object(key, "scan_usb_key_files", return_value=[usb]), patch.object(
-                    key, "_select_menu", return_value=choice
-                ) as menu, patch.object(key, "prompt_input", side_effect=[typed]):
-                    result = key.key_import()
+                with patch.object(prompts, "scan_usb_key_files", return_value=[usb]), patch.object(
+                    prompts, "_select_menu", return_value=choice
+                ) as menu, patch.object(prompts, "prompt_input", side_effect=[typed]):
+                    result = importing.key_import()
                 if expected == "generated":
                     expected = world.generated[-1].public
                 self.assertEqual(result, expected)
@@ -204,18 +205,18 @@ class FakeImportTests(ImportScenarios, KeyWorldTest):
             # adding a recovery recipient.
             ("add with an unauthorized device", {"recovery": False},
              lambda: world.install(world.identity("stranger")),
-             lambda: key.key_add_recovery(reencrypt_secrets=False), RuntimeError, "authorized local device"),
+             lambda: rotation.key_add_recovery(reencrypt_secrets=False), RuntimeError, "authorized local device"),
             ("seal a key that is not the recovery key", {"sealed": False}, None,
-             lambda: key.key_seal_recovery(str(stranger)), ValueError, "does not match"),
+             lambda: rotation.key_seal_recovery(str(stranger)), ValueError, "does not match"),
             ("seal a missing file", {"sealed": False}, None,
-             lambda: key.key_seal_recovery(str(world.inputs / "missing")), FileNotFoundError, "not found"),
-            ("seal from a device key", {"sealed": False}, None, key.key_seal_recovery, RuntimeError,
+             lambda: rotation.key_seal_recovery(str(world.inputs / "missing")), FileNotFoundError, "not found"),
+            ("seal from a device key", {"sealed": False}, None, rotation.key_seal_recovery, RuntimeError,
              "not the recovery key"),
-            ("seal without a recovery key", {"recovery": False}, None, key.key_seal_recovery, RuntimeError,
+            ("seal without a recovery key", {"recovery": False}, None, rotation.key_seal_recovery, RuntimeError,
              "no recovery key"),
-            ("recover without recovery-key.age", {"sealed": False}, None, key.key_recover_recovery,
+            ("recover without recovery-key.age", {"sealed": False}, None, rotation.key_recover_recovery,
              FileNotFoundError, "no recovery-key.age"),
-            ("recover without a device key", {"local": None}, None, key.key_recover_recovery, RuntimeError,
+            ("recover without a device key", {"local": None}, None, rotation.key_recover_recovery, RuntimeError,
              "no age key"),
         ]
         for name, build, prepare, operation, error, message in cases:
@@ -233,19 +234,19 @@ class FakeImportTests(ImportScenarios, KeyWorldTest):
 
         world = self.world
         before = world.snapshot()
-        key.key_add_recovery()
+        rotation.key_add_recovery()
         self.assertEqual(world.snapshot(), before)
 
         keys = world.keys()
         keys["tablet"] = world.identity("tablet").public
         storage.write_sops_yaml_keys(keys)
-        key.key_seal_recovery()
+        rotation.key_seal_recovery()
 
         self.assertEqual(world.read_recovery(world.identity("tablet")), world.identity("recovery").private)
 
     def test_recovered_key_is_printed_only_when_no_file_is_given(self):
         world = self.world
-        key.key_recover_recovery()
+        rotation.key_recover_recovery()
         self.assertIn(world.identity("recovery").private, world.output.getvalue())
 
     def test_list_and_status_report_access_without_private_keys(self):
@@ -260,7 +261,7 @@ class FakeImportTests(ImportScenarios, KeyWorldTest):
                 if prepare:
                     prepare()
                 world.output.truncate(0)
-                key.key_list()
+                operations.key_list()
                 for text in expected:
                     self.assertIn(text, world.output.getvalue())
                 self.assertNotIn("AGE-SECRET-KEY", world.output.getvalue())
@@ -272,7 +273,7 @@ class FakeImportTests(ImportScenarios, KeyWorldTest):
                     prepare()
                 world.output.seek(0)
                 world.output.truncate(0)
-                key.key_status()
+                operations.key_status()
                 rows = {line.split("│")[1].strip(): line.split("│")[2].strip()
                         for line in world.output.getvalue().splitlines() if line.count("│") >= 3}
                 self.assertEqual(rows["Can decrypt"], decrypts)
@@ -284,31 +285,31 @@ class FakeImportTests(ImportScenarios, KeyWorldTest):
         laptop = world.identity("laptop")
         exported = world.inputs / "exported.txt"
 
-        key.key_export("age", str(exported))
+        operations.key_export("age", str(exported))
         self.assertEqual(exported.read_text(), laptop.private + "\n")
         self.assertEqual(mode(exported), 0o600)
 
         ssh_copy = world.inputs / "ssh-copy"
-        key.key_export("ssh", str(ssh_copy))
+        operations.key_export("ssh", str(ssh_copy))
         self.assertFalse(ssh_copy.exists())
         self.assertIn("no SSH key found", world.output.getvalue())
 
         ssh_key = world.home / ".ssh" / "id_ed25519"
         ssh_key.parent.mkdir()
         ssh_key.write_text("FAKE-SSH-KEY laptop\n")
-        key.key_export("ssh", str(ssh_copy))
+        operations.key_export("ssh", str(ssh_copy))
         self.assertEqual(ssh_copy.read_text(), "FAKE-SSH-KEY laptop\n")
         self.assertEqual(mode(ssh_copy), 0o600)
 
         world.output.truncate(0)
-        key.key_export()
+        operations.key_export()
         self.assertIn(laptop.private, world.output.getvalue())
 
         with self.assertRaises(ValueError):
-            key.key_export("pem")
+            operations.key_export("pem")
         world.age_key.unlink()
         with self.assertRaises(RuntimeError):
-            key.key_export()
+            operations.key_export()
 
     def test_cli_import_and_recovery_commands(self):
         world = self.world
@@ -319,7 +320,7 @@ class FakeImportTests(ImportScenarios, KeyWorldTest):
         self.assertEqual(runner.invoke(main.cli, ["key", "import", "--age", str(tablet)]).exit_code, 0)
         self.assertEqual(world.local_publics(), [world.identity("tablet").public])
         self.assertEqual(runner.invoke(main.cli, ["key", "im", "--age", str(world.inputs / "x")]).exit_code, 1)
-        with patch.object(key, "_select_menu", return_value=None):
+        with patch.object(prompts, "_select_menu", return_value=None):
             self.assertEqual(runner.invoke(main.cli, ["key", "import"]).exit_code, 2)
 
         world.build(recovery=False)
@@ -363,7 +364,7 @@ class SelectMenuTests(unittest.TestCase):
         items = [([("", "First")], "first", 1), ([("usb", "USB "), ("", "Second")], "second", 2)]
         with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
             pipe.send_text(keys)
-            return key._select_menu(items, title="Pick")
+            return prompts._select_menu(items, title="Pick")
 
     def test_arrows_move_and_enter_confirms(self):
         self.assertEqual(self.choose("\r"), ("first", 1))

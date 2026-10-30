@@ -227,7 +227,7 @@ class SafetyWorkflowTests(unittest.TestCase):
             original = secret.read_bytes()
             with patch.object(config, "SECRETS_DIR", root), patch.object(
                 config, "SECRETS_FILE", secret
-            ), patch("envy.key.read_sops_yaml_keys", return_value={"device": "age1test"}), patch.object(
+            ), patch("envy.keys.storage.read_sops_yaml_keys", return_value={"device": "age1test"}), patch.object(
                 config, "run_cmd", side_effect=RuntimeError("encrypt failed")
             ):
                 with self.assertRaises(RuntimeError):

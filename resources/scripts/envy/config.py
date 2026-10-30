@@ -379,7 +379,7 @@ def _sops_encrypt_argv(recipients: str, out: str, src: str) -> list[str]:
 def write_secrets_data(data: dict) -> None:
     """Encrypt a secure temporary plaintext and atomically publish ciphertext."""
     SECRETS_DIR.mkdir(parents=True, exist_ok=True)
-    from envy.key import read_sops_yaml_keys
+    from envy.keys.storage import read_sops_yaml_keys
     keys = read_sops_yaml_keys()
     age_recipients = ",".join(keys.values())
     if not age_recipients:
@@ -473,7 +473,7 @@ def refine_device_metadata(*, write: bool = True, strict: bool = False) -> Refin
 
     if sops_label and not re.fullmatch(r"[a-z0-9_]+", sops_label):
         if write:
-            from envy.key import sanitize_label
+            from envy.keys.identity import sanitize_label
             normalized = sanitize_label(sops_label) or "unknown"
             log.fix("device", "normalized sops label", old=sops_label, new=normalized)
             sops_label = normalized
@@ -492,7 +492,7 @@ def refine_device_metadata(*, write: bool = True, strict: bool = False) -> Refin
             set_device_machine_id(machine_id)
             report.changed = True
 
-        from envy.key import ensure_sops_label, set_sops_label
+        from envy.keys.identity import ensure_sops_label, set_sops_label
         persisted = read_device_metadata()
         if sops_label:
             if persisted.get("sops_label") != sops_label:

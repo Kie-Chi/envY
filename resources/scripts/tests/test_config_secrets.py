@@ -209,7 +209,7 @@ class SecretEncryptionTests(unittest.TestCase):
             seen["plain"] = source.read_text()
             output.write_text(CIPHERTEXT)
 
-        with patch("envy.key.read_sops_yaml_keys", return_value={"device": "age1a", "recovery": "age1b"}), patch.object(
+        with patch("envy.keys.storage.read_sops_yaml_keys", return_value={"device": "age1a", "recovery": "age1b"}), patch.object(
             config, "run_cmd", side_effect=sops
         ):
             config.write_secrets_data({"home": {"passwd": "plain-value"}})
@@ -232,7 +232,7 @@ class SecretEncryptionTests(unittest.TestCase):
         def sops(argv):
             Path(argv[argv.index("--output") + 1]).write_text("home:\n  passwd: plain-value\n")
 
-        with patch("envy.key.read_sops_yaml_keys", return_value={"device": "age1a"}), patch.object(
+        with patch("envy.keys.storage.read_sops_yaml_keys", return_value={"device": "age1a"}), patch.object(
             config, "run_cmd", side_effect=sops
         ):
             with self.assertRaisesRegex(RuntimeError, "not encrypted"):
@@ -250,7 +250,7 @@ class SecretEncryptionTests(unittest.TestCase):
             Path(argv[argv.index("--output") + 1]).write_text("partial")
             raise subprocess.CalledProcessError(1, argv)
 
-        with patch("envy.key.read_sops_yaml_keys", return_value={"device": "age1a"}), patch.object(
+        with patch("envy.keys.storage.read_sops_yaml_keys", return_value={"device": "age1a"}), patch.object(
             config, "run_cmd", side_effect=sops
         ):
             with self.assertRaises(subprocess.CalledProcessError):
@@ -261,7 +261,7 @@ class SecretEncryptionTests(unittest.TestCase):
         self.assertEqual(sorted(path.name for path in self.secrets_dir.iterdir()), ["secrets.yaml"])
 
     def test_encryption_requires_a_recipient(self):
-        with patch("envy.key.read_sops_yaml_keys", return_value={}), patch.object(
+        with patch("envy.keys.storage.read_sops_yaml_keys", return_value={}), patch.object(
             config, "run_cmd", side_effect=AssertionError("must not run sops")
         ):
             with self.assertRaisesRegex(RuntimeError, "No age recipients"):

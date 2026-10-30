@@ -7,8 +7,9 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
-from envy import key, main
+from envy import main
 from envy.git_safety import SecretSafetyError
+from envy.keys import operations, prompts, rotation
 from envy.transaction import FileTransaction
 
 from key_harness import KeyWorld
@@ -41,7 +42,7 @@ class RotationScenarios:
         world = self.world
         old = world.identity("laptop")
 
-        key.key_rotate()
+        rotation.key_rotate()
 
         new = world.generated[-1]
         keys = world.keys()
@@ -63,7 +64,7 @@ class RotationScenarios:
         world = self.world
         old = world.identity("recovery")
 
-        key.key_rotate(recovery=True)
+        rotation.key_rotate(recovery=True)
 
         new = world.generated[-1]
         self.assertEqual(world.keys()["recovery"], new.public)
@@ -121,7 +122,7 @@ class RotationScenarios:
                         pass
                 world.fail_at = None
 
-                key.key_repair()
+                rotation.key_repair()
 
                 world.assert_consistent(self)
                 self.assertEqual(world.read_secrets(world.identity("desk")), SECRETS)
@@ -134,13 +135,13 @@ class FakeRotationTests(RotationScenarios, unittest.TestCase):
         world = self.world
         tablet, desk = world.identity("tablet"), world.identity("desk")
 
-        key.key_add(tablet.public, "tablet")
+        operations.key_add(tablet.public, "tablet")
 
         self.assertEqual(world.keys()["tablet"], tablet.public)
         self.assertEqual(world.read_secrets(tablet), SECRETS)
         self.assertEqual(world.read_recovery(tablet), world.identity("recovery").private)
 
-        key.key_remove("desk")
+        operations.key_remove("desk")
 
         self.assertNotIn("desk", world.keys())
         self.assertFalse(world.can_open(world.secrets, desk))
@@ -151,12 +152,12 @@ class FakeRotationTests(RotationScenarios, unittest.TestCase):
     def test_add_and_remove_refuse_unsafe_changes(self):
         world = self.world
         cases = [
-            (lambda: key.key_add("ssh-ed25519 AAAA"), ValueError),
-            (lambda: key.key_add(world.identity("tablet").public, "recovery"), ValueError),
-            (lambda: key.key_add(world.identity("tablet").public, "desk"), ValueError),
-            (lambda: key.key_remove("recovery"), ValueError),
-            (lambda: key.key_remove("missing"), ValueError),
-            (lambda: key.key_remove("envy_rotation_old_laptop"), ValueError),
+            (lambda: operations.key_add("ssh-ed25519 AAAA"), ValueError),
+            (lambda: operations.key_add(world.identity("tablet").public, "recovery"), ValueError),
+            (lambda: operations.key_add(world.identity("tablet").public, "desk"), ValueError),
+            (lambda: operations.key_remove("recovery"), ValueError),
+            (lambda: operations.key_remove("missing"), ValueError),
+            (lambda: operations.key_remove("envy_rotation_old_laptop"), ValueError),
         ]
         for operation, error in cases:
             with self.subTest(operation=operation):
@@ -165,37 +166,37 @@ class FakeRotationTests(RotationScenarios, unittest.TestCase):
                     operation()
                 self.assertEqual(world.snapshot(), before)
         before = world.snapshot()
-        key.key_add(world.identity("desk").public, "again")
+        operations.key_add(world.identity("desk").public, "again")
         self.assertEqual(world.snapshot(), before)
-        with patch.object(key, "confirm", return_value=False):
-            key.key_remove("laptop")
+        with patch.object(prompts, "confirm", return_value=False):
+            operations.key_remove("laptop")
         self.assertEqual(world.snapshot(), before)
         world.build(devices=("laptop",))
         before = world.snapshot()
         with self.assertRaises(RuntimeError):
-            key.key_remove("laptop", force=True)
+            operations.key_remove("laptop", force=True)
         self.assertEqual(world.snapshot(), before)
 
     def test_every_failed_add_or_remove_step_rolls_back(self):
         tablet = self.world.identity("tablet").public
-        for operation in (lambda: key.key_add(tablet, "tablet"), lambda: key.key_remove("desk")):
+        for operation in (lambda: operations.key_add(tablet, "tablet"), lambda: operations.key_remove("desk")):
             self.world.build()
             self.assert_each_failure_rolls_back(operation, range(1, len(self.steps(operation)) + 1))
 
     def test_every_failed_device_rotation_step_rolls_back(self):
-        steps = range(1, len(self.steps(key.key_rotate)) + 1)
-        self.assert_each_failure_rolls_back(key.key_rotate, steps)
+        steps = range(1, len(self.steps(rotation.key_rotate)) + 1)
+        self.assert_each_failure_rolls_back(rotation.key_rotate, steps)
 
     def test_every_failed_recovery_rotation_step_rolls_back(self):
-        operation = lambda: key.key_rotate(recovery=True)  # noqa: E731
+        operation = lambda: rotation.key_rotate(recovery=True)  # noqa: E731
         self.assert_each_failure_rolls_back(operation, range(1, len(self.steps(operation)) + 1))
 
     def test_repair_finishes_a_device_rotation_killed_at_any_step(self):
-        steps = range(1, len(self.steps(key.key_rotate)) + 1)
-        self.assert_each_crash_is_repaired(key.key_rotate, steps)
+        steps = range(1, len(self.steps(rotation.key_rotate)) + 1)
+        self.assert_each_crash_is_repaired(rotation.key_rotate, steps)
 
     def test_repair_settles_a_recovery_rotation_killed_at_any_step(self):
-        operation = lambda: key.key_rotate(recovery=True)  # noqa: E731
+        operation = lambda: rotation.key_rotate(recovery=True)  # noqa: E731
         self.assert_each_crash_is_repaired(operation, range(1, len(self.steps(operation)) + 1))
 
     def test_device_rotation_requires_a_registered_local_key_and_recovery(self):
@@ -211,7 +212,7 @@ class FakeRotationTests(RotationScenarios, unittest.TestCase):
                     world.install(world.identity(install))
                 before = world.snapshot()
                 with self.assertRaises((RuntimeError, ValueError)):
-                    key.key_rotate()
+                    rotation.key_rotate()
                 self.assertEqual(world.snapshot(), before)
                 self.assertEqual(world.generated, [])
 
@@ -224,7 +225,7 @@ class FakeRotationTests(RotationScenarios, unittest.TestCase):
                     world.install(world.identity(install))
                 before = world.snapshot()
                 with self.assertRaises(RuntimeError):
-                    key.key_rotate(recovery=True)
+                    rotation.key_rotate(recovery=True)
                 self.assertEqual(world.snapshot(), before)
 
     def test_repair_adopts_a_new_key_stored_before_its_recipient_update(self):
@@ -233,7 +234,7 @@ class FakeRotationTests(RotationScenarios, unittest.TestCase):
         # A rotation killed between storing both identities and .sops.yaml.
         world.install(old, new)
 
-        key.key_repair()
+        rotation.key_repair()
 
         self.assertEqual(world.keys()["laptop"], new.public)
         self.assertFalse(world.can_open(world.secrets, old))
@@ -247,7 +248,7 @@ class FakeRotationTests(RotationScenarios, unittest.TestCase):
         for path, value in ((world.age_key.parent, 0o755), (world.age_key, 0o644), (backup, 0o644)):
             path.chmod(value)
 
-        key.key_repair()
+        rotation.key_repair()
 
         self.assertEqual(
             (mode(world.age_key.parent), mode(world.age_key), mode(backup)), (0o700, 0o600, 0o600)
@@ -268,7 +269,7 @@ class FakeRotationTests(RotationScenarios, unittest.TestCase):
                 corrupt()
                 before = world.snapshot()
                 with self.assertRaises(RuntimeError):
-                    key.key_repair()
+                    rotation.key_repair()
                 self.assertEqual(world.snapshot(), before)
 
     def seal_recovery_with(self, identity, pending=None):
@@ -290,7 +291,7 @@ class FakeRotationTests(RotationScenarios, unittest.TestCase):
         storage.write_sops_yaml_keys(keys)
         recovery.write_encrypted_recovery_key(new.private, [keys["laptop"], keys["desk"]])
 
-        key.key_repair()
+        rotation.key_repair()
 
         self.assertEqual(world.keys()["recovery"], new.public)
         self.assertEqual(world.read_secrets(new), SECRETS)
@@ -321,7 +322,7 @@ class RealToolRotationTests(RotationScenarios, unittest.TestCase):
     def test_rotations_failing_or_killed_mid_way_stay_recoverable(self):
         # Real tools are slow, so only interrupt each rotation where every
         # file has started to change: the last secrets re-encryption.
-        for operation in (key.key_rotate, lambda: key.key_rotate(recovery=True)):
+        for operation in (rotation.key_rotate, lambda: rotation.key_rotate(recovery=True)):
             self.world.build()
             calls = self.steps(operation)
             step = max(index for index, call in enumerate(calls, 1) if call[:2] == ["sops", "--encrypt"])

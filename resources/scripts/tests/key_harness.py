@@ -33,8 +33,13 @@ MODULES = (
     "envy.key",
     "envy.config",
     "envy.git_commit",
+    "envy.keys.commits",
     "envy.keys.identity",
+    "envy.keys.importing",
+    "envy.keys.operations",
+    "envy.keys.prompts",
     "envy.keys.recovery",
+    "envy.keys.rotation",
     "envy.keys.storage",
 )
 PATHS = (

@@ -3,8 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from envy import key
-from envy.keys import identity, storage
+from envy.keys import identity, operations, storage
 from envy.transaction import FileTransaction, transaction_lock
 from envy import utils
 
@@ -90,13 +89,13 @@ class KeyLifecycleTests(unittest.TestCase):
                 name: root / name.lower()
                 for name in ("SOPS_YAML", "SECRETS_FILE", "RECOVERY_KEY_FILE", "AGE_KEY_FILE", "DEVICE_LABEL_FILE")
             }
-            with patch.multiple(key, ENVY_ROOT=root, **key_files), patch.object(
-                key, "get_current_device_public_key", return_value="age1current"
-            ), patch.object(key, "read_sops_yaml_keys", return_value={
+            with patch.multiple(operations, ENVY_ROOT=root, **key_files), patch.object(
+                operations, "get_current_device_public_key", return_value="age1current"
+            ), patch.object(operations, "read_sops_yaml_keys", return_value={
                 "envy_rotation_old_device": "age1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             }):
                 with self.assertRaisesRegex(ValueError, "rotation marker"):
-                    key.key_remove("envy_rotation_old_device")
+                    operations.key_remove("envy_rotation_old_device")
             self.assertEqual([path.name for path in root.iterdir()], [".envy-key.lock"])
 
     def test_run_cmd_pins_missing_age_file_instead_of_using_ambient_identity(self):

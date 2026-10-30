@@ -310,7 +310,7 @@ def _check_secret_write_capability() -> list[CheckResult]:
     the real secrets.yaml.
     """
     from envy.config import SECRETS_DIR, _sops_encrypt_argv
-    from envy.key import read_sops_yaml_keys
+    from envy.keys.storage import read_sops_yaml_keys
 
     recipients = ",".join(read_sops_yaml_keys().values())
     if not recipients:
@@ -338,7 +338,10 @@ def _check_secret_write_capability() -> list[CheckResult]:
 
 def _check_device_key_distinct_from_recovery() -> list[CheckResult]:
     """Warn when this device uses the recovery key as its device key."""
-    from envy.key import get_current_device_public_key, read_sops_yaml_keys
+    from envy.keys.storage import (
+        current_device_public_key as get_current_device_public_key,
+        read_sops_yaml_keys,
+    )
 
     keys = read_sops_yaml_keys()
     recovery = keys.get("recovery")

@@ -24,17 +24,17 @@ from prompt_toolkit.widgets import Frame
 from prompt_toolkit import prompt as pt_prompt
 
 from envy import log
-from envy.key import (
-    AGE_KEY_DIR, AGE_KEY_FILE, SECRETS_FILE, SOPS_YAML, RECOVERY_KEY_FILE,
+from envy.keys.commits import git_commit_setup_files
+from envy.keys.importing import key_import
+from envy.keys.operations import register_device_key, run_sops_updatekeys
+from envy.keys.storage import (
+    PreparedDeviceKey,
     read_sops_yaml_keys,
     write_sops_yaml_keys,
-    get_current_device_public_key,
-    run_sops_updatekeys, git_commit_setup_files, key_import,
-    register_device_key,
+    current_device_public_key as get_current_device_public_key,
     prepare_device_age_key, prepare_generated_device_age_key,
     commit_prepared_device_age_key,
 )
-from envy.keys.storage import PreparedDeviceKey
 from envy.config import (
     read_machine_nix, read_secrets_yaml, read_secrets_data,
     write_machine_nix, write_secrets_yaml,
@@ -58,6 +58,7 @@ from envy.software.policy import (
     write_and_validate_exclusions,
 )
 from envy.utils import (
+    AGE_KEY_DIR, AGE_KEY_FILE, SECRETS_FILE, SOPS_YAML, RECOVERY_KEY_FILE,
     ENVY_ROOT,
     DEVICE_LABEL_FILE,
     HOME_DIR,
@@ -847,7 +848,7 @@ def save_all(
                     keys = read_sops_yaml_keys()
                     sops_updated = before_keys.get(label) != public_key
                     if "recovery" not in keys:
-                        from envy.key import key_add_recovery
+                        from envy.keys.rotation import key_add_recovery
                         key_add_recovery(reencrypt_secrets=False)
                         keys = read_sops_yaml_keys()
                         sops_updated = True
@@ -879,7 +880,7 @@ def save_all(
                         # authorized for secrets without being authorized for
                         # the offline recovery document.
                         try:
-                            from envy.key import reencrypt_recovery_key
+                            from envy.keys.operations import reencrypt_recovery_key
                             reencrypt_recovery_key(keys)
                         except (CommandError, OSError, RuntimeError, ValueError):
                             if provided_secrets is None:

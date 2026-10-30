@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 import time
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,14 @@ class MirrorCache:
         except OSError:
             pass
         connection = sqlite3.connect(self.path, timeout=5)
+        try:
+            self._initialize(connection)
+        except BaseException:
+            connection.close()
+            raise
+        return connection
+
+    def _initialize(self, connection: sqlite3.Connection) -> None:
         connection.row_factory = sqlite3.Row
         try:
             self.path.chmod(0o600)
@@ -60,7 +69,6 @@ class MirrorCache:
             "INSERT OR REPLACE INTO metadata(key, value) VALUES('schema', '1')"
         )
         connection.commit()
-        return connection
 
     @staticmethod
     def _decode(row: sqlite3.Row) -> dict[str, Any] | None:
@@ -122,7 +130,8 @@ class MirrorCache:
         if not self.path.exists():
             return {"path": str(self.path), "sources": 0, "measurements": 0, "stale": 0}
         try:
-            with sqlite3.connect(self.path) as connection:
+            # Connection's context manager only commits; closing() releases it.
+            with closing(sqlite3.connect(self.path)) as connection:
                 sources = connection.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
                 measurements = connection.execute("SELECT COUNT(*) FROM measurements").fetchone()[0]
                 stale = connection.execute(

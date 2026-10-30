@@ -387,6 +387,50 @@ class MirrorCliTests(unittest.TestCase):
         self.assertEqual(mirror_sources.complete_mirror_sources(None, ""), [])
 
 
+class MirrorCacheConnectionTests(unittest.TestCase):
+    """Every cache operation closes its SQLite connection, even on failure."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.cache = mirror_cache.MirrorCache(Path(directory.name) / "index.sqlite3")
+        self.opened = []
+        connect = sqlite3.connect
+
+        def spy(*args, **kwargs):
+            connection = connect(*args, **kwargs)
+            self.opened.append(connection)
+            return connection
+
+        patcher = patch.object(mirror_cache.sqlite3, "connect", side_effect=spy)
+        self.addCleanup(patcher.stop)
+        patcher.start()
+
+    def assert_all_closed(self):
+        self.assertTrue(self.opened)
+        for connection in self.opened:
+            with self.assertRaises(sqlite3.ProgrammingError):
+                connection.execute("SELECT 1")
+
+    def test_reads_writes_and_stats_close_their_connections(self):
+        self.cache.put("sources", "npm", [{"code": "a"}], 60)
+        self.assertEqual([value["code"] for value in self.cache.get("sources", "npm")], ["a"])
+        self.assertEqual(self.cache.stats()["sources"], 1)
+
+        self.assertEqual(len(self.opened), 3)
+        self.assert_all_closed()
+
+    def test_a_corrupt_cache_file_is_ignored_and_closed(self):
+        self.cache.path.write_bytes(b"not a database " * 100)
+
+        self.cache.put("sources", "npm", [{"code": "a"}], 60)
+        self.assertEqual(self.cache.get("sources", "npm"), [])
+        self.assertEqual(self.cache.stats()["sources"], 0)
+
+        self.assertEqual(len(self.opened), 3)
+        self.assert_all_closed()
+
+
 class MirrorOverrideTests(unittest.TestCase):
     def test_python_go_and_rust_overrides_follow_each_ecosystem(self):
         python = mirror_sources._source_overrides("python", {"code": "tuna", "url": "https://pypi.invalid/simple/"})

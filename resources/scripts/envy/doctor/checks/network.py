@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from envy.doctor.model import SECTION_SYSTEM, CheckResult, error, ok, warn
 from envy.evaluation import machine_manifest
-from envy.mirror import probe_endpoint, probe_specs
+from envy.mirror.probe import probe_endpoint, probe_specs
 
 
 def run_checks() -> list[CheckResult]:

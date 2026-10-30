@@ -9,24 +9,24 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from envy import main
-from envy.mirror import (
-    MirrorCache,
+from envy.mirror.cache import MirrorCache
+from envy.mirror.measure import (
     CHSRC_MEASURE_TIMEOUT,
-    _format_throughput,
-    _run_chsrc,
-    _measure_with_curl,
-    _measure_with_chsrc,
-    _parse_speed,
-    _parse_chsrc_sources,
     _curl_probe_urls,
+    _format_throughput,
+    _measure_with_chsrc,
+    _measure_with_curl,
+    _parse_speed,
+    complete_measurement_providers,
+)
+from envy.mirror.probe import mirror_entries, probe_endpoint, probe_specs
+from envy.mirror.sources import (
+    _parse_chsrc_sources,
+    _run_chsrc,
     _source_overrides,
     annotate_current_selection,
-    complete_measurement_providers,
     complete_mirror_targets,
     current_selection,
-    mirror_entries,
-    probe_endpoint,
-    probe_specs,
 )
 
 
@@ -34,9 +34,9 @@ class MirrorTests(unittest.TestCase):
     def test_trust_repair_forces_reload(self):
         context = SimpleNamespace(mode="china", user="policy-user")
         with patch("envy.nix_trust.sys.platform", "darwin"), patch(
-            "envy.mirror.current_nix_trust_context", return_value=context
+            "envy.mirror.cli.current_nix_trust_context", return_value=context
         ), patch(
-            "envy.mirror.run_nix_trust",
+            "envy.mirror.cli.run_nix_trust",
             return_value=subprocess.CompletedProcess([], 0, "", ""),
         ) as run:
             result = CliRunner().invoke(main.cli, ["mirror", "trust", "repair", "--json"])
@@ -51,8 +51,8 @@ class MirrorTests(unittest.TestCase):
         for platform in ("darwin", "linux"):
             with self.subTest(platform=platform), patch(
                 "envy.nix_trust.sys.platform", platform
-            ), patch("envy.mirror.current_nix_trust_context", return_value=context), patch(
-                "envy.mirror.run_nix_trust",
+            ), patch("envy.mirror.cli.current_nix_trust_context", return_value=context), patch(
+                "envy.mirror.cli.run_nix_trust",
                 return_value=subprocess.CompletedProcess([], 0, "ready", ""),
             ) as run:
                 result = CliRunner().invoke(
@@ -98,7 +98,7 @@ class MirrorTests(unittest.TestCase):
             [("Nix", "https://mirror.invalid/info")],
         )
 
-    @patch("envy.mirror.subprocess.run")
+    @patch("envy.mirror.probe.subprocess.run")
     def test_successful_probe_reports_http_status_and_latency(self, run):
         run.return_value = subprocess.CompletedProcess([], 0, "200\t0.1234", "")
 
@@ -110,7 +110,7 @@ class MirrorTests(unittest.TestCase):
         self.assertIn("--head", run.call_args.args[0])
         self.assertIn("7", run.call_args.args[0])
 
-    @patch("envy.mirror.subprocess.run")
+    @patch("envy.mirror.probe.subprocess.run")
     def test_failed_probe_preserves_non_secret_error_detail(self, run):
         run.return_value = subprocess.CompletedProcess([], 28, "000\t5.0", "timeout")
 
@@ -120,7 +120,7 @@ class MirrorTests(unittest.TestCase):
         self.assertEqual(result.status, "000")
         self.assertEqual(result.detail, "timeout")
 
-    @patch("envy.mirror._run_chsrc")
+    @patch("envy.mirror.sources._run_chsrc")
     def test_chsrc_source_table_parser_accepts_english_rows(self, run):
         run.return_value = (
             "Available Sources:\n"
@@ -137,7 +137,7 @@ class MirrorTests(unittest.TestCase):
         self.assertEqual(values[1]["provider"], "chsrc")
         self.assertEqual(values[1]["url"], "https://mirrors.huaweicloud.com/repository/npm/")
 
-    @patch("envy.mirror._run_chsrc")
+    @patch("envy.mirror.sources._run_chsrc")
     def test_chsrc_source_table_keeps_long_url_out_of_the_label(self, run):
         run.return_value = (
             "Available Sources:\n"
@@ -156,7 +156,7 @@ class MirrorTests(unittest.TestCase):
             "https://mirrors.huaweicloud.com/repository/pypi/simple",
         )
 
-    @patch("envy.mirror._run_chsrc")
+    @patch("envy.mirror.sources._run_chsrc")
     def test_measurement_does_not_trust_chsrc_recommendation_when_all_http_zero(self, run):
         sources = [{"code": "upstream", "label": "Upstream", "url": "https://registry.npmjs.org/"}]
         run.return_value = (
@@ -182,8 +182,8 @@ class MirrorTests(unittest.TestCase):
         self.assertEqual(_format_throughput(round(80.49 * 1024)), "0.08 MB/s")
         self.assertEqual(_format_throughput(0), "-")
 
-    @patch("envy.mirror.shutil.which", return_value="/usr/bin/chsrc")
-    @patch("envy.mirror.subprocess.run")
+    @patch("envy.mirror.sources.shutil.which", return_value="/usr/bin/chsrc")
+    @patch("envy.mirror.sources.subprocess.run")
     def test_chsrc_timeout_preserves_partial_output(self, run, which):
         run.side_effect = subprocess.TimeoutExpired(
             cmd=["/usr/bin/chsrc", "measure", "python"],
@@ -201,7 +201,7 @@ class MirrorTests(unittest.TestCase):
         self.assertEqual(code, 124)
         self.assertIn("timed out after 5s", stderr)
 
-    @patch("envy.mirror._run_chsrc")
+    @patch("envy.mirror.sources._run_chsrc")
     def test_partial_chsrc_timeout_keeps_completed_measurements(self, run):
         sources = [
             {"code": "upstream", "label": "Upstream", "url": "https://pypi.org/simple"},
@@ -220,7 +220,7 @@ class MirrorTests(unittest.TestCase):
         self.assertFalse(values[1]["ok"])
         self.assertIn("timed out after 180s", values[1]["detail"])
 
-    @patch("envy.mirror._run_chsrc")
+    @patch("envy.mirror.sources._run_chsrc")
     def test_successful_measurement_without_http_suffix_uses_throughput(self, run):
         sources = [{"code": "npmmirror", "label": "npmmirror", "url": "https://registry.npmmirror.com"}]
         run.return_value = (
@@ -241,8 +241,8 @@ class MirrorTests(unittest.TestCase):
         self.assertIsNone(values[0]["httpStatus"])
         self.assertEqual(values[0]["throughputBps"], round(36.52 * 1024 ** 2))
 
-    @patch("envy.mirror.shutil.which", return_value="/usr/bin/curl")
-    @patch("envy.mirror.subprocess.run")
+    @patch("envy.mirror.measure.shutil.which", return_value="/usr/bin/curl")
+    @patch("envy.mirror.measure.subprocess.run")
     def test_curl_provider_parses_http_and_speed_download(self, run, which):
         run.return_value = subprocess.CompletedProcess([], 0, "200\t1234.5", "")
         source = {
@@ -262,8 +262,8 @@ class MirrorTests(unittest.TestCase):
         self.assertIn("--location", args)
         self.assertEqual(args[-1], source["url"])
 
-    @patch("envy.mirror.shutil.which", return_value="/usr/bin/curl")
-    @patch("envy.mirror.subprocess.run")
+    @patch("envy.mirror.measure.shutil.which", return_value="/usr/bin/curl")
+    @patch("envy.mirror.measure.subprocess.run")
     def test_curl_provider_uses_representative_target_resource(self, run, which):
         run.return_value = subprocess.CompletedProcess([], 0, "206\t2048", "")
         source = {

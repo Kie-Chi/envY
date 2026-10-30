@@ -14,7 +14,7 @@ from envy.doctor import app as doctor_app
 from envy.habit import app as habit_app
 from envy.journal import show_log
 from envy.key import app as key_app
-from envy.mirror import app as mirror_app
+from envy.mirror.cli import app as mirror_app
 from envy.overview import show as show_overview
 from envy.host import app as host_app, complete_platforms
 from envy.software.cli import app as software_app

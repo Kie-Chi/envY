@@ -222,6 +222,7 @@ For meeting apps such as Tencent Meeting or Feishu, open the app and actually st
 - Modules read non-sensitive machine values from `config.envy.*`; do not reintroduce a separate `cfg` argument.
 - sops-nix on darwin uses activation scripts (not systemd), so secrets are decrypted during `darwin-rebuild switch`.
 - Keep build caches outside the checkout: `path:` flake evaluation hashes every file, and bundled sources capture them in closures. The devShell, `./envy`, and the installed `envy` wrapper place `CARGO_TARGET_DIR` and `PYTHONPYCACHEPREFIX` under `~/.cache/envy`.
+- `./envy` reuses a GC-rooted devShell profile under `~/.cache/envy/devshell`, keyed by `flake.nix`, `flake.lock`, the Nix version, and the system. `mkDevShell` must not read other checkout paths besides `./resources/scripts`; otherwise add them to that key. Delete the directory to force a fresh evaluation.
 
 - Source definitions live in `envy.software.sources`; custom host definitions use a separate `ENVY MANAGED SOURCES` block. Search/add caches bind concrete source IDs and context fingerprints. Never substitute a global Nix registry lookup for project-locked inputs.
 - Shared source registration owns only flake managed input/binding blocks plus flake.lock, validates every machine, and rolls back all files on failure. Native source configuration owns only envY-named repository/keyring files.

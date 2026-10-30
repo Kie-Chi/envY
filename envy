@@ -40,6 +40,25 @@ if ! command -v nix >/dev/null 2>&1; then
   load_nix_path
 fi
 
+# Print a key for the saved devShell. The shell derives only from flake.nix
+# and flake.lock: its one checkout path, resources/scripts on PYTHONPATH, is
+# shadowed by the checkout path this script prepends again after re-exec.
+devshell_key() {
+  local hasher
+  if command -v sha256sum >/dev/null 2>&1; then
+    hasher=(sha256sum)
+  elif command -v shasum >/dev/null 2>&1; then
+    hasher=(shasum -a 256)
+  else
+    return 1
+  fi
+  {
+    uname -sm
+    nix --version
+    (cd "$ROOT" && "${hasher[@]}" flake.nix flake.lock)
+  } | "${hasher[@]}" | cut -c1-32
+}
+
 # Keep the repo-local entry point reproducible: the host Python may happen to
 # provide envy dependencies while still missing the tools and environment from
 # this flake's devShell. Re-exec inside `nix develop` once, then let the normal
@@ -50,11 +69,27 @@ if [ "${ENVY_DEV_SHELL:-0}" != "1" ] && command -v nix >/dev/null 2>&1; then
   # `nix develop` pulls the whole closure from the upstream cache.
   # shellcheck source=resources/scripts/mirror-env.sh
   [ -f "$MIRROR_ENV_SCRIPT" ] && . "$MIRROR_ENV_SCRIPT"
+  export ENVY_DEV_SHELL=1
+  # Evaluating the flake costs 1-3 s per call, so reuse a saved devShell
+  # profile (a GC root) until flake.nix, flake.lock, Nix, or the system change.
+  devshell_args=()
+  devshell_cache="$ENVY_CACHE_DIR/devshell"
+  if key="$(devshell_key 2>/dev/null)" && [ -n "$key" ]; then
+    profile="$devshell_cache/$key/profile"
+    if [ -e "$profile" ]; then
+      exec nix develop "$profile" --command "$ROOT/envy" "$@"
+    fi
+    for stale in "$devshell_cache"/*; do
+      [ "$stale" = "$devshell_cache/$key" ] || rm -rf "$stale"
+    done
+    mkdir -p "$devshell_cache/$key"
+    devshell_args=(--profile "$profile")
+  fi
   if [ -r "$FLAKE_SOURCE_MIRROR_SCRIPT" ]; then
     bash "$FLAKE_SOURCE_MIRROR_SCRIPT" "$ROOT" prime || true
   fi
-  export ENVY_DEV_SHELL=1
-  exec nix develop "path:$ROOT" --command "$ROOT/envy" "$@"
+  # The +-expansion keeps an empty array safe under set -u in macOS bash 3.2.
+  exec nix develop "path:$ROOT" ${devshell_args[@]+"${devshell_args[@]}"} --command "$ROOT/envy" "$@"
 fi
 
 # The polished frontend is a separate Rust binary. Prefer an installed

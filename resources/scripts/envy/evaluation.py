@@ -16,7 +16,7 @@ from envy.process import run_process
 from envy.utils import ENVY_ROOT, current_machine_id, machine_manifest_attr, platform_name
 
 
-CACHE_SCHEMA = 2
+CACHE_SCHEMA = 3
 _CACHE_ENV = "ENVY_NO_CACHE"
 _COMMAND_TIMEOUT = 5
 _last_manifest_error: str | None = None
@@ -51,71 +51,123 @@ def _digest(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
-def _untracked_digest(raw_paths: bytes) -> str | None:
-    """Hash untracked paths, file types, modes, and contents without Git filters."""
-    digest = hashlib.sha256()
-    for raw_path in sorted(path for path in raw_paths.split(b"\0") if path):
-        path = ENVY_ROOT / os.fsdecode(raw_path)
-        try:
-            metadata = path.lstat()
-        except OSError:
-            return None
+def _nix_version() -> bytes | None:
+    return _command_bytes(["nix", "--version"])
 
-        digest.update(len(raw_path).to_bytes(8, "big"))
-        digest.update(raw_path)
-        digest.update(stat.S_IFMT(metadata.st_mode).to_bytes(4, "big"))
-        digest.update((metadata.st_mode & 0o777).to_bytes(2, "big"))
 
-        try:
-            if path.is_symlink():
-                target = os.fsencode(os.readlink(path))
-                digest.update(len(target).to_bytes(8, "big"))
-                digest.update(target)
-            elif path.is_file():
-                with path.open("rb") as handle:
-                    while chunk := handle.read(1024 * 1024):
-                        digest.update(chunk)
-            else:
-                # Git normally reports files and symlinks here. Avoid caching
-                # an unusual filesystem object that Nix may read differently.
+def _worktree_entry(raw_path: bytes, hash_name: str) -> bytes | None:
+    """Return the Git mode and object ID this worktree path would be staged as.
+
+    An absent path yields an empty entry. Objects Nix may read differently
+    from Git (directories, sockets, devices) yield None, so the caller does
+    not cache that snapshot.
+    """
+    path = ENVY_ROOT / os.fsdecode(raw_path)
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return b""
+    except OSError:
+        return None
+    digest = hashlib.new(hash_name)
+    try:
+        if stat.S_ISLNK(metadata.st_mode):
+            target = os.readlink(os.fsencode(path))
+            digest.update(b"blob %d\0" % len(target))
+            digest.update(target)
+            mode = b"120000"
+        elif stat.S_ISREG(metadata.st_mode):
+            # Never follow a symlink or block on a FIFO swapped in after lstat.
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+            with os.fdopen(os.open(path, flags), "rb") as handle:
+                opened = os.fstat(handle.fileno())
+                if not stat.S_ISREG(opened.st_mode) or opened.st_ino != metadata.st_ino:
+                    return None
+                digest.update(b"blob %d\0" % opened.st_size)
+                size = 0
+                while chunk := handle.read(1024 * 1024):
+                    size += len(chunk)
+                    digest.update(chunk)
+            if size != opened.st_size:
                 return None
-        except OSError:
+            mode = b"100755" if opened.st_mode & stat.S_IXUSR else b"100644"
+        else:
             return None
+    except OSError:
+        return None
+    return mode + b" " + digest.hexdigest().encode()
+
+
+def _tree_digest(index: bytes, modified: bytes, untracked: bytes) -> str | None:
+    """Hash every visible path as Git would stage it, regardless of history.
+
+    Unchanged index entries contribute their recorded mode and blob ID, so no
+    file is read twice. Paths that differ from the index, are unmerged, or are
+    untracked are hashed from the worktree with Git's object format. The
+    result therefore stays the same when a change is staged or committed.
+    """
+    entries: dict[bytes, bytes] = {}
+    worktree = {path for path in modified.split(b"\0") if path}
+    worktree.update(path for path in untracked.split(b"\0") if path)
+    hash_name = "sha1"
+    for record in index.split(b"\0"):
+        if not record:
+            continue
+        metadata, separator, path = record.partition(b"\t")
+        fields = metadata.split(b" ")
+        if not separator or len(fields) != 3:
+            return None
+        mode, object_id, stage = fields
+        hash_name = "sha256" if len(object_id) == 64 else "sha1"
+        if stage != b"0":
+            worktree.add(path)
+        else:
+            entries[path] = mode + b" " + object_id
+    for path in worktree:
+        entry = _worktree_entry(path, hash_name)
+        if entry is None:
+            return None
+        if entry:
+            entries[path] = entry
+        else:
+            entries.pop(path, None)
+    digest = hashlib.sha256()
+    for path in sorted(entries):
+        digest.update(path + b"\0" + entries[path] + b"\0")
     return digest.hexdigest()
 
 
 def _repository_fingerprint(machine_id: str) -> str | None:
-    """Return a content fingerprint for every repository layer Nix can see."""
+    """Return a content fingerprint of the repository files Nix can see.
+
+    Only paths, Git file modes, and contents count. HEAD and the staged state
+    do not, so a commit, amend, or `git add` of unchanged content keeps the
+    cached manifest valid.
+    """
     started = time.monotonic()
-    head = _command_bytes(["git", "rev-parse", "--verify", "HEAD"])
     index = _command_bytes(["git", "ls-files", "--stage", "-z"])
-    worktree = _command_bytes([
-        "git", "diff", "--binary", "--full-index", "--no-ext-diff",
-        "--no-textconv", "--no-color", "--no-renames", "--src-prefix=a/",
-        "--dst-prefix=b/", "--",
+    modified = _command_bytes([
+        "git", "diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", "--",
     ])
     untracked = _command_bytes(["git", "ls-files", "--others", "--exclude-standard", "-z"])
-    nix_version = _command_bytes(["nix", "--version"])
-    if None in (head, index, worktree, untracked, nix_version):
+    nix_version = _nix_version()
+    tree = (
+        _tree_digest(index, modified, untracked)
+        if None not in (index, modified, untracked)
+        else None
+    )
+    if tree is None or nix_version is None:
         log.debug(
             "eval", "repository fingerprint unavailable",
             machine=machine_id, elapsed=f"{time.monotonic() - started:.3f}s",
         )
         return None
 
-    untracked_hash = _untracked_digest(untracked)
-    if untracked_hash is None:
-        return None
     inputs = {
         "schema": CACHE_SCHEMA,
         "machine": machine_id,
         "platform": platform_name(),
-        "head": head.decode(errors="replace").strip(),
-        # Hashing the staged entries is read-only, unlike `git write-tree`,
-        # while still covering paths, modes, stages, and blob object IDs.
-        "index": _digest(index),
-        "worktree": _digest(worktree),
-        "untracked": untracked_hash,
+        "tree": tree,
         "nix": nix_version.decode(errors="replace").strip(),
     }
     encoded = json.dumps(inputs, sort_keys=True, separators=(",", ":")).encode()

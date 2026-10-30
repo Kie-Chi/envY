@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
-from envy import main
+from envy import log, main
 from envy.mirror import cache as mirror_cache
 from envy.mirror import measure as mirror_measure
 from envy.mirror import probe as mirror_probe
@@ -385,6 +385,195 @@ class MirrorCliTests(unittest.TestCase):
         self.assertEqual(mirror_sources.complete_mirror_sources(context, "h"), [("huawei", "Huawei Cloud")])
         self.assertEqual(mirror_sources.complete_mirror_sources(SimpleNamespace(params={}), ""), [])
         self.assertEqual(mirror_sources.complete_mirror_sources(None, ""), [])
+
+
+POLICY = {
+    "id": "test-machine",
+    "platform": "darwin",
+    "mirrors": {
+        "mode": "china",
+        "probes": [
+            {"name": "Nix", "url": "https://cache.invalid/nix-cache-info"},
+            {"name": "PyPI", "url": "https://pypi.invalid/simple"},
+        ],
+    },
+}
+
+
+class MirrorHumanOutputTests(unittest.TestCase):
+    """The table and prompt paths behind each JSON envelope."""
+
+    def setUp(self):
+        MirrorCliTests.setUp(self)
+        # A wide console keeps table cells on one line.
+        patcher = patch.dict(os.environ, {"COLUMNS": "200"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(log.reset_consoles)
+        log.reset_consoles()
+
+    def assert_in_order(self, text, *parts):
+        positions = [text.index(part) for part in parts]
+        self.assertEqual(positions, sorted(positions), text)
+
+    def test_status_targets_and_sources_render_tables(self):
+        self.overrides = {"envy.mirrors.overrides.npm.source": "chsrc:npm/huawei"}
+        with patch("envy.mirror.cli.machine_manifest", return_value=POLICY):
+            status = invoke("status")
+        targets = invoke("targets")
+        sources = invoke("sources", "rust")
+
+        self.assertEqual((status.exit_code, targets.exit_code, sources.exit_code), (0, 0, 0))
+        # The title wraps to the width of the narrow table.
+        self.assertIn("Mirror policy -", status.output)
+        self.assertIn("test-machine", status.output)
+        self.assertRegex(status.output, r"│ mode +│ china │")
+        self.assertIn("Mirror targets - china profile", targets.output)
+        self.assertIn("huawei (override)", targets.output)
+        self.assertIn("rsproxycn (profile)", targets.output)
+        self.assertIn("Mirror sources - rust (chsrc)", sources.output)
+        row = next(line for line in sources.output.splitlines() if "rsproxycn" in line)
+        self.assertIn("profile", row)
+
+    def test_measure_table_sorts_results_and_labels_the_cache(self):
+        results = [
+            measurement("npmmirror", ok=True, throughput=100),
+            {**measurement("tencent", ok=False), "httpStatus": None},
+            measurement("huawei", ok=True, throughput=900),
+        ]
+        with patch("envy.mirror.measure._measure_with_curl", return_value=results) as measure:
+            measured = invoke("measure", "npm", "-p", "curl")
+            cached = invoke("measure", "npm", "-p", "curl")
+            refreshed = invoke("measure", "npm", "-p", "curl", "--refresh")
+
+        self.assertEqual(measure.call_count, 2)
+        self.assertIn("Mirror measure - npm (curl, measured)", measured.output)
+        self.assert_in_order(measured.output, "huawei", "npmmirror", "tencent")
+        failed = next(line for line in measured.output.splitlines() if "tencent" in line)
+        self.assertIn("FAIL", failed)
+        self.assertIn(" - ", failed)
+        self.assertIn("(curl, cached)", cached.output)
+        self.assertIn("use --refresh to run curl again", cached.output)
+        self.assertIn("(curl, refreshed)", refreshed.output)
+        self.assertNotIn("use --refresh", refreshed.output)
+
+        with patch("envy.mirror.measure._measure_with_curl", return_value=[measurement("npmmirror", ok=False)]):
+            self.assertEqual(invoke("measure", "npm", "-p", "curl", "--refresh").exit_code, 1)
+
+    def test_set_previews_asks_and_writes_only_after_confirmation(self):
+        preview = invoke("set", "npm", "huawei", "--dry-run")
+        self.assertIn("path=envy.mirrors.overrides.npm.source value=chsrc:npm/huawei", preview.output)
+
+        declined = CliRunner().invoke(main.cli, ["mirror", "set", "npm", "huawei"], input="n\n")
+        self.assertEqual(declined.exit_code, 0, declined.output)
+        self.assertIn("Write the npm mirror override for huawei?", declined.output)
+        self.assertEqual(self.written, [])
+        self.commit.assert_not_called()
+
+        accepted = CliRunner().invoke(main.cli, ["mirror", "set", "npm", "huawei"], input="y\n")
+        self.assertEqual(accepted.exit_code, 0, accepted.output)
+        self.assertEqual(self.written[0]["envy.mirrors.overrides.npm.source"], "chsrc:npm/huawei")
+        self.assertIn("mirror override generated", accepted.output)
+        self.assertIn("envy plan && envy apply", accepted.output)
+        self.commit.assert_called_once_with(
+            [Path("/machines/test.nix")], "chore(mirror): select npm source huawei", quiet=False,
+        )
+
+    def test_set_and_reset_reject_unknown_names_before_reading_overrides(self):
+        for args in (("set", "npm", "nosuch"), ("set", "cobol", "huawei"), ("reset", "cobol")):
+            with self.subTest(args=args):
+                result = invoke(*args, "--yes")
+                self.assertEqual(result.exit_code, 2, result.output)
+        self.assertEqual(self.written, [])
+
+    def test_reset_previews_asks_and_writes_only_after_confirmation(self):
+        self.overrides = {"envy.mirrors.overrides.npm.source": "chsrc:npm/huawei"}
+
+        preview = invoke("reset", "npm", "--dry-run")
+        self.assertIn("mirror override reset preview target=npm", preview.output)
+        dry = envelope(invoke("reset", "npm", "--dry-run", "--json"))["data"]
+        self.assertEqual((dry["result"], dry["plan"]["changed"]), ("dry-run", True))
+
+        declined = CliRunner().invoke(main.cli, ["mirror", "reset", "npm"], input="n\n")
+        self.assertEqual((declined.exit_code, self.written), (0, []))
+
+        accepted = CliRunner().invoke(main.cli, ["mirror", "reset", "npm"], input="y\n")
+        self.assertEqual(accepted.exit_code, 0, accepted.output)
+        self.assertEqual(self.written, [{}])
+        self.assertIn("mirror override reset target=npm", accepted.output)
+        self.commit.assert_called_once_with(
+            [Path("/machines/test.nix")], "chore(mirror): reset npm source", quiet=False,
+        )
+
+    def test_cache_status_table_and_confirmed_clean(self):
+        mirror_cache.MirrorCache().put("sources", "npm", [{"code": "a"}], mirror_sources.SOURCE_CACHE_TTL)
+
+        status = invoke("cache", "status")
+        self.assertIn("Mirror cache", status.output)
+        self.assertIn("sources", status.output)
+
+        declined = CliRunner().invoke(main.cli, ["mirror", "cache", "clean"], input="n\n")
+        self.assertEqual(declined.exit_code, 0, declined.output)
+        self.assertTrue(mirror_cache.mirror_cache_path().exists())
+
+        removed = CliRunner().invoke(main.cli, ["mirror", "cache", "clean"], input="y\n")
+        self.assertIn("mirror cache removed", removed.output)
+        self.assertFalse(mirror_cache.mirror_cache_path().exists())
+        self.assertIn("mirror cache already empty", invoke("cache", "clean", "--yes").output)
+
+    def test_trust_commands_print_helper_output_and_propagate_failures(self):
+        context = SimpleNamespace(mode="china", user="policy-user")
+        ready = SimpleNamespace(returncode=0, stdout="trusted: yes\n", stderr="note: cached\n")
+        broken = SimpleNamespace(returncode=2, stdout="", stderr="")
+        with patch("envy.mirror.cli.current_nix_trust_context", return_value=context), patch(
+            "envy.mirror.cli.nix_trust_is_applicable", return_value=False
+        ):
+            self.assertIn("not supported on this platform", invoke("trust", "repair").output)
+        with patch("envy.mirror.cli.current_nix_trust_context", return_value=context), patch(
+            "envy.mirror.cli.nix_trust_is_applicable", return_value=True
+        ), patch("envy.mirror.cli.run_nix_trust", side_effect=[ready, ready, broken]) as helper:
+            status = invoke("trust", "status")
+            repaired = invoke("trust", "repair", "--json")
+            failed = invoke("trust", "repair", "--json")
+
+        self.assertEqual(status.exit_code, 0, status.output)
+        self.assertIn("trusted: yes", status.stdout)
+        self.assertIn("note: cached", status.stderr)
+        self.assertEqual(
+            [call.kwargs for call in helper.call_args_list[:2]],
+            [
+                {"context": context, "capture": True, "quiet": False},
+                {"context": context, "capture": False, "quiet": True, "reload": True},
+            ],
+        )
+        self.assertEqual(envelope(repaired)["data"]["state"], "ready")
+        self.assertEqual(failed.exit_code, 2)
+        self.assertEqual(envelope(failed)["error"], {"code": "error", "message": "error"})
+
+    def test_probe_table_marks_failures_and_logs_details_in_debug_mode(self):
+        results = {
+            "Nix": mirror_probe.ProbeResult("Nix", "https://cache.invalid/nix-cache-info", True, "200", 12),
+            "PyPI": mirror_probe.ProbeResult("PyPI", "https://pypi.invalid/simple", False, "000", None, "timeout"),
+        }
+        with patch("envy.mirror.cli.machine_manifest", return_value=POLICY), patch(
+            "envy.mirror.probe.probe_endpoint", side_effect=lambda name, url, timeout: results[name]
+        ), patch.dict(os.environ, {"ENVY_DEBUG": "1"}):
+            probed = invoke("probe")
+
+        self.assertEqual(probed.exit_code, 1, probed.output)
+        nix = next(line for line in probed.stdout.splitlines() if "Nix " in line)
+        pypi = next(line for line in probed.stdout.splitlines() if "PyPI" in line)
+        self.assertIn("OK", nix)
+        self.assertIn("12 ms", nix)
+        self.assertIn("FAIL", pypi)
+        self.assertIn(" - ", pypi)
+        self.assertIn("one or more endpoints failed failed=1 total=2", probed.stdout)
+        self.assertIn("probe detail endpoint=PyPI detail=timeout", probed.stderr)
+
+        with patch("envy.mirror.cli.machine_manifest", return_value={"id": "m", "mirrors": {"mode": "china"}}):
+            empty = invoke("probe")
+        self.assertEqual(empty.exit_code, 0, empty.output)
+        self.assertIn("no probe endpoints are declared", empty.output)
 
 
 class MirrorCacheConnectionTests(unittest.TestCase):

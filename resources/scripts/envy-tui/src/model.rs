@@ -825,22 +825,6 @@ pub struct KeyValueRow {
     pub value: String,
 }
 
-pub fn mirror_rows(payload: Option<&Value>) -> Vec<KeyValueRow> {
-    payload
-        .and_then(|value| value.get("settings"))
-        .and_then(Value::as_object)
-        .map(|settings| {
-            settings
-                .iter()
-                .map(|(key, value)| KeyValueRow {
-                    key: key.clone(),
-                    value: text(Some(value)),
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 pub fn mirror_target_rows(payload: Option<&Value>) -> Vec<KeyValueRow> {
     payload
         .and_then(|value| value.get("data"))
@@ -1148,16 +1132,6 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert!(rows[0].current);
         assert!(!rows[1].current);
-    }
-
-    #[test]
-    fn mirror_rows_flatten_settings() {
-        let payload = json!({"settings": {"mode": "china", "npm.registry": "https://x"}});
-        let rows = mirror_rows(Some(&payload));
-        assert_eq!(rows.len(), 2);
-        assert!(rows
-            .iter()
-            .any(|row| row.key == "mode" && row.value == "china"));
     }
 
     #[test]

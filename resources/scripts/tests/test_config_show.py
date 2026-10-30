@@ -6,12 +6,12 @@ from unittest.mock import patch
 import typer
 from rich.console import Console
 
-from envy import config
+from envy.config import cli, machine_nix, secret_store, updates
 
 
 class ConfigShowTests(unittest.TestCase):
     def setUp(self):
-        secrets = patch.object(config, "read_secrets_data", return_value=({}, False))
+        secrets = patch.object(secret_store, "read_secrets_data", return_value=({}, False))
         managed = patch("envy.agent._read_values", return_value={})
         secrets.start()
         managed.start()
@@ -19,7 +19,7 @@ class ConfigShowTests(unittest.TestCase):
         self.addCleanup(managed.stop)
 
     def test_show_uses_evaluated_values_without_software_policy(self):
-        settings = {field.path: field.default_fn() for field in config.MACHINE_FIELDS}
+        settings = {field.path: field.default_fn() for field in cli.MACHINE_FIELDS}
         settings["envy.user.name"] = "evaluated-user"
         manifest = {
             "schemaVersion": 2,
@@ -38,14 +38,14 @@ class ConfigShowTests(unittest.TestCase):
         output = io.StringIO()
         console = Console(file=output, force_terminal=False, width=220)
 
-        with patch.object(config, "machine_manifest", return_value=manifest) as evaluate, patch.object(
-            config, "read_machine_nix", return_value={"envy.user.name": "source-user"}
-        ), patch.object(config, "read_device_metadata", return_value={
+        with patch.object(cli, "machine_manifest", return_value=manifest) as evaluate, patch.object(
+            machine_nix, "read_machine_nix", return_value={"envy.user.name": "source-user"}
+        ), patch.object(cli, "read_device_metadata", return_value={
             "machine_id": "test-mac", "sops_label": "test_mac"
-        }), patch.object(config, "read_secrets_yaml", return_value=({}, True)), patch.object(
-            config.log, "console", console
+        }), patch.object(secret_store, "read_secrets_yaml", return_value=({}, True)), patch.object(
+            cli.log, "console", console
         ):
-            config.cmd_show(refresh=False)
+            cli.cmd_show(refresh=False)
 
         rendered = output.getvalue()
         self.assertIn("evaluated-user", rendered)
@@ -55,36 +55,36 @@ class ConfigShowTests(unittest.TestCase):
         evaluate.assert_called_once_with(refresh=False)
 
     def test_json_output_reports_secret_presence_without_values(self):
-        settings = {field.path: field.default_fn() for field in config.MACHINE_FIELDS}
+        settings = {field.path: field.default_fn() for field in cli.MACHINE_FIELDS}
         manifest = {"schemaVersion": 2, "settings": settings}
         output = io.StringIO()
         console = Console(file=output, force_terminal=False, width=220)
-        with patch.object(config, "machine_manifest", return_value=manifest), patch.object(
-            config, "read_device_metadata", return_value={"machine_id": "test-mac"}
+        with patch.object(cli, "machine_manifest", return_value=manifest), patch.object(
+            cli, "read_device_metadata", return_value={"machine_id": "test-mac"}
         ), patch.object(
-            config, "read_secrets_yaml", return_value=({"llm_steps_apikey": "top-secret"}, True)
-        ), patch.object(config.log, "console", console):
-            config.cmd_show(refresh=False, json_output=True)
+            secret_store, "read_secrets_yaml", return_value=({"llm_steps_apikey": "top-secret"}, True)
+        ), patch.object(cli.log, "console", console):
+            cli.cmd_show(refresh=False, json_output=True)
 
         rendered = output.getvalue()
         payload = json.loads(rendered)
         self.assertNotIn("top-secret", rendered)
         self.assertTrue(payload["secrets"]["llm/steps/apikey"])
         self.assertEqual(payload["schemaVersion"], 1)
-        self.assertEqual(payload["platform"], config.platform_name())
+        self.assertEqual(payload["platform"], cli.platform_name())
 
 
     def test_json_output_includes_field_choices_metadata(self):
-        settings = {field.path: field.default_fn() for field in config.MACHINE_FIELDS}
+        settings = {field.path: field.default_fn() for field in cli.MACHINE_FIELDS}
         manifest = {"schemaVersion": 2, "settings": settings}
         output = io.StringIO()
         console = Console(file=output, force_terminal=False, width=220)
-        with patch.object(config, "machine_manifest", return_value=manifest), patch.object(
-            config, "read_device_metadata", return_value={"machine_id": "test-mac"}
-        ), patch.object(config, "read_secrets_yaml", return_value=({}, True)), patch.object(
-            config.log, "console", console
+        with patch.object(cli, "machine_manifest", return_value=manifest), patch.object(
+            cli, "read_device_metadata", return_value={"machine_id": "test-mac"}
+        ), patch.object(secret_store, "read_secrets_yaml", return_value=({}, True)), patch.object(
+            cli.log, "console", console
         ):
-            config.cmd_show(refresh=False, json_output=True)
+            cli.cmd_show(refresh=False, json_output=True)
 
         payload = json.loads(output.getvalue())
         fields = {entry["path"]: entry for entry in payload["fields"]}
@@ -95,7 +95,7 @@ class ConfigShowTests(unittest.TestCase):
         self.assertEqual(fields["envy.user.name"]["choices"], [])
 
     def test_json_output_includes_dynamic_llm_and_agent_views(self):
-        settings = {field.path: field.default_fn() for field in config.MACHINE_FIELDS}
+        settings = {field.path: field.default_fn() for field in cli.MACHINE_FIELDS}
         manifest = {
             "schemaVersion": 2,
             "settings": settings,
@@ -121,14 +121,14 @@ class ConfigShowTests(unittest.TestCase):
         }
         output = io.StringIO()
         console = Console(file=output, force_terminal=False, width=220)
-        with patch.object(config, "machine_manifest", return_value=manifest), patch.object(
-            config, "read_device_metadata", return_value={"machine_id": "test-mac"}
-        ), patch.object(config, "read_machine_nix", return_value={}), patch.object(
-            config, "read_secrets_yaml", return_value=({}, True)
+        with patch.object(cli, "machine_manifest", return_value=manifest), patch.object(
+            cli, "read_device_metadata", return_value={"machine_id": "test-mac"}
+        ), patch.object(machine_nix, "read_machine_nix", return_value={}), patch.object(
+            secret_store, "read_secrets_yaml", return_value=({}, True)
         ), patch.object(
-            config, "read_secrets_data", return_value=({"llm": {"xikai": {"apikey": "secret"}}}, True)
-        ), patch.object(config.log, "console", console):
-            config.cmd_show(refresh=False, json_output=True)
+            secret_store, "read_secrets_data", return_value=({"llm": {"xikai": {"apikey": "secret"}}}, True)
+        ), patch.object(cli.log, "console", console):
+            cli.cmd_show(refresh=False, json_output=True)
 
         payload = json.loads(output.getvalue())
         self.assertEqual(payload["values"]["envy.llm.endpoints.xikai-openai.baseUrl"], "https://api.xikai.site/v1")
@@ -151,14 +151,14 @@ class ConfigShowTests(unittest.TestCase):
                 manifest = {"agents": agents} if evaluated else None
                 output = io.StringIO()
                 console = Console(file=output, force_terminal=False, width=220)
-                with patch.object(config, "machine_manifest", return_value=manifest), patch.object(
-                    config, "read_machine_nix", return_value={}
-                ), patch.object(config, "read_device_metadata", return_value={}), patch.object(
-                    config, "read_secrets_yaml", return_value=({}, False)
+                with patch.object(cli, "machine_manifest", return_value=manifest), patch.object(
+                    machine_nix, "read_machine_nix", return_value={}
+                ), patch.object(cli, "read_device_metadata", return_value={}), patch.object(
+                    secret_store, "read_secrets_yaml", return_value=({}, False)
                 ), patch("envy.agent._read_values", return_value=values), patch.object(
-                    config.log, "console", console
+                    cli.log, "console", console
                 ):
-                    config.cmd_show(refresh=False, json_output=True)
+                    cli.cmd_show(refresh=False, json_output=True)
                 payload = json.loads(output.getvalue())
                 fields = {entry["path"]: entry for entry in payload["fields"]}
                 for name in ("pi", "custom-pi"):
@@ -183,12 +183,12 @@ class ConfigShowTests(unittest.TestCase):
                 with self.subTest(manifest=manifest, json=json_output):
                     output = io.StringIO()
                     console = Console(file=output, force_terminal=False, width=220)
-                    with patch.object(config, "machine_manifest", return_value=manifest), patch.object(
-                        config, "read_machine_nix", return_value=legacy
-                    ), patch.object(config, "read_device_metadata", return_value={}), patch.object(
-                        config, "read_secrets_yaml", return_value=({}, True)
-                    ), patch.object(config.log, "console", console):
-                        config.cmd_show(refresh=False, json_output=json_output)
+                    with patch.object(cli, "machine_manifest", return_value=manifest), patch.object(
+                        machine_nix, "read_machine_nix", return_value=legacy
+                    ), patch.object(cli, "read_device_metadata", return_value={}), patch.object(
+                        secret_store, "read_secrets_yaml", return_value=({}, True)
+                    ), patch.object(cli.log, "console", console):
+                        cli.cmd_show(refresh=False, json_output=json_output)
                     rendered = output.getvalue()
                     for path in legacy:
                         self.assertNotIn(path, rendered)
@@ -212,14 +212,14 @@ class ConfigShowTests(unittest.TestCase):
         }
         output = io.StringIO()
         console = Console(file=output, force_terminal=False, width=220)
-        with patch.object(config, "machine_manifest", return_value=None), patch.object(
-            config, "read_machine_nix", return_value={}
-        ), patch.object(config, "read_device_metadata", return_value={}), patch.object(
-            config, "read_secrets_yaml", return_value=({}, False)
+        with patch.object(cli, "machine_manifest", return_value=None), patch.object(
+            machine_nix, "read_machine_nix", return_value={}
+        ), patch.object(cli, "read_device_metadata", return_value={}), patch.object(
+            secret_store, "read_secrets_yaml", return_value=({}, False)
         ), patch("envy.agent._read_values", return_value=values), patch.object(
-            config, "read_secrets_data", return_value=({"llm": {"local": {"apikey": "hidden-key"}}}, True)
-        ), patch.object(config.log, "console", console):
-            config.cmd_show(refresh=False, json_output=True)
+            secret_store, "read_secrets_data", return_value=({"llm": {"local": {"apikey": "hidden-key"}}}, True)
+        ), patch.object(cli.log, "console", console):
+            cli.cmd_show(refresh=False, json_output=True)
         payload = json.loads(output.getvalue())
         self.assertEqual(payload["source"], "source-fallback")
         self.assertEqual(payload["values"]["envy.agents.codex.model"], "custom-model")
@@ -234,12 +234,12 @@ class ConfigSetTests(unittest.TestCase):
     def test_set_json_emits_result_and_suppresses_command_logs(self):
         output = io.StringIO()
         console = Console(file=output, force_terminal=False, width=220)
-        with patch.object(config, "set_config_value") as setter, patch.object(
-            config, "offer_mutation_commit"
+        with patch.object(updates, "set_config_value") as setter, patch.object(
+            cli, "offer_mutation_commit"
         ) as commit, patch.object(
-            config, "current_machine_id", return_value="test-mac"
-        ), patch.object(config.log, "console", console):
-            config.cmd_set("envy.mirrors.mode", "china", json_output=True, yes=True)
+            cli, "current_machine_id", return_value="test-mac"
+        ), patch.object(cli.log, "console", console):
+            cli.cmd_set("envy.mirrors.mode", "china", json_output=True, yes=True)
 
         payload = json.loads(output.getvalue())
         self.assertEqual(payload["command"], "config.set")
@@ -253,12 +253,12 @@ class ConfigSetTests(unittest.TestCase):
         output = io.StringIO()
         console = Console(file=output, force_terminal=False, width=220)
         with patch.object(
-            config, "set_config_value", side_effect=typer.BadParameter("invalid value")
-        ), patch.object(config, "offer_mutation_commit") as commit, patch.object(
-            config.log, "console", console
+            updates, "set_config_value", side_effect=typer.BadParameter("invalid value")
+        ), patch.object(cli, "offer_mutation_commit") as commit, patch.object(
+            cli.log, "console", console
         ):
             with self.assertRaises(typer.Exit):
-                config.cmd_set("envy.mirrors.mode", "bogus", json_output=True)
+                cli.cmd_set("envy.mirrors.mode", "bogus", json_output=True)
 
         payload = json.loads(output.getvalue())
         self.assertFalse(payload["ok"])

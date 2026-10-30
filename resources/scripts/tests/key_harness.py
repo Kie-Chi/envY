@@ -31,7 +31,11 @@ from envy.process import CommandError
 
 MODULES = (
     "envy.key",
-    "envy.config",
+    "envy.config.cli",
+    "envy.config.machine_nix",
+    "envy.config.refine",
+    "envy.config.secret_store",
+    "envy.config.updates",
     "envy.git_commit",
     "envy.keys.commits",
     "envy.keys.identity",

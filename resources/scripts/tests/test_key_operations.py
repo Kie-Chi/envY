@@ -221,17 +221,17 @@ class UpdateKeysTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def test_missing_secrets_file_is_skipped(self):
-        with patch("envy.config.write_secrets_data") as write:
+        with patch("envy.config.secret_store.write_secrets_data") as write:
             operations.run_sops_updatekeys()
         write.assert_not_called()
 
     def test_plaintext_or_undecryptable_secrets_fail_closed(self):
         self.secret.write_text("token: plain\n")
-        with patch("envy.config.write_secrets_data") as write:
+        with patch("envy.config.secret_store.write_secrets_data") as write:
             with self.assertRaisesRegex(SecretSafetyError, "not sops-encrypted"):
                 operations.run_sops_updatekeys()
             with patch.object(operations, "is_sops_encrypted", return_value=True), patch(
-                "envy.config.read_secrets_data", return_value=({}, False)
+                "envy.config.secret_store.read_secrets_data", return_value=({}, False)
             ):
                 with self.assertRaisesRegex(SecretSafetyError, "cannot decrypt"):
                     operations.run_sops_updatekeys()
@@ -240,8 +240,8 @@ class UpdateKeysTests(unittest.TestCase):
     def test_decrypted_secrets_are_rewritten_for_the_current_recipients(self):
         self.secret.write_text("ciphertext\n")
         with patch.object(operations, "is_sops_encrypted", return_value=True), patch(
-            "envy.config.read_secrets_data", return_value=({"home": {"passwd": "x"}}, True)
-        ), patch("envy.config.write_secrets_data") as write:
+            "envy.config.secret_store.read_secrets_data", return_value=({"home": {"passwd": "x"}}, True)
+        ), patch("envy.config.secret_store.write_secrets_data") as write:
             operations.run_sops_updatekeys()
         write.assert_called_once_with({"home": {"passwd": "x"}})
 

@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from typer.main import get_command
 
-from envy.config import (
+from envy.config.cli import (
     complete_machine_paths,
     complete_machine_values,
     complete_secret_paths,

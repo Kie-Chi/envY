@@ -35,11 +35,9 @@ from envy.keys.storage import (
     prepare_device_age_key, prepare_generated_device_age_key,
     commit_prepared_device_age_key,
 )
-from envy.config import (
-    read_machine_nix, read_secrets_yaml, read_secrets_data,
-    write_machine_nix, write_secrets_yaml,
-    RefineReport, _validate_field,
-)
+from envy.config.machine_nix import read_machine_nix, write_machine_nix
+from envy.config.refine import RefineReport, _validate_field
+from envy.config.secret_store import read_secrets_data, read_secrets_yaml, write_secrets_yaml
 from envy.evaluation import machine_manifest, manifest_settings
 from envy.host import initialize_machine, machine_file, validate_machine_id
 from envy.schemas.config import ALL_FIELDS, MACHINE_FIELDS, SECRET_FIELDS, FieldDef
@@ -764,7 +762,7 @@ def confirm_save() -> bool:
 def validate_required_fields(values: dict) -> bool:
     """Reject empty/invalid required fields before the destructive save.
 
-    Reuses envy.config._validate_field so the checks and hints match the
+    Reuses envy.config.refine._validate_field so the checks and hints match the
     `envy config refine` CLI path. Returns True when every applicable field
     passes; logs per-field errors and returns False otherwise.
     """
@@ -912,7 +910,7 @@ def save_all(
                             # plaintext before activation, so it can publish
                             # a new ciphertext even when it cannot decrypt the
                             # old recipient set itself.
-                            from envy.config import write_secrets_data
+                            from envy.config.secret_store import write_secrets_data
                             write_secrets_data(provided_secrets)
                         else:
                             run_sops_updatekeys()

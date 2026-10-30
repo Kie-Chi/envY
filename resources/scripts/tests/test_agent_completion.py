@@ -7,7 +7,8 @@ import click
 from typer.main import get_command
 from typer.testing import CliRunner
 
-from envy import agent, agent_completion, config
+from envy import agent, agent_completion
+from envy.config import secret_store
 from envy.main import cli
 
 
@@ -32,7 +33,7 @@ class AgentCompletionTests(unittest.TestCase):
                     "credentials": {"shared": {"secretPath": "llm/shared/token"}}},
         }))
         self.enterContext(patch.object(agent, "read_secrets_data", side_effect=AssertionError("no decryption in completion")))
-        self.enterContext(patch.object(config, "read_secrets_data", side_effect=AssertionError("no decryption in completion")))
+        self.enterContext(patch.object(secret_store, "read_secrets_data", side_effect=AssertionError("no decryption in completion")))
         self.enterContext(patch.object(agent, "_write_values", side_effect=AssertionError("no writes in completion")))
 
     def tearDown(self):

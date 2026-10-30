@@ -9,7 +9,8 @@ from unittest.mock import patch
 import typer
 from typer.testing import CliRunner
 
-from envy import config, git_safety, main, sops_format, utils
+from envy import git_safety, main, sops_format, utils
+from envy.config import cli, machine_nix, refine, secret_store, updates
 from envy.doctor.checks import config as doctor_config
 from envy.keys import recovery as key_recovery
 from envy.process import CommandError, command_display, run_process
@@ -44,10 +45,10 @@ class SafetyWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             secret = Path(temporary) / "secrets.yaml"
             secret.write_text("encrypted-placeholder")
-            with patch.object(config, "SECRETS_FILE", secret), patch.object(
-                config, "read_secrets_data", return_value=({"custom": {"keep": "yes"}}, True)
-            ), patch.object(config, "write_secrets_data", side_effect=lambda data: captured.update(data)):
-                config.write_secrets_yaml({})
+            with patch.object(secret_store, "SECRETS_FILE", secret), patch.object(
+                secret_store, "read_secrets_data", return_value=({"custom": {"keep": "yes"}}, True)
+            ), patch.object(secret_store, "write_secrets_data", side_effect=lambda data: captured.update(data)):
+                secret_store.write_secrets_yaml({})
         self.assertEqual(captured["custom"]["keep"], "yes")
 
     def test_secret_set_replace_initializes_new_device_recipient_atomically(self):
@@ -61,29 +62,29 @@ class SafetyWorkflowTests(unittest.TestCase):
             secret.write_text("old ciphertext\n")
             captured = {}
 
-            with patch.object(config, "ENVY_ROOT", root), patch.object(config, "SOPS_YAML", sops), patch.object(
-                config, "SECRETS_FILE", secret
-            ), patch.object(config, "AGE_KEY_FILE", age_key), patch.object(
-                config, "DEVICE_LABEL_FILE", device
+            with patch.object(updates, "ENVY_ROOT", root), patch.object(updates, "SOPS_YAML", sops), patch.object(
+                updates, "SECRETS_FILE", secret
+            ), patch.object(updates, "AGE_KEY_FILE", age_key), patch.object(
+                updates, "DEVICE_LABEL_FILE", device
             ), patch("envy.keys.storage.AGE_KEY_FILE", age_key), patch(
                 "envy.keys.storage.generate_device_age_key", side_effect=lambda: age_key.write_text("AGE-SECRET-KEY-TEST\n") or "age1new"
             ), patch("envy.keys.storage.current_device_public_key", return_value="age1new"), patch(
                 "envy.keys.identity.ensure_sops_label", return_value="new_device"
             ), patch("envy.keys.storage.read_sops_yaml_keys", return_value={"old": "age1old"}), patch(
                 "envy.keys.storage.write_sops_yaml_keys", side_effect=lambda keys: captured.update(keys)
-            ), patch.object(config, "write_secrets_data", side_effect=lambda data: captured.update(data)):
-                config.set_secret_value("llm/steps/apikey", "new-secret", replace=True)
+            ), patch.object(secret_store, "write_secrets_data", side_effect=lambda data: captured.update(data)):
+                updates.set_secret_value("llm/steps/apikey", "new-secret", replace=True)
 
             self.assertEqual(captured["new_device"], "age1new")
             self.assertEqual(captured["llm"]["steps"]["apikey"], "new-secret")
 
     def test_secret_set_without_replace_requires_decryption(self):
-        with patch.object(config, "read_secrets_data", return_value=({}, False)):
+        with patch.object(secret_store, "read_secrets_data", return_value=({}, False)):
             with self.assertRaises(RuntimeError):
-                config.set_secret_value("llm/steps/apikey", "new-secret")
+                updates.set_secret_value("llm/steps/apikey", "new-secret")
 
     def test_secret_refine_normalizes_scalar_types_when_writing(self):
-        field = next(field for field in config.SECRET_FIELDS if field.path == "home_passwd")
+        field = next(field for field in refine.SECRET_FIELDS if field.path == "home_passwd")
         field = replace(field, required=False, validators=[])
         cases = [
             ("plain", "plain", False),
@@ -97,12 +98,12 @@ class SafetyWorkflowTests(unittest.TestCase):
         for raw_value, expected, should_write in cases:
             with self.subTest(raw_value=raw_value):
                 encrypted = {}
-                with patch.object(config, "SECRET_FIELDS", [field]), patch.object(
-                    config, "read_secrets_data", return_value=({"home": {"passwd": raw_value}}, True)
-                ), patch.object(config, "read_machine_nix", return_value={}), patch.object(
-                    config, "write_secrets_data", side_effect=lambda data: encrypted.update(data)
+                with patch.object(refine, "SECRET_FIELDS", [field]), patch.object(
+                    secret_store, "read_secrets_data", return_value=({"home": {"passwd": raw_value}}, True)
+                ), patch.object(machine_nix, "read_machine_nix", return_value={}), patch.object(
+                    secret_store, "write_secrets_data", side_effect=lambda data: encrypted.update(data)
                 ), patch("envy.agent.managed_credential_paths", return_value={}):
-                    report = config.refine_secrets(write=True, strict=True)
+                    report = refine.refine_secrets(write=True, strict=True)
 
                 self.assertTrue(report.ok)
                 self.assertEqual(report.changed, should_write)
@@ -110,29 +111,29 @@ class SafetyWorkflowTests(unittest.TestCase):
                     self.assertEqual(encrypted["home"]["passwd"], expected)
 
     def test_secret_refine_rejects_structured_values_without_writing(self):
-        field = next(field for field in config.SECRET_FIELDS if field.path == "home_passwd")
+        field = next(field for field in refine.SECRET_FIELDS if field.path == "home_passwd")
         for raw_value in ([], ["secret"], {}, {"value": "secret"}):
             with self.subTest(raw_value=raw_value), patch.object(
-                config, "SECRET_FIELDS", [field]
+                refine, "SECRET_FIELDS", [field]
             ), patch.object(
-                config, "read_secrets_data", return_value=({"home": {"passwd": raw_value}}, True)
-            ), patch.object(config, "read_machine_nix", return_value={}), patch.object(
-                config, "write_secrets_data"
+                secret_store, "read_secrets_data", return_value=({"home": {"passwd": raw_value}}, True)
+            ), patch.object(machine_nix, "read_machine_nix", return_value={}), patch.object(
+                secret_store, "write_secrets_data"
             ) as write, patch("envy.agent.managed_credential_paths", return_value={}):
-                report = config.refine_secrets(write=True, strict=True)
+                report = refine.refine_secrets(write=True, strict=True)
 
             self.assertFalse(report.ok)
             self.assertIn("home/passwd", report.errors)
             write.assert_not_called()
 
     def test_secret_refine_reports_non_string_types_without_writing(self):
-        field = next(field for field in config.SECRET_FIELDS if field.path == "home_passwd")
-        with patch.object(config, "SECRET_FIELDS", [field]), patch.object(
-            config, "read_secrets_data", return_value=({"home": {"passwd": 12345}}, True)
-        ), patch.object(config, "read_machine_nix", return_value={}), patch.object(
-            config, "write_secrets_data"
+        field = next(field for field in refine.SECRET_FIELDS if field.path == "home_passwd")
+        with patch.object(refine, "SECRET_FIELDS", [field]), patch.object(
+            secret_store, "read_secrets_data", return_value=({"home": {"passwd": 12345}}, True)
+        ), patch.object(machine_nix, "read_machine_nix", return_value={}), patch.object(
+            secret_store, "write_secrets_data"
         ) as write, patch("envy.agent.managed_credential_paths", return_value={}):
-            report = config.refine_secrets(write=False, strict=True)
+            report = refine.refine_secrets(write=False, strict=True)
 
         self.assertFalse(report.ok)
         self.assertIn("home/passwd", report.errors)
@@ -194,12 +195,12 @@ class SafetyWorkflowTests(unittest.TestCase):
             def write_keys(keys):
                 sops.write_text("\n".join(f"{label}: {value}" for label, value in keys.items()))
 
-            with patch.object(config, "ENVY_ROOT", root), patch.object(config, "SOPS_YAML", sops), patch.object(
-                config, "SECRETS_FILE", secret
-            ), patch.object(config, "AGE_KEY_FILE", age_key), patch.object(
-                config, "DEVICE_LABEL_FILE", device
+            with patch.object(updates, "ENVY_ROOT", root), patch.object(updates, "SOPS_YAML", sops), patch.object(
+                updates, "SECRETS_FILE", secret
+            ), patch.object(updates, "AGE_KEY_FILE", age_key), patch.object(
+                updates, "DEVICE_LABEL_FILE", device
             ), patch.object(
-                config, "read_secrets_data", side_effect=AssertionError("old secrets must not be read")
+                secret_store, "read_secrets_data", side_effect=AssertionError("old secrets must not be read")
             ), patch("envy.keys.storage.AGE_KEY_FILE", age_key), patch(
                 "envy.keys.storage.generate_device_age_key",
                 side_effect=lambda: age_key.write_text("AGE-SECRET-KEY-NEW\n") or "age1new",
@@ -209,10 +210,10 @@ class SafetyWorkflowTests(unittest.TestCase):
                 "envy.keys.storage.read_sops_yaml_keys",
                 return_value={"device": "age1old", "recovery": "age1recovery"},
             ), patch("envy.keys.storage.write_sops_yaml_keys", side_effect=write_keys), patch.object(
-                config, "write_secrets_data", side_effect=RuntimeError("encrypt failed")
+                secret_store, "write_secrets_data", side_effect=RuntimeError("encrypt failed")
             ):
                 with self.assertRaises(RuntimeError):
-                    config.set_secret_value("llm/steps/apikey", "secret-value", replace=True)
+                    updates.set_secret_value("llm/steps/apikey", "secret-value", replace=True)
 
             self.assertEqual(sops.read_bytes(), original[sops])
             self.assertEqual(secret.read_bytes(), original[secret])
@@ -225,13 +226,13 @@ class SafetyWorkflowTests(unittest.TestCase):
             secret = root / "secrets.yaml"
             secret.write_text("value: ENC[AES256_GCM,data:x]\nsops:\n  age: []\n")
             original = secret.read_bytes()
-            with patch.object(config, "SECRETS_DIR", root), patch.object(
-                config, "SECRETS_FILE", secret
+            with patch.object(secret_store, "SECRETS_DIR", root), patch.object(
+                secret_store, "SECRETS_FILE", secret
             ), patch("envy.keys.storage.read_sops_yaml_keys", return_value={"device": "age1test"}), patch.object(
-                config, "run_cmd", side_effect=RuntimeError("encrypt failed")
+                secret_store, "run_cmd", side_effect=RuntimeError("encrypt failed")
             ):
                 with self.assertRaises(RuntimeError):
-                    config.write_secrets_data({"plain": "must-not-land"})
+                    secret_store.write_secrets_data({"plain": "must-not-land"})
             self.assertEqual(secret.read_bytes(), original)
             self.assertNotIn(b"must-not-land", secret.read_bytes())
 
@@ -527,7 +528,7 @@ sops:
                 )
 
     def test_secret_set_help_allows_stdin_but_not_positional_value(self):
-        result = CliRunner().invoke(config.app, ["secret-set", "--help"])
+        result = CliRunner().invoke(cli.app, ["secret-set", "--help"])
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("--stdin", result.output)
         self.assertNotIn("[VALUE]", result.output)

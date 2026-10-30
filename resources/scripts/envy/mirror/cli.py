@@ -10,7 +10,7 @@ import typer
 from rich.table import Table
 
 from envy import log
-from envy.config import machine_config_file, read_mirror_overrides, write_mirror_overrides
+from envy.config.machine_nix import machine_config_file, read_mirror_overrides, write_mirror_overrides
 from envy.evaluation import machine_manifest
 from envy.jsonio import emit, emit_error
 # Reach probes through their module so tests can replace network access there.

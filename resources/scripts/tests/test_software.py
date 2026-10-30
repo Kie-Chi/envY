@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from envy import config
+from envy.config import machine_nix, refine
 from envy.software import audit, model, planner, policy, policy_text
 
 
@@ -732,10 +732,10 @@ class SoftwarePolicyTests(unittest.TestCase):
         with self.assertRaises(model.SoftwarePolicyError):
             policy.read_managed_exclusions(self.machine)
 
-        with patch.object(config, "machine_config_file", return_value=self.machine), patch.object(
-            config, "machine_manifest", return_value=None
+        with patch.object(machine_nix, "machine_config_file", return_value=self.machine), patch.object(
+            refine, "machine_manifest", return_value=None
         ):
-            report = config.refine_software_policy()
+            report = refine.refine_software_policy()
         self.assertFalse(report.ok)
 
     def test_invalid_managed_include_content_is_rejected(self):
@@ -750,10 +750,10 @@ class SoftwarePolicyTests(unittest.TestCase):
         with self.assertRaises(model.SoftwarePolicyError):
             policy.read_managed_policy(self.machine)
 
-        with patch.object(config, "machine_config_file", return_value=self.machine), patch.object(
-            config, "machine_manifest", return_value=None
+        with patch.object(machine_nix, "machine_config_file", return_value=self.machine), patch.object(
+            refine, "machine_manifest", return_value=None
         ):
-            report = config.refine_software_policy()
+            report = refine.refine_software_policy()
         self.assertFalse(report.ok)
 
     def test_audit_finds_machine_include_exclude_pair(self):

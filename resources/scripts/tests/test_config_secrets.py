@@ -9,7 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from envy import config
+from envy.config import cli, machine_nix, refine, secret_store, updates
 
 
 CIPHERTEXT = (
@@ -26,6 +26,16 @@ def mode(path: Path) -> int:
     return stat.S_IMODE(path.stat().st_mode)
 
 
+def start_config_patch(test: unittest.TestCase, name: str, value) -> None:
+    """Patch a name in every envy.config module that looks it up."""
+    holders = [module for module in (cli, machine_nix, refine, secret_store, updates) if hasattr(module, name)]
+    test.assertTrue(holders, name)
+    for module in holders:
+        patcher = patch.object(module, name, value)
+        patcher.start()
+        test.addCleanup(patcher.stop)
+
+
 class SensitivePermissionTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -40,12 +50,10 @@ class SensitivePermissionTests(unittest.TestCase):
         self.backup.write_text("AGE-SECRET-KEY-OLD\n")
         self.backup.chmod(0o644)
         for name, value in (("AGE_KEY_DIR", self.age_dir), ("AGE_KEY_FILE", self.key)):
-            patcher = patch.object(config, name, value)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+            start_config_patch(self, name, value)
 
     def test_check_reports_unsafe_modes_without_changing_them(self):
-        report = config.refine_sensitive_permissions(write=False)
+        report = refine.refine_sensitive_permissions(write=False)
 
         self.assertFalse(report.ok)
         self.assertEqual(
@@ -55,12 +63,12 @@ class SensitivePermissionTests(unittest.TestCase):
         self.assertEqual((mode(self.age_dir), mode(self.key), mode(self.backup)), (0o755, 0o644, 0o644))
 
     def test_refine_hardens_the_key_directory_key_and_backups(self):
-        report = config.refine_sensitive_permissions(write=True)
+        report = refine.refine_sensitive_permissions(write=True)
 
         self.assertTrue(report.ok)
         self.assertTrue(report.changed)
         self.assertEqual((mode(self.age_dir), mode(self.key), mode(self.backup)), (0o700, 0o600, 0o600))
-        self.assertFalse(config.refine_sensitive_permissions(write=True).changed)
+        self.assertFalse(refine.refine_sensitive_permissions(write=True).changed)
 
 
 class SecretRefineTests(unittest.TestCase):
@@ -72,33 +80,28 @@ class SecretRefineTests(unittest.TestCase):
         self.secrets_dir.mkdir()
         self.secret = self.secrets_dir / "secrets.yaml"
         self.secret.write_text(CIPHERTEXT)
-        field = next(field for field in config.SECRET_FIELDS if field.path == "home_passwd")
+        field = next(field for field in refine.SECRET_FIELDS if field.path == "home_passwd")
         self.field = replace(field, required=False, validators=[], default_fn=lambda: "")
         self.data = {}
         self.decrypt_ok = True
         self.credentials = {}
         self.written = []
 
-        def start(name, value):
-            patcher = patch.object(config, name, value)
-            self.addCleanup(patcher.stop)
-            patcher.start()
-
-        start("SECRETS_DIR", self.secrets_dir)
-        start("SECRETS_FILE", self.secret)
-        start("SECRET_FIELDS", [self.field])
-        start("OBSOLETE_SECRET_PATHS", ["llm/retired/apikey"])
-        start("read_secrets_data", lambda **_: (self.data, self.decrypt_ok))
-        start("read_machine_nix", lambda *_: {})
-        start("write_secrets_data", lambda data: self.written.append(data))
+        start_config_patch(self, "SECRETS_DIR", self.secrets_dir)
+        start_config_patch(self, "SECRETS_FILE", self.secret)
+        start_config_patch(self, "SECRET_FIELDS", [self.field])
+        start_config_patch(self, "OBSOLETE_SECRET_PATHS", ["llm/retired/apikey"])
+        start_config_patch(self, "read_secrets_data", lambda **_: (self.data, self.decrypt_ok))
+        start_config_patch(self, "read_machine_nix", lambda *_: {})
+        start_config_patch(self, "write_secrets_data", lambda data: self.written.append(data))
         credentials = patch("envy.agent.managed_credential_paths", side_effect=lambda: dict(self.credentials))
         credentials.start()
         self.addCleanup(credentials.stop)
 
     def test_plaintext_leftovers_block_refinement_before_decryption(self):
         (self.secrets_dir / ".secrets-plain-crash.yaml").write_text("token: plain\n")
-        with patch.object(config, "read_secrets_data", side_effect=AssertionError("must not decrypt")):
-            report = config.refine_secrets(write=True)
+        with patch.object(secret_store, "read_secrets_data", side_effect=AssertionError("must not decrypt")):
+            report = refine.refine_secrets(write=True)
 
         self.assertEqual(report.errors, ["plaintext-secret-artifact"])
         self.assertEqual(self.written, [])
@@ -107,29 +110,29 @@ class SecretRefineTests(unittest.TestCase):
         (self.secrets_dir / ".secrets-plain-crash.yaml").write_text("token: plain\n")
         for replace_file in (False, True):
             with self.subTest(replace=replace_file), patch.object(
-                config, "read_secrets_data", side_effect=AssertionError("must not decrypt")
+                secret_store, "read_secrets_data", side_effect=AssertionError("must not decrypt")
             ), self.assertRaisesRegex(RuntimeError, "plaintext secret temporary files remain"):
-                config.set_secret_value("home/passwd", "new", replace=replace_file)
+                updates.set_secret_value("home/passwd", "new", replace=replace_file)
         self.assertEqual(self.written, [])
         self.assertEqual(self.secret.read_text(), CIPHERTEXT)
 
     def test_unreadable_or_undecryptable_secrets_are_errors(self):
-        with patch.object(config, "read_secrets_data", return_value=(None, False)):
-            self.assertEqual(config.refine_secrets(write=True).errors, ["secrets.yaml"])
+        with patch.object(secret_store, "read_secrets_data", return_value=(None, False)):
+            self.assertEqual(refine.refine_secrets(write=True).errors, ["secrets.yaml"])
 
         self.decrypt_ok = False
-        self.assertEqual(config.refine_secrets(write=True).errors, ["secrets.yaml"])
+        self.assertEqual(refine.refine_secrets(write=True).errors, ["secrets.yaml"])
         self.assertEqual(self.written, [])
 
     def test_missing_field_is_created_but_a_scalar_parent_is_rejected(self):
-        report = config.refine_secrets(write=True, strict=True)
+        report = refine.refine_secrets(write=True, strict=True)
         self.assertTrue(report.ok)
         self.assertEqual(report.added, ["home/passwd"])
         self.assertEqual(self.written, [{"home": {"passwd": ""}}])
 
         self.written.clear()
         self.data = {"home": "flat-string"}
-        blocked = config.refine_secrets(write=True, strict=True)
+        blocked = refine.refine_secrets(write=True, strict=True)
         self.assertIn("home/passwd", blocked.errors)
         self.assertEqual(self.written, [])
 
@@ -141,14 +144,14 @@ class SecretRefineTests(unittest.TestCase):
             "number": "llm/number/apikey",
         }
 
-        checked = config.refine_secrets(write=False)
+        checked = refine.refine_secrets(write=False)
         self.assertIn("credential:bad", checked.errors)
         self.assertIn("llm/missing/apikey", checked.errors)
         self.assertIn("llm/number/apikey", checked.errors)
         self.assertEqual(self.written, [])
 
         self.credentials.pop("bad")
-        refined = config.refine_secrets(write=True)
+        refined = refine.refine_secrets(write=True)
         self.assertTrue(refined.ok, refined.errors)
         self.assertEqual(self.written[-1]["llm"], {"missing": {"apikey": ""}, "number": {"apikey": "42"}})
         self.assertIn("llm/missing/apikey", refined.warnings)
@@ -156,11 +159,11 @@ class SecretRefineTests(unittest.TestCase):
     def test_obsolete_paths_are_reported_until_pruned(self):
         self.data = {"home": {"passwd": "set"}, "llm": {"retired": {"apikey": "old"}, "kept": "yes"}}
 
-        warned = config.refine_secrets(write=True)
+        warned = refine.refine_secrets(write=True)
         self.assertIn("llm/retired/apikey", warned.warnings)
         self.assertEqual(self.written, [])
 
-        pruned = config.refine_secrets(write=True, prune=True)
+        pruned = refine.refine_secrets(write=True, prune=True)
         self.assertEqual(pruned.removed, ["llm/retired/apikey"])
         self.assertEqual(self.written, [{"home": {"passwd": "set"}, "llm": {"kept": "yes"}}])
 
@@ -168,7 +171,7 @@ class SecretRefineTests(unittest.TestCase):
         self.data = {"llm": {"number": {"apikey": 7}}}
         self.credentials = {"bad": "not a path", "number": "llm/number/apikey"}
 
-        report = config.refine_secrets(write=True, strict=True)
+        report = refine.refine_secrets(write=True, strict=True)
 
         self.assertFalse(report.ok)
         self.assertEqual(self.written, [])
@@ -176,8 +179,8 @@ class SecretRefineTests(unittest.TestCase):
     def test_merging_secrets_requires_decryption(self):
         self.decrypt_ok = False
         with self.assertRaisesRegex(RuntimeError, "without decrypting"):
-            config.write_secrets_yaml({"home_passwd": "new"})
-        config.write_secrets_yaml({"home_passwd": "new"}, replace=True)
+            secret_store.write_secrets_yaml({"home_passwd": "new"})
+        secret_store.write_secrets_yaml({"home_passwd": "new"}, replace=True)
         self.assertEqual(self.written, [{"home": {"passwd": "new"}}])
 
 
@@ -191,8 +194,8 @@ class SecretEncryptionTests(unittest.TestCase):
         self.plain_dir = self.root / "tmp"
         self.plain_dir.mkdir()
         for target, value in (
-            (patch.object(config, "SECRETS_DIR", self.secrets_dir), None),
-            (patch.object(config, "SECRETS_FILE", self.secret), None),
+            (patch.object(secret_store, "SECRETS_DIR", self.secrets_dir), None),
+            (patch.object(secret_store, "SECRETS_FILE", self.secret), None),
             (patch.dict(os.environ, {"TMPDIR": str(self.plain_dir)}), None),
         ):
             target.start()
@@ -210,9 +213,9 @@ class SecretEncryptionTests(unittest.TestCase):
             output.write_text(CIPHERTEXT)
 
         with patch("envy.keys.storage.read_sops_yaml_keys", return_value={"device": "age1a", "recovery": "age1b"}), patch.object(
-            config, "run_cmd", side_effect=sops
+            secret_store, "run_cmd", side_effect=sops
         ):
-            config.write_secrets_data({"home": {"passwd": "plain-value"}})
+            secret_store.write_secrets_data({"home": {"passwd": "plain-value"}})
 
         self.assertEqual(seen["argv"][:6], ["sops", "--encrypt", "--config", "/dev/null", "--age", "age1a,age1b"])
         # Plaintext is staged outside the checkout, which path: flakes copy.
@@ -233,10 +236,10 @@ class SecretEncryptionTests(unittest.TestCase):
             Path(argv[argv.index("--output") + 1]).write_text("home:\n  passwd: plain-value\n")
 
         with patch("envy.keys.storage.read_sops_yaml_keys", return_value={"device": "age1a"}), patch.object(
-            config, "run_cmd", side_effect=sops
+            secret_store, "run_cmd", side_effect=sops
         ):
             with self.assertRaisesRegex(RuntimeError, "not encrypted"):
-                config.write_secrets_data({"home": {"passwd": "plain-value"}})
+                secret_store.write_secrets_data({"home": {"passwd": "plain-value"}})
 
         self.assertEqual(self.secret.read_text(), CIPHERTEXT)
         self.assertEqual(list(self.plain_dir.iterdir()), [])
@@ -251,10 +254,10 @@ class SecretEncryptionTests(unittest.TestCase):
             raise subprocess.CalledProcessError(1, argv)
 
         with patch("envy.keys.storage.read_sops_yaml_keys", return_value={"device": "age1a"}), patch.object(
-            config, "run_cmd", side_effect=sops
+            secret_store, "run_cmd", side_effect=sops
         ):
             with self.assertRaises(subprocess.CalledProcessError):
-                config.write_secrets_data({"home": {"passwd": "plain-value"}})
+                secret_store.write_secrets_data({"home": {"passwd": "plain-value"}})
 
         self.assertEqual(self.secret.read_text(), CIPHERTEXT)
         self.assertEqual(list(self.plain_dir.iterdir()), [])
@@ -262,10 +265,10 @@ class SecretEncryptionTests(unittest.TestCase):
 
     def test_encryption_requires_a_recipient(self):
         with patch("envy.keys.storage.read_sops_yaml_keys", return_value={}), patch.object(
-            config, "run_cmd", side_effect=AssertionError("must not run sops")
+            secret_store, "run_cmd", side_effect=AssertionError("must not run sops")
         ):
             with self.assertRaisesRegex(RuntimeError, "No age recipients"):
-                config.write_secrets_data({})
+                secret_store.write_secrets_data({})
         self.assertFalse(self.secret.exists())
 
 

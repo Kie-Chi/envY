@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from envy import config
+from envy.config import cli, machine_nix, refine, updates
 from envy.schemas.common.config import (
     COMMON_MACHINE_FIELDS,
     OBSOLETE_MACHINE_KEYS as COMMON_OBSOLETE_MACHINE_KEYS,
@@ -24,13 +24,13 @@ class DarwinMachineConfigTests(unittest.TestCase):
     def setUp(self):
         # This fixture exercises Darwin-only boolean and obsolete fields even
         # when the cross-platform suite is running on a Linux worker.
-        self.schema_patch = patch.multiple(
-            config,
-            MACHINE_FIELDS=DARWIN_MACHINE_SCHEMA,
-            OBSOLETE_MACHINE_KEYS=DARWIN_OBSOLETE_MACHINE_KEYS,
-        )
-        self.schema_patch.start()
-        self.addCleanup(self.schema_patch.stop)
+        schema = {"MACHINE_FIELDS": DARWIN_MACHINE_SCHEMA, "OBSOLETE_MACHINE_KEYS": DARWIN_OBSOLETE_MACHINE_KEYS}
+        for module in (cli, machine_nix, refine, updates):
+            schema_patch = patch.multiple(
+                module, **{name: value for name, value in schema.items() if hasattr(module, name)}
+            )
+            schema_patch.start()
+            self.addCleanup(schema_patch.stop)
         self.tempdir = tempfile.TemporaryDirectory()
         self.root = Path(self.tempdir.name)
         self.machines = self.root / "hosts" / "darwin"
@@ -50,7 +50,7 @@ class DarwinMachineConfigTests(unittest.TestCase):
         self.tempdir.cleanup()
 
     def values(self):
-        values = {field.path: field.default_fn() for field in config.MACHINE_FIELDS}
+        values = {field.path: field.default_fn() for field in machine_nix.MACHINE_FIELDS}
         values["envy.user.name"] = "chi"
         values["envy.user.home"] = "/Users/chi"
         values["envy.repository.path"] = "/Users/chi/.envy"
@@ -61,33 +61,33 @@ class DarwinMachineConfigTests(unittest.TestCase):
 
     def machine_file_patch(self):
         return patch.object(
-            config,
+            machine_nix,
             "versioned_machine_file",
             side_effect=lambda machine_id=None: self.machines / f"{machine_id or 'test-mac'}.nix",
         )
 
     def test_writer_preserves_hand_maintained_machine_policy(self):
         with self.machine_file_patch(), patch.object(
-            config, "current_machine_id", return_value="test-mac"
-        ), patch.object(config, "set_device_machine_id"):
-            config.write_machine_nix(self.values())
+            machine_nix, "current_machine_id", return_value="test-mac"
+        ), patch.object(machine_nix, "set_device_machine_id"):
+            machine_nix.write_machine_nix(self.values())
 
         text = self.machine.read_text()
         self.assertIn('envy.software.nix.packages.exclude = [ "okular" ];', text)
-        self.assertIn(config.MANAGED_START, text)
+        self.assertIn(machine_nix.MANAGED_START, text)
         self.assertIn("envy.darwin.services.mihomo.tun = false;", text)
 
     def test_second_write_replaces_only_managed_block(self):
         values = self.values()
         with self.machine_file_patch(), patch.object(
-            config, "current_machine_id", return_value="test-mac"
-        ), patch.object(config, "set_device_machine_id"):
-            config.write_machine_nix(values)
+            machine_nix, "current_machine_id", return_value="test-mac"
+        ), patch.object(machine_nix, "set_device_machine_id"):
+            machine_nix.write_machine_nix(values)
             values["envy.vscode.mode"] = "local"
-            config.write_machine_nix(values)
+            machine_nix.write_machine_nix(values)
 
         text = self.machine.read_text()
-        self.assertEqual(text.count(config.MANAGED_START), 1)
+        self.assertEqual(text.count(machine_nix.MANAGED_START), 1)
         self.assertIn('envy.vscode.mode = "local";', text)
         self.assertIn('envy.software.nix.packages.exclude = [ "okular" ];', text)
 
@@ -97,23 +97,25 @@ class DarwinMachineConfigTests(unittest.TestCase):
             "envy.mirrors.overrides.npm.registry": "https://registry.npmmirror.com",
         }
         with self.machine_file_patch(), patch.object(
-            config, "current_machine_id", return_value="test-mac"
-        ), patch.object(config, "set_device_machine_id"):
-            config.write_machine_nix(self.values())
-            config.write_mirror_overrides(overrides)
-            config.set_config_value("envy.vscode.mode", "local")
-            config.write_mirror_overrides({
+            machine_nix, "current_machine_id", return_value="test-mac"
+        ), patch.object(updates, "current_machine_id", return_value="test-mac"), patch.object(
+            machine_nix, "set_device_machine_id"
+        ):
+            machine_nix.write_machine_nix(self.values())
+            machine_nix.write_mirror_overrides(overrides)
+            updates.set_config_value("envy.vscode.mode", "local")
+            machine_nix.write_mirror_overrides({
                 "envy.mirrors.overrides.npm.source": "chsrc:npm/huawei",
                 "envy.mirrors.overrides.npm.registry": "https://mirrors.huaweicloud.com/repository/npm/",
             })
 
             text = self.machine.read_text()
-            self.assertEqual(text.count(config.MIRROR_MANAGED_START), 1)
+            self.assertEqual(text.count(machine_nix.MIRROR_MANAGED_START), 1)
             self.assertIn('envy.vscode.mode = "local";', text)
             self.assertIn("chsrc:npm/huawei", text)
             self.assertNotIn("npmmirror", text)
             self.assertEqual(
-                config.read_mirror_overrides(),
+                machine_nix.read_mirror_overrides(),
                 {
                     "envy.mirrors.overrides.npm.source": "chsrc:npm/huawei",
                     "envy.mirrors.overrides.npm.registry": "https://mirrors.huaweicloud.com/repository/npm/",
@@ -134,19 +136,19 @@ class DarwinMachineConfigTests(unittest.TestCase):
 """
         )
         with self.machine_file_patch(), patch.object(
-            config, "current_machine_id", return_value="test-mac"
+            machine_nix, "current_machine_id", return_value="test-mac"
         ):
             self.assertEqual(
-                config.read_mirror_overrides(),
+                machine_nix.read_mirror_overrides(),
                 {"envy.mirrors.overrides.npm.source": "chsrc:npm/huawei"},
             )
 
     def test_reader_understands_strings_and_booleans(self):
         with self.machine_file_patch(), patch.object(
-            config, "current_machine_id", return_value="test-mac"
-        ), patch.object(config, "set_device_machine_id"):
-            config.write_machine_nix(self.values())
-            values = config.read_machine_nix()
+            machine_nix, "current_machine_id", return_value="test-mac"
+        ), patch.object(machine_nix, "set_device_machine_id"):
+            machine_nix.write_machine_nix(self.values())
+            values = machine_nix.read_machine_nix()
 
         self.assertEqual(values["envy.user.name"], "chi")
         self.assertEqual(values["envy.darwin.services.mihomo.tun"], "false")
@@ -155,18 +157,20 @@ class DarwinMachineConfigTests(unittest.TestCase):
         values = self.values()
         values.pop("envy.darwin.services.mihomo.tun")
         with self.machine_file_patch(), patch.object(
-            config, "current_machine_id", return_value="test-mac"
-        ), patch.object(config, "set_device_machine_id"):
-            config.write_machine_nix(values)
+            machine_nix, "current_machine_id", return_value="test-mac"
+        ), patch.object(machine_nix, "set_device_machine_id"):
+            machine_nix.write_machine_nix(values)
         self.assertIn("envy.darwin.services.mihomo.tun = false;", self.machine.read_text())
 
     def test_set_value_persists_habit_policy_through_managed_machine_block(self):
         with self.machine_file_patch(), patch.object(
-            config, "current_machine_id", return_value="test-mac"
-        ), patch.object(config, "set_device_machine_id"):
-            config.write_machine_nix(self.values())
-            config.set_config_value("envy.habits.terminalScratchpad.gesture", "F8")
-            values = config.read_machine_nix()
+            machine_nix, "current_machine_id", return_value="test-mac"
+        ), patch.object(updates, "current_machine_id", return_value="test-mac"), patch.object(
+            machine_nix, "set_device_machine_id"
+        ):
+            machine_nix.write_machine_nix(self.values())
+            updates.set_config_value("envy.habits.terminalScratchpad.gesture", "F8")
+            values = machine_nix.read_machine_nix()
 
         self.assertEqual(values["envy.habits.terminalScratchpad.gesture"], "F8")
         self.assertIn(
@@ -184,9 +188,9 @@ class DarwinMachineConfigTests(unittest.TestCase):
             )
         )
         with self.machine_file_patch(), patch.object(
-            config, "current_machine_id", return_value="test-mac"
-        ), patch.object(config, "set_device_machine_id"):
-            config.write_machine_nix(self.values())
+            machine_nix, "current_machine_id", return_value="test-mac"
+        ), patch.object(machine_nix, "set_device_machine_id"):
+            machine_nix.write_machine_nix(self.values())
 
         text = self.machine.read_text()
         self.assertNotIn("envy.darwin.proxy.mode", text)

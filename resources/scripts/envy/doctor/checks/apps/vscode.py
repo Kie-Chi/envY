@@ -4,7 +4,7 @@ These are invoked via the checker registry when an AppSpec declares
 checkers=["vscode_sync", "vscode_extensions"].
 """
 
-from envy.config import read_machine_nix
+from envy.config.machine_nix import read_machine_nix
 from envy.doctor.model import (
     SECTION_AUTH,
     SECTION_CONFIG,

@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from envy import config, utils
+from envy import utils
+from envy.config import machine_nix, refine
 
 
 class DeviceMetadataTests(unittest.TestCase):
@@ -24,9 +25,9 @@ class DeviceMetadataTests(unittest.TestCase):
     def patches(self):
         return (
             patch.object(utils, "DEVICE_LABEL_FILE", self.metadata),
-            patch.object(config, "DEVICE_LABEL_FILE", self.metadata),
+            patch.object(refine, "DEVICE_LABEL_FILE", self.metadata),
             patch.object(
-                config,
+                machine_nix,
                 "versioned_machine_file",
                 side_effect=lambda machine_id=None: self.machines / f"{machine_id or 'test-mac'}.nix",
             ),
@@ -47,8 +48,8 @@ class DeviceMetadataTests(unittest.TestCase):
         self.metadata.write_text('[device]\nsops_label = "test-mac"\n')
         patches = self.patches()
         with patches[0], patches[1], patches[2], patch.dict(os.environ, {"ENVY_MACHINE": "test-mac"}):
-            report = config.refine_device_metadata(write=True)
-            check = config.refine_device_metadata(write=False)
+            report = refine.refine_device_metadata(write=True)
+            check = refine.refine_device_metadata(write=False)
             values = utils.read_device_metadata()
 
         self.assertTrue(report.ok)
@@ -61,7 +62,7 @@ class DeviceMetadataTests(unittest.TestCase):
         self.metadata.write_text("test-mac\n")
         patches = self.patches()
         with patches[0], patches[1], patches[2]:
-            report = config.refine_device_metadata(write=True)
+            report = refine.refine_device_metadata(write=True)
 
         self.assertFalse(report.ok)
         self.assertEqual(self.metadata.read_text(), "test-mac\n")
@@ -93,7 +94,7 @@ class DeviceMetadataTests(unittest.TestCase):
         self.metadata.write_text(invalid)
         patches = self.patches()
         with patches[0], patches[1], patches[2]:
-            report = config.refine_device_metadata(write=False)
+            report = refine.refine_device_metadata(write=False)
 
         self.assertFalse(report.ok)
         self.assertEqual(self.metadata.read_text(), invalid)

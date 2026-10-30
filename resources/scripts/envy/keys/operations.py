@@ -60,7 +60,7 @@ def run_sops_updatekeys(*, age_key_file: Path | None = None) -> None:
         return
     if not is_sops_encrypted(SECRETS_FILE):
         raise SecretSafetyError("refusing updatekeys: secrets/secrets.yaml is not sops-encrypted")
-    from envy.config import read_secrets_data, write_secrets_data
+    from envy.config.secret_store import read_secrets_data, write_secrets_data
     data, decrypt_ok = read_secrets_data(age_key_file=age_key_file)
     if data is None or not decrypt_ok:
         raise SecretSafetyError("refusing updatekeys: cannot decrypt secrets/secrets.yaml")

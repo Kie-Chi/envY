@@ -3,13 +3,12 @@
 from pathlib import Path
 
 from envy import _source_info
-from envy.config import (
+from envy.config.machine_nix import machine_config_file, read_machine_nix
+from envy.config.secret_store import (
     _MISSING,
     _lookup_nested,
     _secret_scalar_text,
     _secret_type_name,
-    machine_config_file,
-    read_machine_nix,
     read_secrets_data,
 )
 from envy.evaluation import machine_manifest, manifest_settings
@@ -309,7 +308,7 @@ def _check_secret_write_capability() -> list[CheckResult]:
     with --age) before they surface as a rolled-back rotate/setup. Never touches
     the real secrets.yaml.
     """
-    from envy.config import SECRETS_DIR, _sops_encrypt_argv
+    from envy.config.secret_store import SECRETS_DIR, _sops_encrypt_argv
     from envy.keys.storage import read_sops_yaml_keys
 
     recipients = ",".join(read_sops_yaml_keys().values())

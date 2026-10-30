@@ -10,7 +10,7 @@ from typing import Any
 
 import typer
 
-from envy.config import read_machine_nix, read_mirror_overrides
+from envy.config.machine_nix import read_machine_nix, read_mirror_overrides
 from envy.mirror.cache import MirrorCache
 
 

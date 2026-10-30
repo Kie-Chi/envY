@@ -9,7 +9,7 @@ from envy import log
 from envy.remote_agent import app as remote_agent_app
 from envy.agent import app as agent_app
 from envy import _check_schema_api
-from envy.config import app as config_app
+from envy.config.cli import app as config_app
 from envy.doctor import app as doctor_app
 from envy.habit import app as habit_app
 from envy.journal import show_log

@@ -11,7 +11,7 @@ from pathlib import Path
 import typer
 
 from envy import log
-from envy.config import read_machine_nix
+from envy.config.machine_nix import read_machine_nix
 from envy.process import run_process
 from envy.utils import ENVY_ROOT, esudo
 

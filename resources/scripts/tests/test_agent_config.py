@@ -8,7 +8,9 @@ from unittest.mock import patch
 import typer
 from typer.testing import CliRunner
 
-from envy import agent, config
+from envy import agent
+from envy.config import cli as config_cli
+from envy.config import machine_nix, refine, updates
 from envy.agent import (
     _read_values, _render, _runtime_change_kind, _runtime_env, _runtime_pi_models, _set, _write_values, refine_managed,
 )
@@ -133,10 +135,10 @@ class AgentConfigTests(unittest.TestCase):
             )
             before = path.read_bytes()
             for write in (False, True):
-                with patch.object(config, "machine_config_file", return_value=path), patch.object(
+                with patch.object(machine_nix, "machine_config_file", return_value=path), patch.object(
                     agent, "log"
                 ) as logger:
-                    report = config.refine_agents(write=write, strict=False)
+                    report = refine.refine_agents(write=write, strict=False)
                     self.assertFalse(report.ok)
                     diagnostic = str(logger.error.call_args_list)
                     self.assertIn("envy.agents.pi.additionalSettings", diagnostic)
@@ -145,15 +147,17 @@ class AgentConfigTests(unittest.TestCase):
                     self.assertEqual(path.read_bytes(), before)
 
     def test_config_entries_share_strict_validation(self):
-        for command, write in ((config.cmd_check, False), (config.cmd_doctor, False), (config.cmd_refine, True)):
-            with patch.object(config, "refine_all", return_value=config.RefineReport()) as refine:
+        for command, write in (
+            (config_cli.cmd_check, False), (config_cli.cmd_doctor, False), (config_cli.cmd_refine, True),
+        ):
+            with patch.object(refine, "refine_all", return_value=refine.RefineReport()) as refine_all:
                 if write:
                     command(prune=False)
                 else:
                     command()
-                self.assertEqual(refine.call_args.kwargs["write"], write)
-                self.assertTrue(refine.call_args.kwargs["strict"])
-                self.assertTrue(refine.call_args.kwargs["include_secrets"])
+                self.assertEqual(refine_all.call_args.kwargs["write"], write)
+                self.assertTrue(refine_all.call_args.kwargs["strict"])
+                self.assertTrue(refine_all.call_args.kwargs["include_secrets"])
 
     def test_list_settings_use_valid_nix_lists_through_both_commands(self):
         from envy.main import cli
@@ -164,8 +168,8 @@ class AgentConfigTests(unittest.TestCase):
             path.write_text("{ ... }: {\n" + outside + "}\n")
             with patch.object(agent, "machine_config_file", return_value=path), patch.object(
                 agent, "offer_mutation_commit"
-            ), patch.object(config, "machine_config_file", return_value=path), patch.object(
-                config, "offer_mutation_commit"
+            ), patch.object(machine_nix, "machine_config_file", return_value=path), patch.object(
+                config_cli, "offer_mutation_commit"
             ):
                 _write_values({"envy.agents.pi.adapter": "pi"})
                 for command in ("agent", "config"):
@@ -214,7 +218,7 @@ class AgentConfigTests(unittest.TestCase):
                     for command in ("config", "agent"):
                         with self.subTest(value=value, command=command):
                             if command == "config":
-                                config.set_config_value(key, value, quiet=True)
+                                updates.set_config_value(key, value, quiet=True)
                             else:
                                 agent.cmd_set(key, value, json_output=False, yes=True)
                             self.assertIs(_read_values(path)[key], value == "true")
@@ -297,18 +301,18 @@ class AgentConfigTests(unittest.TestCase):
             path.write_text("{ ... }: {\n}\n")
             with patch("envy.agent.machine_config_file", return_value=path):
                 _write_values({"envy.agents.pi.adapter": "pi"})
-                config.set_config_value("envy.agents.pi.api", "openai-responses", quiet=True)
+                updates.set_config_value("envy.agents.pi.api", "openai-responses", quiet=True)
                 result = refine_managed(write=False)
                 self.assertEqual(result["errors"], [])
                 self.assertEqual(_read_values(path)["envy.agents.pi.api"], "openai-responses")
-                config.set_config_value("envy.agents.pi.api", "anthropic-messages", quiet=True)
+                updates.set_config_value("envy.agents.pi.api", "anthropic-messages", quiet=True)
                 self.assertEqual(_read_values(path)["envy.agents.pi.api"], "anthropic-messages")
-                config.set_config_value("envy.agents.pi.api", "null", quiet=True)
+                updates.set_config_value("envy.agents.pi.api", "null", quiet=True)
                 self.assertIsNone(_read_values(path)["envy.agents.pi.api"])
                 before = path.read_text()
                 for invalid in ("responses", "", "openai-codex-responses"):
                     with self.subTest(api=invalid), self.assertRaises(typer.BadParameter):
-                        config.set_config_value("envy.agents.pi.api", invalid, quiet=True)
+                        updates.set_config_value("envy.agents.pi.api", invalid, quiet=True)
                     self.assertEqual(path.read_text(), before)
 
     def test_render_round_trips_additional_settings(self):
@@ -396,37 +400,37 @@ class AgentConfigTests(unittest.TestCase):
     def machine_fixture(self, *, managed_config=False):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as patches:
             path = Path(directory) / "machine.nix"
-            values = {field.path: field.default_fn() for field in config.MACHINE_FIELDS}
+            values = {field.path: field.default_fn() for field in machine_nix.MACHINE_FIELDS}
             values["envy.git.email"] = "test@example.com"
             # Refining an unmarked fixture also fills defaults. Do not depend
             # on the sandbox's hostname command producing a valid email.
-            email_field = next(field for field in config.MACHINE_FIELDS if field.path == "envy.git.email")
+            email_field = next(field for field in machine_nix.MACHINE_FIELDS if field.path == "envy.git.email")
             patches.enter_context(patch.object(email_field, "default_fn", return_value="test@example.com"))
-            body = config._render_machine_block(values) if managed_config else ""
+            body = machine_nix._render_machine_block(values) if managed_config else ""
             path.write_text(
                 '{ ... }: {\n' + body + '\n'
                 + '  envy.git.email = "test@example.com";\n'
                 + '  envy.software.nix.packages.exclude = [ "keep-me" ];\n}\n'
             )
-            for target in ("envy.config.machine_config_file", "envy.agent.machine_config_file"):
+            for target in ("envy.config.machine_nix.machine_config_file", "envy.agent.machine_config_file"):
                 patches.enter_context(patch(target, return_value=path))
-            patches.enter_context(patch.object(config, "set_device_machine_id"))
-            patches.enter_context(patch.object(config, "refine_device_metadata", return_value=config.RefineReport()))
-            patches.enter_context(patch.object(config, "refine_sensitive_permissions", return_value=config.RefineReport()))
-            patches.enter_context(patch.object(config, "refine_software_policy", return_value=config.RefineReport()))
+            patches.enter_context(patch.object(machine_nix, "set_device_machine_id"))
+            patches.enter_context(patch.object(refine, "refine_device_metadata", return_value=refine.RefineReport()))
+            patches.enter_context(patch.object(refine, "refine_sensitive_permissions", return_value=refine.RefineReport()))
+            patches.enter_context(patch.object(refine, "refine_software_policy", return_value=refine.RefineReport()))
             yield path
 
     def test_refine_all_creates_managed_blocks_and_keeps_hand_policy(self):
         for managed in (False, True):
             with self.subTest(managed=managed), self.machine_fixture(managed_config=managed) as path:
-                report = config.refine_all(write=True, include_secrets=False)
+                report = refine.refine_all(write=True, include_secrets=False)
                 self.assertTrue(report.ok)
                 self.assertTrue(report.changed)
                 self.assertEqual(_read_values(path), agent._initial_values())
                 text = path.read_text()
-                self.assertIn(config.MANAGED_START, text)
+                self.assertIn(machine_nix.MANAGED_START, text)
                 self.assertIn('envy.software.nix.packages.exclude = [ "keep-me" ];', text)
-                again = config.refine_all(write=True, include_secrets=False)
+                again = refine.refine_all(write=True, include_secrets=False)
                 self.assertTrue(again.ok)
                 self.assertFalse(again.changed)
                 self.assertEqual(path.read_text(), text)
@@ -442,7 +446,7 @@ class AgentConfigTests(unittest.TestCase):
                 "envy.agents.codex.model": "gpt-6.1-sol",
             }
             _write_values(current)
-            report = config.refine_all(write=True, include_secrets=False)
+            report = refine.refine_all(write=True, include_secrets=False)
             self.assertTrue(report.ok)
             self.assertEqual(_read_values(path), current)
 
@@ -450,7 +454,7 @@ class AgentConfigTests(unittest.TestCase):
         with self.machine_fixture(managed_config=True) as path:
             _write_values({"envy.agents.codex.endpoint": "unknown"})
             before = path.read_text()
-            report = config.refine_all(write=True, include_secrets=False)
+            report = refine.refine_all(write=True, include_secrets=False)
             self.assertFalse(report.ok)
             self.assertEqual(path.read_text(), before)
 

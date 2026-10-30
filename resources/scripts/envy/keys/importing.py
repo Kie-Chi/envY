@@ -142,7 +142,7 @@ def key_import(
     previous_recovery_private = None
     if register:
         if SECRETS_FILE.exists():
-            from envy.config import read_secrets_data
+            from envy.config.secret_store import read_secrets_data
             old_data, old_ok = read_secrets_data()
             if old_ok:
                 previous_secrets = old_data
@@ -184,10 +184,10 @@ def key_import(
         except (CommandError, OSError, RuntimeError, ValueError):
             log.warn("key", "registered device cannot decrypt existing recovery-key.age; left it unchanged")
     if previous_secrets is not None:
-        from envy.config import write_secrets_data
+        from envy.config.secret_store import write_secrets_data
         write_secrets_data(previous_secrets)
     elif SECRETS_FILE.exists():
-        from envy.config import read_secrets_data
+        from envy.config.secret_store import read_secrets_data
         _, secrets_accessible = read_secrets_data()
         if secrets_accessible:
             operations.run_sops_updatekeys()

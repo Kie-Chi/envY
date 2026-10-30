@@ -9,7 +9,8 @@ from rich.panel import Panel
 from rich.table import Table
 
 from envy import log
-from envy.config import read_machine_nix, read_secrets_yaml
+from envy.config.machine_nix import read_machine_nix
+from envy.config.secret_store import read_secrets_yaml
 from envy.doctor.runner import DEFAULT_CHECKS, exit_code, run_sections
 from envy.evaluation import (
     last_manifest_error,

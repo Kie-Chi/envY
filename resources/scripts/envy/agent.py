@@ -30,7 +30,9 @@ from envy.agent_completion import (
     complete_profile_names,
 )
 
-from envy.config import _escape_nix_string, machine_config_file, read_secrets_data, set_secret_value
+from envy.config.machine_nix import _escape_nix_string, machine_config_file
+from envy.config.secret_store import read_secrets_data
+from envy.config.updates import set_secret_value
 from envy.evaluation import invalidate_machine_manifest, machine_manifest
 from envy.jsonio import emit, emit_error
 from envy.mutation import offer_mutation_commit

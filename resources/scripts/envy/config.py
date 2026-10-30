@@ -366,7 +366,7 @@ def _sops_encrypt_argv(recipients: str, out: str, src: str) -> list[str]:
     `--config /dev/null` makes the explicit `--age` recipient list authoritative
     and decouples encryption from `.sops.yaml` creation_rules. sops 3.13+ rejects
     an encrypt whose target path matches no creation rule even when `--age` is
-    given, which broke re-encrypting the `.secrets-plain-*` temp file. Keeping
+    given, which broke re-encrypting the plaintext temp file. Keeping
     this in one place ensures the doctor write-capability probe uses identical
     flags.
     """

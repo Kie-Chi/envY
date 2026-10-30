@@ -2,6 +2,7 @@
 
 import os
 import stat
+import subprocess
 import tempfile
 import unittest
 from dataclasses import replace
@@ -101,6 +102,16 @@ class SecretRefineTests(unittest.TestCase):
 
         self.assertEqual(report.errors, ["plaintext-secret-artifact"])
         self.assertEqual(self.written, [])
+
+    def test_plaintext_leftovers_block_secret_writes_before_decryption(self):
+        (self.secrets_dir / ".secrets-plain-crash.yaml").write_text("token: plain\n")
+        for replace_file in (False, True):
+            with self.subTest(replace=replace_file), patch.object(
+                config, "read_secrets_data", side_effect=AssertionError("must not decrypt")
+            ), self.assertRaisesRegex(RuntimeError, "plaintext secret temporary files remain"):
+                config.set_secret_value("home/passwd", "new", replace=replace_file)
+        self.assertEqual(self.written, [])
+        self.assertEqual(self.secret.read_text(), CIPHERTEXT)
 
     def test_unreadable_or_undecryptable_secrets_are_errors(self):
         with patch.object(config, "read_secrets_data", return_value=(None, False)):
@@ -204,6 +215,9 @@ class SecretEncryptionTests(unittest.TestCase):
             config.write_secrets_data({"home": {"passwd": "plain-value"}})
 
         self.assertEqual(seen["argv"][:6], ["sops", "--encrypt", "--config", "/dev/null", "--age", "age1a,age1b"])
+        # Plaintext is staged outside the checkout, which path: flakes copy.
+        self.assertEqual(Path(seen["argv"][-1]).parent, self.plain_dir)
+        self.assertEqual(Path(seen["argv"][-2]).parent, self.secrets_dir)
         self.assertEqual(seen["plain_mode"], 0o600)
         self.assertIn("plain-value", seen["plain"])
         self.assertEqual(self.secret.read_text(), CIPHERTEXT)
@@ -222,6 +236,24 @@ class SecretEncryptionTests(unittest.TestCase):
             config, "run_cmd", side_effect=sops
         ):
             with self.assertRaisesRegex(RuntimeError, "not encrypted"):
+                config.write_secrets_data({"home": {"passwd": "plain-value"}})
+
+        self.assertEqual(self.secret.read_text(), CIPHERTEXT)
+        self.assertEqual(list(self.plain_dir.iterdir()), [])
+        self.assertEqual(sorted(path.name for path in self.secrets_dir.iterdir()), ["secrets.yaml"])
+
+    def test_failed_sops_keeps_the_ciphertext_and_removes_the_plaintext(self):
+        self.secrets_dir.mkdir()
+        self.secret.write_text(CIPHERTEXT)
+
+        def sops(argv):
+            Path(argv[argv.index("--output") + 1]).write_text("partial")
+            raise subprocess.CalledProcessError(1, argv)
+
+        with patch("envy.key.read_sops_yaml_keys", return_value={"device": "age1a"}), patch.object(
+            config, "run_cmd", side_effect=sops
+        ):
+            with self.assertRaises(subprocess.CalledProcessError):
                 config.write_secrets_data({"home": {"passwd": "plain-value"}})
 
         self.assertEqual(self.secret.read_text(), CIPHERTEXT)

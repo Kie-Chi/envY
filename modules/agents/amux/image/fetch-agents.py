@@ -6,19 +6,40 @@ with the registry's sha512 integrity; nothing is installed unless it matches.
 
 import base64
 import hashlib
+import http.client
 import io
 import os
 import subprocess
 import tarfile
+import time
+import urllib.error
 import urllib.request
 
 TRIPLES = {"arm64": "aarch64-unknown-linux-musl", "amd64": "x86_64-unknown-linux-musl"}
+ATTEMPTS = 4
+BACKOFF = 5  # seconds before the first retry, doubled after each one
 
 
-def fetch(url: str) -> bytes:
-    print(f"fetch {url}", flush=True)
-    with urllib.request.urlopen(url, timeout=900) as response:
-        return response.read()
+def transient(error: Exception) -> bool:
+    """Throttled or dropped transfers are retried; other HTTP refusals are final."""
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code == 429 or error.code >= 500
+    return True
+
+
+def fetch(url: str, *, sleep=time.sleep) -> bytes:
+    delay = BACKOFF
+    for attempt in range(1, ATTEMPTS + 1):
+        print(f"fetch {url}", flush=True)
+        try:
+            with urllib.request.urlopen(url, timeout=900) as response:
+                return response.read()
+        except (OSError, http.client.HTTPException) as error:
+            if attempt == ATTEMPTS or not transient(error):
+                raise
+            print(f"fetch failed ({error!r}); retrying in {delay}s", flush=True)
+            sleep(delay)
+            delay *= 2
 
 
 def verify(data: bytes, integrity: str, name: str) -> None:

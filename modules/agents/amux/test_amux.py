@@ -1,12 +1,18 @@
 """Unit checks for the amux host client: input filtering, mounts, and commands."""
 
+import base64
+import contextlib
+import hashlib
+import http.client
 import importlib.util
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -16,6 +22,13 @@ spec = importlib.util.spec_from_file_location(
 amux = importlib.util.module_from_spec(spec)
 sys.modules["amux"] = amux
 spec.loader.exec_module(amux)
+
+fetch_spec = importlib.util.spec_from_file_location(
+    "fetch_agents",
+    Path(os.environ.get("FETCH_AGENTS_PATH", str(Path(__file__).with_name("image") / "fetch-agents.py"))),
+)
+fetch_agents = importlib.util.module_from_spec(fetch_spec)
+fetch_spec.loader.exec_module(fetch_agents)
 
 
 class InputFilterTests(unittest.TestCase):
@@ -374,6 +387,60 @@ class AgentVersionTests(unittest.TestCase):
         self.assertEqual(args["CLAUDE_URL"], "https://npm.test/c.tgz")
         self.assertEqual(args["CODEX_INTEGRITY"], "sha512-x")
         self.assertEqual(args["BASE_IMAGE"], "b")
+
+
+class FetchAgentsTests(unittest.TestCase):
+    """The image build downloads agent packages from a registry that throttles."""
+
+    URL = "https://npm.test/c.tgz"
+
+    def http_error(self, code):
+        return urllib.error.HTTPError(self.URL, code, "refused", {}, None)
+
+    def fetch(self, *outcomes):
+        """Fetch while each request yields the next outcome: bytes or an error."""
+        pending = list(outcomes)
+        self.requests, self.sleeps = 0, []
+
+        def urlopen(url, timeout):
+            self.assertEqual(url, self.URL)
+            self.requests += 1
+            outcome = pending.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return contextlib.nullcontext(io.BytesIO(outcome))
+
+        with mock.patch.object(fetch_agents.urllib.request, "urlopen", urlopen), \
+                contextlib.redirect_stdout(io.StringIO()):
+            return fetch_agents.fetch(self.URL, sleep=self.sleeps.append)
+
+    def test_dropped_or_throttled_transfers_are_retried_with_backoff(self):
+        package = self.fetch(BrokenPipeError(), http.client.IncompleteRead(b"x"), self.http_error(429), b"pkg")
+        self.assertEqual(package, b"pkg")
+        self.assertEqual(self.requests, 4)
+        self.assertEqual(self.sleeps, [5, 10, 20])
+        self.assertEqual(self.fetch(self.http_error(503), b"pkg"), b"pkg")
+
+    def test_the_last_failure_is_raised_once_attempts_run_out(self):
+        with self.assertRaises(ConnectionResetError):
+            self.fetch(*[ConnectionResetError()] * fetch_agents.ATTEMPTS)
+        self.assertEqual(self.requests, fetch_agents.ATTEMPTS)
+        self.assertEqual(self.sleeps, [5, 10, 20])
+
+    def test_refusals_and_bad_urls_are_not_retried(self):
+        for error in (self.http_error(404), self.http_error(403), ValueError("unknown url type")):
+            with self.subTest(error=error):
+                with self.assertRaises(type(error)):
+                    self.fetch(error, b"pkg")
+                self.assertEqual((self.requests, self.sleeps), (1, []))
+
+    def test_packages_must_match_their_registry_integrity(self):
+        digest = base64.b64encode(hashlib.sha512(b"pkg").digest()).decode()
+        fetch_agents.verify(b"pkg", f"sha512-{digest}", "Codex")
+        for data, integrity in ((b"tampered", f"sha512-{digest}"), (b"pkg", "sha1-abc")):
+            with self.subTest(integrity=integrity):
+                with self.assertRaises(SystemExit):
+                    fetch_agents.verify(data, integrity, "Codex")
 
 
 COMPLETION = Path(os.environ.get("AMUX_COMPLETION", Path(__file__).with_name("_amux")))

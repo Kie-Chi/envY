@@ -1,9 +1,13 @@
+import itertools
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import typer
+
 from envy.config import cli, machine_nix, refine, updates
+from envy.nix_literals import LiteralReader
 from envy.schemas.common.config import (
     COMMON_MACHINE_FIELDS,
     OBSOLETE_MACHINE_KEYS as COMMON_OBSOLETE_MACHINE_KEYS,
@@ -195,6 +199,76 @@ class DarwinMachineConfigTests(unittest.TestCase):
         text = self.machine.read_text()
         self.assertNotIn("envy.darwin.proxy.mode", text)
         self.assertNotIn("envy.darwin.proxy.tun", text)
+
+    def test_unknown_or_invalid_values_are_rejected_without_writing(self):
+        with self.machine_file_patch(), patch.object(
+            machine_nix, "current_machine_id", return_value="test-mac"
+        ), patch.object(machine_nix, "set_device_machine_id"):
+            machine_nix.write_machine_nix(self.values())
+        before = self.machine.read_text()
+        cases = (
+            ("envy.vscode.nope", "local", "unknown managed machine field: envy.vscode.nope"),
+            ("envy.git.email", "not-an-email", "invalid value for envy.git.email"),
+        )
+        for (path, value, message), quiet in itertools.product(cases, (False, True)):
+            with self.subTest(path=path, quiet=quiet), self.machine_file_patch(), patch.object(
+                machine_nix, "set_device_machine_id"
+            ) as select, patch.object(updates, "log") as log:
+                with self.assertRaisesRegex(typer.BadParameter, message):
+                    updates.set_config_value(path, value, quiet=quiet)
+                self.assertEqual(self.machine.read_text(), before)
+                select.assert_not_called()
+                log.ok.assert_not_called()
+                if path == "envy.vscode.nope":
+                    self.assertEqual(log.error.called, not quiet)
+
+    def test_writers_select_the_machine_they_wrote(self):
+        other = self.machines / "other-mac.nix"
+        other.write_text(self.machine.read_text())
+        overrides = {"envy.mirrors.overrides.npm.source": "chsrc:npm/huawei"}
+        with self.machine_file_patch(), patch.object(
+            machine_nix, "current_machine_id", return_value="test-mac"
+        ), patch.object(machine_nix, "set_device_machine_id") as select:
+            machine_nix.write_machine_nix(self.values())
+            machine_nix.write_mirror_overrides(overrides)
+            self.assertEqual([call.args for call in select.call_args_list], [("test-mac",), ("test-mac",)])
+
+            select.reset_mock()
+            before = self.machine.read_text()
+            machine_nix.write_machine_nix(self.values(), machine_id="other-mac")
+            machine_nix.write_mirror_overrides(overrides, machine_id="other-mac")
+            self.assertEqual([call.args for call in select.call_args_list], [("other-mac",), ("other-mac",)])
+            self.assertEqual(self.machine.read_text(), before)
+            self.assertIn(machine_nix.MANAGED_START, other.read_text())
+            self.assertIn(machine_nix.MIRROR_MANAGED_START, other.read_text())
+
+            select.reset_mock()
+            with self.assertRaises(FileNotFoundError):
+                machine_nix.write_machine_nix(self.values(), machine_id="missing-mac")
+            with self.assertRaises(FileNotFoundError):
+                machine_nix.write_mirror_overrides(overrides, machine_id="missing-mac")
+            select.assert_not_called()
+
+    def test_mirror_values_are_nix_escaped_and_paths_are_checked(self):
+        value = 'https://mirror.example/a"b\\c/'
+        with self.machine_file_patch(), patch.object(
+            machine_nix, "current_machine_id", return_value="test-mac"
+        ), patch.object(machine_nix, "set_device_machine_id"):
+            machine_nix.write_mirror_overrides({"envy.mirrors.overrides.npm.registry": value})
+            line = next(
+                line for line in self.machine.read_text().splitlines()
+                if line.lstrip().startswith("envy.mirrors.overrides.npm.registry")
+            )
+            literal = line.split("=", 1)[1].strip().removesuffix(";")
+            self.assertEqual(literal, r'"https://mirror.example/a\"b\\c/"')
+            self.assertEqual(LiteralReader(literal).value(), value)
+            self.assertEqual(machine_nix.read_mirror_overrides(), {"envy.mirrors.overrides.npm.registry": value})
+
+            before = self.machine.read_text()
+            for path in ("envy.mirrors.overrides.npm registry", "envy.vscode.mode", 'envy.mirrors.overrides.x";'):
+                with self.subTest(path=path), self.assertRaisesRegex(ValueError, "invalid mirror override path"):
+                    machine_nix.write_mirror_overrides({path: "x"})
+            self.assertEqual(self.machine.read_text(), before)
 
 
 if __name__ == "__main__":

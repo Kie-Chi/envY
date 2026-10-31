@@ -9,7 +9,12 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+from typer.testing import CliRunner
+
+from envy import main, utils
 from envy.config import cli, machine_nix, refine, secret_store, updates
+
+from key_harness import KeyWorld
 
 
 CIPHERTEXT = (
@@ -270,6 +275,87 @@ class SecretEncryptionTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "No age recipients"):
                 secret_store.write_secrets_data({})
         self.assertFalse(self.secret.exists())
+
+
+class SecretReplaceTests(unittest.TestCase):
+    """envy config secret-set --replace on a new device, against fake age and sops."""
+
+    real = False
+
+    def setUp(self):
+        self.world = KeyWorld(self, real=self.real)
+        # A new device: the repository has keys, this machine has neither a
+        # key nor a stored label.
+        self.world.build(local=None, label=None)
+        commit = patch.object(cli, "offer_mutation_commit")
+        self.commit = commit.start()
+        self.addCleanup(commit.stop)
+
+    def replace(self, value="new-secret"):
+        return CliRunner().invoke(
+            main.cli, ["config", "secret-set", "--stdin", "--replace", "llm/steps/apikey"], input=value + "\n",
+        )
+
+    def encryptions(self):
+        return [call for call in self.world.calls if call[:2] == ["sops", "--encrypt"]]
+
+    def test_replace_registers_this_device_and_writes_only_the_new_secret(self):
+        before = self.world.keys()
+        sealed = self.world.recovery_file.read_bytes()
+
+        result = self.replace()
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        device = self.world.generated[-1]
+        # The label derives from the host name, which real tools do not fake.
+        label = utils.read_device_metadata()["sops_label"]
+        self.assertNotIn(label, before)
+        self.assertEqual(self.world.keys(), before | {label: device.public})
+        self.assertEqual(self.world.read_secrets(device), {"llm": {"steps": {"apikey": "new-secret"}}})
+        self.assertNotIn("new-secret", result.output)
+        registered = set(self.world.keys().values())
+        for identity in self.world.known():
+            self.assertEqual(self.world.can_open(self.world.secrets, identity), identity.public in registered)
+        # This device cannot open recovery-key.age, so a registered device
+        # reseals it later, as after envy key import on a new device.
+        self.assertEqual(self.world.recovery_file.read_bytes(), sealed)
+        self.assertEqual(self.world.leftovers(), [])
+        self.commit.assert_called_once_with(
+            [self.world.sops_yaml, self.world.secrets], "chore(secrets): replace llm/steps/apikey",
+        )
+
+    def test_replace_refuses_a_reserved_stored_label_and_rolls_back(self):
+        utils.write_device_metadata(sops_label="recovery")
+        before = self.world.snapshot()
+
+        result = self.replace()
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("invalid or reserved device sops label", result.output)
+        self.assertIn("The new secrets file was not written", result.output)
+        self.assertEqual(self.world.snapshot(), before)
+        self.assertEqual(self.encryptions(), [])
+        self.assertEqual(self.world.leftovers(), [])
+        self.commit.assert_not_called()
+
+    def test_replace_refuses_the_recovery_label_even_if_label_resolution_returns_it(self):
+        # ensure_sops_label already rejects reserved labels; set_secret_value
+        # must still never register this device's key as the recovery key.
+        before = self.world.snapshot()
+        with patch("envy.keys.identity.ensure_sops_label", return_value="recovery"):
+            result = self.replace()
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("device sops label cannot be recovery", result.output)
+        self.assertEqual(self.world.snapshot(), before)
+        self.assertEqual(self.encryptions(), [])
+        self.commit.assert_not_called()
+
+
+class RealToolSecretReplaceTests(SecretReplaceTests):
+    """The same flows against the installed age and sops."""
+
+    real = True
 
 
 if __name__ == "__main__":

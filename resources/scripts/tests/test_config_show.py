@@ -1,12 +1,13 @@
 import io
 import json
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import typer
 from rich.console import Console
 
-from envy.config import cli, machine_nix, secret_store, updates
+from envy.config import cli, machine_nix, refine, secret_store, updates
 
 
 class ConfigShowTests(unittest.TestCase):
@@ -35,24 +36,29 @@ class ConfigShowTests(unittest.TestCase):
                 },
             }},
         }
-        output = io.StringIO()
-        console = Console(file=output, force_terminal=False, width=220)
+        # Calling the command directly leaves unset options as OptionInfo
+        # objects, so pass json_output explicitly to reach both renderers.
+        for json_output in (False, True):
+            output = io.StringIO()
+            console = Console(file=output, force_terminal=False, width=220)
+            with self.subTest(json_output=json_output), patch.object(
+                cli, "machine_manifest", return_value=manifest
+            ) as evaluate, patch.object(
+                machine_nix, "read_machine_nix", return_value={"envy.user.name": "source-user"}
+            ), patch.object(cli, "read_device_metadata", return_value={
+                "machine_id": "test-mac", "sops_label": "test_mac"
+            }), patch.object(secret_store, "read_secrets_yaml", return_value=({}, True)), patch.object(
+                cli.log, "console", console
+            ):
+                cli.cmd_show(refresh=False, json_output=json_output)
 
-        with patch.object(cli, "machine_manifest", return_value=manifest) as evaluate, patch.object(
-            machine_nix, "read_machine_nix", return_value={"envy.user.name": "source-user"}
-        ), patch.object(cli, "read_device_metadata", return_value={
-            "machine_id": "test-mac", "sops_label": "test_mac"
-        }), patch.object(secret_store, "read_secrets_yaml", return_value=({}, True)), patch.object(
-            cli.log, "console", console
-        ):
-            cli.cmd_show(refresh=False)
-
-        rendered = output.getvalue()
-        self.assertIn("evaluated-user", rendered)
-        self.assertNotIn("source-user", rendered)
-        self.assertNotIn("envy.software", rendered)
-        self.assertNotIn("include", rendered)
-        evaluate.assert_called_once_with(refresh=False)
+                rendered = output.getvalue()
+                self.assertIn("evaluated-user", rendered)
+                self.assertIn("envy config (evaluated)" if not json_output else '"source": "evaluated"', rendered)
+                self.assertNotIn("source-user", rendered)
+                self.assertNotIn("envy.software", rendered)
+                self.assertNotIn("include", rendered)
+                evaluate.assert_called_once_with(refresh=False)
 
     def test_json_output_reports_secret_presence_without_values(self):
         settings = {field.path: field.default_fn() for field in cli.MACHINE_FIELDS}
@@ -72,6 +78,28 @@ class ConfigShowTests(unittest.TestCase):
         self.assertTrue(payload["secrets"]["llm/steps/apikey"])
         self.assertEqual(payload["schemaVersion"], 1)
         self.assertEqual(payload["platform"], cli.platform_name())
+
+    def test_table_marks_secrets_set_or_empty_without_values(self):
+        settings = {field.path: field.default_fn() for field in cli.MACHINE_FIELDS}
+        output = io.StringIO()
+        console = Console(file=output, force_terminal=False, width=220)
+        with patch.object(cli, "machine_manifest", return_value={"schemaVersion": 2, "settings": settings}), patch.object(
+            cli, "read_device_metadata", return_value={"machine_id": "test-mac"}
+        ), patch.object(
+            secret_store, "read_secrets_yaml",
+            return_value=({"llm_steps_apikey": "top-secret", "home_passwd": ""}, True),
+        ), patch.object(cli.log, "console", console):
+            cli.cmd_show(refresh=False, json_output=False)
+
+        rendered = output.getvalue()
+        self.assertNotIn("top-secret", rendered)
+        rows = {
+            path: next(line for line in rendered.splitlines() if f" {path} " in line)
+            for path in ("llm/steps/apikey", "home/passwd")
+        }
+        self.assertIn("<set>", rows["llm/steps/apikey"])
+        self.assertIn("<empty>", rows["home/passwd"])
+        self.assertNotIn("<set>", rows["home/passwd"])
 
 
     def test_json_output_includes_field_choices_metadata(self):
@@ -263,6 +291,35 @@ class ConfigSetTests(unittest.TestCase):
         payload = json.loads(output.getvalue())
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["error"]["code"], "invalid-value")
+        commit.assert_not_called()
+
+
+class ConfigRefineTests(unittest.TestCase):
+    def test_refine_offers_one_commit_only_when_it_changed_something(self):
+        machine = Path("/repo/hosts/darwin/test-mac.nix")
+        for changed in (True, False):
+            with self.subTest(changed=changed), patch.object(
+                refine, "refine_all", return_value=refine.RefineReport(changed=changed)
+            ) as refine_all, patch.object(cli, "offer_mutation_commit") as commit, patch.object(
+                cli, "current_machine_id", return_value="test-mac"
+            ), patch.object(machine_nix, "machine_config_file", return_value=machine):
+                cli.cmd_refine(prune=True)
+
+            refine_all.assert_called_once_with(write=True, strict=True, include_secrets=True, prune=True)
+            if changed:
+                commit.assert_called_once_with([machine, cli.SECRETS_FILE], "chore(config): refine test-mac")
+            else:
+                commit.assert_not_called()
+
+    def test_failed_refine_exits_without_offering_a_commit(self):
+        report = refine.RefineReport(changed=True, errors=["home/passwd"])
+        with patch.object(refine, "refine_all", return_value=report), patch.object(
+            cli, "offer_mutation_commit"
+        ) as commit:
+            with self.assertRaises(typer.Exit) as raised:
+                cli.cmd_refine(prune=False)
+
+        self.assertEqual(raised.exception.exit_code, 1)
         commit.assert_not_called()
 
 

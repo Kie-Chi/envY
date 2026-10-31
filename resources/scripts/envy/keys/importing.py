@@ -15,29 +15,13 @@ from envy.utils import (
 from envy.secure_io import ensure_private_directory
 from envy.process import CommandError
 from envy.keys.storage import (
-    current_device_public_key as get_current_device_public_key,
     prepare_device_age_key,
     prepare_generated_device_age_key,
     commit_prepared_device_age_key,
     read_sops_yaml_keys,
 )
 from envy.keys.recovery import decrypt_recovery_key
-from envy.keys import operations, prompts, rotation
-
-
-def warn_if_device_key_is_recovery(pub: str, keys: dict) -> bool:
-    """Warn (non-blocking) when the device key equals the recovery key.
-
-    Using the recovery key as the device key defeats the offline-backup
-    separation the recovery key exists for. Returns True on overlap so callers
-    can offer remediation (rotation).
-    """
-    if pub and keys.get("recovery") == pub:
-        log.warn("key", "your device key is the same as the recovery key")
-        log.hint("The recovery key should be kept separate for offline backup.")
-        log.hint("Recommended: run 'envy key rotate' to generate an independent device key.")
-        return True
-    return False
+from envy.keys import operations, prompts
 
 
 @operations._transactional_key_files
@@ -200,23 +184,5 @@ def key_import(
     if "recovery" in keys and not RECOVERY_KEY_FILE.exists():
         log.warn("key", "recovery key is in .sops.yaml but secrets/recovery-key.age is missing")
         log.hint("Without recovery-key.age, you cannot export (envy key rr) the recovery private key from this device.")
-
-    # Warn if device key overlaps with recovery key
-    keys = read_sops_yaml_keys()
-    if warn_if_device_key_is_recovery(pub, keys):
-        if not RECOVERY_KEY_FILE.exists():
-            log.info("key", "the recovery private key needs to be sealed into secrets/recovery-key.age")
-            log.hint("Sealing encrypts the recovery private key with all device public keys")
-            log.warn("key", "if you skip sealing now, the recovery private key will be permanently lost after rotation")
-            if prompts.confirm("Seal recovery key into recovery-key.age?"):
-                rotation.key_seal_recovery()
-            else:
-                log.hint("Run: envy key seal-recovery")
-
-        if prompts.confirm("Rotate device key now?"):
-            rotation.key_rotate()
-            new_pub = get_current_device_public_key()
-            log.ok("key", "device key rotated", pubkey=new_pub)
-            return new_pub
 
     return pub

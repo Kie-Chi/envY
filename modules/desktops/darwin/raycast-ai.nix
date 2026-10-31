@@ -25,7 +25,6 @@
   # --- sops template: raycast AI providers with encrypted keys ---
   sops.templates."raycast-providers" = {
     path = "${config.home.homeDirectory}/.config/raycast/ai/providers.yaml";
-    mode = "0644";
     content = ''
       providers:
         - id: stepfun

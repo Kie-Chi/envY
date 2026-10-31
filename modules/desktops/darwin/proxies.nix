@@ -16,7 +16,6 @@ in
 
   sops.templates."mihomo-config" = lib.mkIf mihomoEnabled {
     path = "${config.home.homeDirectory}/.config/mihomo/config.yaml.tmpl";
-    mode = "0644";
     content = ''
       ${builtins.readFile ../../../files/proxies/mihomo_tailscale.yaml}
 

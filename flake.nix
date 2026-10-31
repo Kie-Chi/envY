@@ -341,7 +341,25 @@
           touch "$out"
         '';
 
+      # Decrypted secrets and rendered templates must stay private to their
+      # owner on every machine; list the ones that grant group or other access.
+      exposedSecretFiles =
+        let
+          sopsConfigs =
+            lib.concatMap
+              (configuration:
+                [ configuration.config.sops ]
+                ++ map (home: home.sops) (builtins.attrValues configuration.config.home-manager.users))
+              (builtins.attrValues darwinConfigurations)
+            ++ map (configuration: configuration.config.sops) (builtins.attrValues homeConfigurations);
+          exposed = sops: kind:
+            lib.mapAttrsToList (name: file: "${kind}.${name} (${file.mode})")
+              (lib.filterAttrs (_: file: builtins.match "0?[0-7]00" file.mode == null) (sops.${kind} or { }));
+        in lib.unique (lib.concatMap (sops: exposed sops "secrets" ++ exposed sops "templates") sopsConfigs);
+
       mkSecretSafetyCheck = system:
+        assert lib.assertMsg (exposedSecretFiles == [ ])
+          "sops files readable beyond their owner: ${lib.concatStringsSep ", " exposedSecretFiles}";
         let
           pkgs = nixpkgs.legacyPackages.${system};
           python = pkgs.python3.withPackages (ps: [ ps.pyyaml ]);

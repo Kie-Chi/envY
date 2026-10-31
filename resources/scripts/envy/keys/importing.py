@@ -15,13 +15,44 @@ from envy.utils import (
 from envy.secure_io import ensure_private_directory
 from envy.process import CommandError
 from envy.keys.storage import (
+    current_device_public_key as get_current_device_public_key,
     prepare_device_age_key,
     prepare_generated_device_age_key,
     commit_prepared_device_age_key,
     read_sops_yaml_keys,
+    validate_device_label,
+    write_sops_yaml_keys,
 )
+from envy.keys.identity import sanitize_label, set_sops_label
 from envy.keys.recovery import decrypt_recovery_key
 from envy.keys import operations, prompts
+
+
+def _device_label_of(public_key: Optional[str], keys: dict[str, str]) -> Optional[str]:
+    """Return the device label registered for a public key, ignoring reserved entries."""
+    if not public_key:
+        return None
+    labels = [
+        label for label, value in keys.items()
+        if value == public_key
+        and label not in {"recovery", "recovery_new"}
+        and not label.startswith("envy_rotation_old_")
+    ]
+    return labels[0] if len(labels) == 1 else None
+
+
+def _replace_device_key(previous_label: str, public_key: str, label: Optional[str]) -> str:
+    """Move a device's recipient slot to its new key, dropping the old key."""
+    keys = read_sops_yaml_keys()
+    new_label = validate_device_label(sanitize_label(label) if label else previous_label)
+    if new_label != previous_label and new_label in keys:
+        raise ValueError(f"sops key label '{new_label}' belongs to another age key")
+    write_sops_yaml_keys({
+        (new_label if name == previous_label else name): (public_key if name == previous_label else value)
+        for name, value in keys.items()
+    })
+    set_sops_label(new_label)
+    return new_label
 
 
 @operations._transactional_key_files
@@ -39,7 +70,14 @@ def key_import(
 
     # If AGE_KEY_FILE already exists, confirm overwrite and backup before any write path
     if register and not prepared and AGE_KEY_FILE.exists() and (age_path or ssh_path or generate):
-        if not prompts.confirm(f"AGE_KEY_FILE already exists at {AGE_KEY_FILE}. Overwrite?"):
+        question = f"AGE_KEY_FILE already exists at {AGE_KEY_FILE}. Overwrite?"
+        existing_label = _device_label_of(get_current_device_public_key(), read_sops_yaml_keys())
+        if existing_label:
+            question = (
+                f"AGE_KEY_FILE already exists at {AGE_KEY_FILE} and is registered as '{existing_label}'. "
+                "Overwrite? An unregistered new key takes over that label and the old key is revoked."
+            )
+        if not prompts.confirm(question):
             log.warn("key", "import cancelled")
             return None
         backup_sensitive_file(AGE_KEY_FILE)
@@ -124,7 +162,20 @@ def key_import(
 
     previous_secrets = None
     previous_recovery_private = None
+    replaced_label = None
+    kept_label = None
     if register:
+        # A new key replaces the registered key of this device: the old key
+        # must lose access instead of staying an orphaned recipient. A key
+        # that is already registered keeps its own label and leaves the old
+        # one for the user to remove.
+        known_keys = read_sops_yaml_keys()
+        previous_label = _device_label_of(get_current_device_public_key(), known_keys)
+        if previous_label and known_keys[previous_label] != pub:
+            if pub in known_keys.values():
+                kept_label = previous_label
+            else:
+                replaced_label = previous_label
         if SECRETS_FILE.exists():
             from envy.config.secret_store import read_secrets_data
             old_data, old_ok = read_secrets_data()
@@ -138,6 +189,17 @@ def key_import(
                 )
             except (CommandError, OSError, RuntimeError, ValueError):
                 pass
+        if replaced_label:
+            # Revoking is complete only when every document is re-encrypted
+            # without the old key, which needs the old key to open it first.
+            for path, opened in ((SECRETS_FILE, previous_secrets), (RECOVERY_KEY_FILE, previous_recovery_private)):
+                if path.exists() and opened is None:
+                    staged_key.cleanup()
+                    log.hint("Reseal it from an authorized device first, or remove that label there.")
+                    raise RuntimeError(
+                        f"cannot revoke the old key of '{replaced_label}': it cannot open {path.name}, "
+                        "so that file cannot be re-encrypted without it"
+                    )
 
     if not register:
         log.ok("key", "device key prepared for setup", pubkey=pub[:20] + "...")
@@ -156,7 +218,10 @@ def key_import(
     # old ciphertext only when this identity can actually decrypt it; a new
     # device may be registering with an old ciphertext that must be resealed by
     # an already-authorized device.
-    current_label = operations.register_device_key(pub, label)
+    if replaced_label:
+        current_label = _replace_device_key(replaced_label, pub, label)
+    else:
+        current_label = operations.register_device_key(pub, label)
     keys = read_sops_yaml_keys()
     if previous_recovery_private is not None:
         from envy.keys.recovery import write_encrypted_recovery_key
@@ -179,6 +244,11 @@ def key_import(
             log.warn("key", "registered device cannot decrypt existing secrets.yaml; left it unchanged")
     log.ok("key", f"key imported and added to .sops.yaml as '{current_label}'")
     log.hint(f"Public key: {pub}")
+    if replaced_label:
+        log.warn("key", "previous device key revoked", label=replaced_label)
+    if kept_label:
+        log.warn("key", f"the previous key of this device is still registered as '{kept_label}'")
+        log.hint(f"Run 'envy key rm {kept_label}' if no device uses that key any more.")
 
     # Warn if recovery public key exists but recovery-key.age is missing
     if "recovery" in keys and not RECOVERY_KEY_FILE.exists():

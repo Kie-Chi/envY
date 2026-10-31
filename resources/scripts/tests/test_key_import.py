@@ -1,13 +1,15 @@
 """Key import, recovery commands, and key reports against fake, or real, age and sops."""
 
 import stat
+import subprocess
 import unittest
 from unittest.mock import patch
 
 from typer.testing import CliRunner
 
-from envy import main
+from envy import main, utils
 from envy.keys import importing, operations, prompts, rotation
+from envy.keys import recovery as key_recovery
 from envy.keys.storage import PreparedDeviceKey
 
 from key_harness import KeyWorld, real_tools_available
@@ -62,24 +64,65 @@ class ImportScenarios:
         self.assertEqual(world.read_recovery(tablet), world.identity("recovery").private)
         world.assert_consistent(self)
 
-    def test_a_key_generated_on_a_registered_device_keeps_access(self):
+    def test_a_key_generated_on_a_registered_device_revokes_the_old_key(self):
         world = self.world
         old = world.identity("laptop")
 
-        with patch.object(prompts, "confirm", return_value=True):
+        with patch.object(prompts, "confirm", return_value=True) as confirm:
             public = importing.key_import(generate=True)
 
         new = world.generated[-1]
         self.assertEqual(public, new.public)
+        self.assertIn("registered as 'laptop'", confirm.call_args.args[0])
         self.assertEqual(world.local_publics(), [new.public])
-        # A fresh label is derived; the previous recipient stays registered.
-        self.assertEqual(world.keys()["laptop"], old.public)
-        self.assertNotEqual(self.label_of(new.public), "laptop")
-        self.assertEqual(world.read_secrets(new), SECRETS)
-        self.assertEqual(world.read_recovery(new), world.identity("recovery").private)
+        # The new key takes over the label in place; the old key loses access.
+        self.assertEqual(world.keys(), {
+            "laptop": new.public,
+            "desk": world.identity("desk").public,
+            "recovery": world.identity("recovery").public,
+        })
+        self.assertEqual(utils.read_device_metadata()["sops_label"], "laptop")
+        self.assertFalse(world.can_open(world.secrets, old))
+        self.assertFalse(world.can_open(world.recovery_file, old))
+        for identity in (new, world.identity("desk")):
+            self.assertEqual(world.read_secrets(identity), SECRETS)
+            self.assertEqual(world.read_recovery(identity), world.identity("recovery").private)
         self.assertEqual(mode(world.age_key.with_name("keys.txt.bak")), 0o600)
         world.assert_consistent(self)
         self.assertEqual(world.leftovers(), [])
+
+    def test_an_imported_key_can_take_over_under_a_new_label(self):
+        world = self.world
+        old = world.identity("laptop")
+        tablet = world.identity("tablet")
+
+        with patch.object(prompts, "confirm", return_value=True):
+            public = importing.key_import(age_path=str(self.key_file("tablet.txt", tablet)), label="Tablet")
+
+        self.assertEqual(public, tablet.public)
+        self.assertEqual(list(world.keys()), ["tablet", "desk", "recovery"])
+        self.assertEqual(world.keys()["tablet"], tablet.public)
+        self.assertNotIn(old.public, world.keys().values())
+        self.assertEqual(utils.read_device_metadata()["sops_label"], "tablet")
+        self.assertIn("previous device key revoked", world.output.getvalue())
+        world.assert_consistent(self)
+        self.assertEqual(world.leftovers(), [])
+
+    def test_importing_another_registered_key_leaves_the_old_label_to_the_user(self):
+        world = self.world
+        laptop = world.identity("laptop")
+        desk = world.identity("desk")
+
+        with patch.object(prompts, "confirm", return_value=True):
+            public = importing.key_import(age_path=str(self.key_file("desk.txt", desk)))
+
+        self.assertEqual(public, desk.public)
+        self.assertEqual(world.keys()["laptop"], laptop.public)
+        self.assertEqual(utils.read_device_metadata()["sops_label"], "desk")
+        output = " ".join(world.output.getvalue().split())
+        self.assertIn("still registered as 'laptop'", output)
+        self.assertIn("envy key rm laptop", output)
+        world.assert_consistent(self)
 
     def test_preparing_without_registering_leaves_the_device_untouched(self):
         world = self.world
@@ -159,6 +202,60 @@ class FakeImportTests(ImportScenarios, KeyWorldTest):
                 self.assertIsNone(importing.key_import(**arguments))
                 self.assertEqual(world.snapshot(), before)
         self.assertEqual(world.leftovers(), [])
+
+    def test_a_replacing_import_refuses_what_it_cannot_complete(self):
+        world = self.world
+        tablet = self.key_file("tablet.txt", world.identity("tablet"))
+        others = [world.identity("desk").public, world.identity("recovery").public]
+
+        def unsealed_recovery():
+            key_recovery.write_encrypted_recovery_key(world.identity("recovery").private, others)
+
+        def unsealed_secrets():
+            world._write_sops(world.secrets, others, "home:\n  passwd: hunter2\n")
+
+        for label, prepare, error, message in (
+            ("desk", None, ValueError, "belongs to another age key"),
+            ("recovery", None, ValueError, "reserved"),
+            # The old key could keep access to what it cannot re-encrypt.
+            (None, unsealed_recovery, RuntimeError, "cannot open recovery-key.age"),
+            (None, unsealed_secrets, RuntimeError, "cannot open secrets.yaml"),
+        ):
+            with self.subTest(message=message):
+                world.build()
+                if prepare:
+                    prepare()
+                before = world.snapshot()
+                with patch.object(prompts, "confirm", return_value=True):
+                    with self.assertRaisesRegex(error, message):
+                        importing.key_import(age_path=str(tablet), label=label)
+                self.assertEqual(world.snapshot(), before)
+                self.assertEqual(world.leftovers(), [])
+
+    def test_each_failed_step_of_a_replacing_import_rolls_back(self):
+        world = self.world
+        with patch.object(prompts, "confirm", return_value=True):
+            importing.key_import(generate=True)
+        steps = sum(call[0] in {"age", "age-keygen", "sops"} for call in world.calls)
+        self.assertGreaterEqual(steps, 6)
+
+        for step in range(1, steps + 1):
+            world.build()
+            before = world.snapshot()
+            world.fail_at = step
+            with self.subTest(step=step):
+                try:
+                    with patch.object(prompts, "confirm", return_value=True):
+                        importing.key_import(generate=True)
+                except (subprocess.CalledProcessError, RuntimeError, ValueError):
+                    self.assertEqual(world.snapshot(), before)
+                else:
+                    # Only a probe of the old key may fail; the import then
+                    # cannot tell which recipient it replaces.
+                    self.assertEqual(world.failed[:2], ["age-keygen", "-y"])
+                world.fail_at = None
+                self.assertEqual(world.leftovers(), [])
+                world.assert_consistent(self)
 
     def test_the_recovery_identity_is_refused_as_a_device_key(self):
         world = self.world

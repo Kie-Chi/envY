@@ -124,12 +124,16 @@ def key_add_recovery(*, reencrypt_secrets: bool = True) -> None:
 
 @operations._transactional_key_files
 def key_seal_recovery(priv_path: Optional[str] = None) -> None:
-    """Encrypt a recovery private key into secrets/recovery-key.age."""
+    """Encrypt a recovery private key into secrets/recovery-key.age.
+
+    A given key file is always verified and sealed, replacing an existing
+    recovery-key.age; without one, an existing document is re-encrypted.
+    """
     keys = read_sops_yaml_keys()
     if "recovery" not in keys:
         raise RuntimeError("no recovery key in .sops.yaml; run: envy key add-recovery")
 
-    if RECOVERY_KEY_FILE.exists():
+    if not priv_path and RECOVERY_KEY_FILE.exists():
         log.warn("key", "recovery-key.age already exists, re-encrypting with updated key list")
         operations.reencrypt_recovery_key(keys)
         return

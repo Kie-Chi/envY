@@ -124,6 +124,25 @@ class ImportScenarios:
         self.assertIn("envy key rm laptop", output)
         world.assert_consistent(self)
 
+    def test_a_given_recovery_key_reseals_a_document_this_device_cannot_open(self):
+        world = self.world
+        laptop = world.identity("laptop")
+        recovery = world.identity("recovery")
+        key_recovery.write_encrypted_recovery_key(recovery.private, [world.identity("desk").public])
+        recovery_file = self.key_file("recovery.txt", recovery)
+        before = world.snapshot()
+
+        with self.assertRaises(subprocess.CalledProcessError):
+            rotation.key_seal_recovery()
+        self.assertEqual(world.snapshot(), before)
+
+        rotation.key_seal_recovery(str(recovery_file))
+
+        for identity in (laptop, world.identity("desk")):
+            self.assertEqual(world.read_recovery(identity), recovery.private)
+        world.assert_consistent(self)
+        self.assertEqual(world.leftovers(), [])
+
     def test_preparing_without_registering_leaves_the_device_untouched(self):
         world = self.world
         world.build(local=None, label=None)
@@ -297,6 +316,8 @@ class FakeImportTests(ImportScenarios, KeyWorldTest):
     def test_recovery_commands_refuse_unsafe_inputs(self):
         world = self.world
         stranger = self.key_file("stranger.txt", world.identity("stranger"))
+        not_a_key = world.inputs / "notes.txt"
+        not_a_key.write_text("# no identity here\n")
         cases = [
             # Without a secrets update, only this check stops a stranger from
             # adding a recovery recipient.
@@ -307,6 +328,13 @@ class FakeImportTests(ImportScenarios, KeyWorldTest):
              lambda: rotation.key_seal_recovery(str(stranger)), ValueError, "does not match"),
             ("seal a missing file", {"sealed": False}, None,
              lambda: rotation.key_seal_recovery(str(world.inputs / "missing")), FileNotFoundError, "not found"),
+            # A sealed document must not make a given key file go unchecked.
+            ("seal a missing file over a sealed key", {}, None,
+             lambda: rotation.key_seal_recovery(str(world.inputs / "missing")), FileNotFoundError, "not found"),
+            ("seal a key that is not the recovery key over a sealed key", {}, None,
+             lambda: rotation.key_seal_recovery(str(stranger)), ValueError, "does not match"),
+            ("seal a file without a key over a sealed key", {}, None,
+             lambda: rotation.key_seal_recovery(str(not_a_key)), ValueError, "does not contain"),
             ("seal from a device key", {"sealed": False}, None, rotation.key_seal_recovery, RuntimeError,
              "not the recovery key"),
             ("seal without a recovery key", {"recovery": False}, None, rotation.key_seal_recovery, RuntimeError,

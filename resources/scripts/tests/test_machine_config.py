@@ -250,17 +250,19 @@ class DarwinMachineConfigTests(unittest.TestCase):
             select.assert_not_called()
 
     def test_mirror_values_are_nix_escaped_and_paths_are_checked(self):
-        value = 'https://mirror.example/a"b\\c/'
+        value = 'https://mirror.example/a"b\\c/${x}'
         with self.machine_file_patch(), patch.object(
             machine_nix, "current_machine_id", return_value="test-mac"
         ), patch.object(machine_nix, "set_device_machine_id"):
-            machine_nix.write_mirror_overrides({"envy.mirrors.overrides.npm.registry": value})
+            # The second write replaces an existing block.
+            for written in ("placeholder", value):
+                machine_nix.write_mirror_overrides({"envy.mirrors.overrides.npm.registry": written})
             line = next(
                 line for line in self.machine.read_text().splitlines()
                 if line.lstrip().startswith("envy.mirrors.overrides.npm.registry")
             )
             literal = line.split("=", 1)[1].strip().removesuffix(";")
-            self.assertEqual(literal, r'"https://mirror.example/a\"b\\c/"')
+            self.assertEqual(literal, r'"https://mirror.example/a\"b\\c/\${x}"')
             self.assertEqual(LiteralReader(literal).value(), value)
             self.assertEqual(machine_nix.read_mirror_overrides(), {"envy.mirrors.overrides.npm.registry": value})
 
@@ -269,6 +271,52 @@ class DarwinMachineConfigTests(unittest.TestCase):
                 with self.subTest(path=path), self.assertRaisesRegex(ValueError, "invalid mirror override path"):
                     machine_nix.write_mirror_overrides({path: "x"})
             self.assertEqual(self.machine.read_text(), before)
+
+    def test_values_are_written_as_nix_literals(self):
+        value = 'Chi ${builtins.currentSystem} "q" \\ $${x}\n'
+        with self.machine_file_patch(), patch.object(
+            machine_nix, "current_machine_id", return_value="test-mac"
+        ), patch.object(machine_nix, "set_device_machine_id"):
+            machine_nix.write_machine_nix(self.values())
+            lines = len(self.machine.read_text().splitlines())
+            updates.set_config_value("envy.git.name", value, quiet=True)
+
+            text = self.machine.read_text()
+            self.assertEqual(len(text.splitlines()), lines)
+            line = next(line for line in text.splitlines() if line.lstrip().startswith("envy.git.name"))
+            literal = line.split("=", 1)[1].strip().removesuffix(";")
+            self.assertEqual(literal, r'"Chi \${builtins.currentSystem} \"q\" \\ $\${x}\n"')
+            self.assertEqual(LiteralReader(literal).value(), value)
+            self.assertEqual(machine_nix.read_machine_nix()["envy.git.name"], value)
+
+    def test_hand_written_interpolation_survives_rewrites_verbatim(self):
+        home = '"${config.home.homeDirectory}"'
+        registry = '"https://${mirrorHost}/npm/"'
+        # A legacy flat assignment moves into the managed block unchanged.
+        self.machine.write_text(self.machine.read_text().replace(
+            "  imports = [ ../default.nix ];\n",
+            f"  imports = [ ../default.nix ];\n  envy.user.home = {home};\n",
+        ))
+        with self.machine_file_patch(), patch.object(
+            machine_nix, "current_machine_id", return_value="test-mac"
+        ), patch.object(machine_nix, "set_device_machine_id"):
+            values = self.values()
+            values.pop("envy.user.home")
+            values.update(machine_nix.read_machine_nix())
+            machine_nix.write_machine_nix(values)
+            updates.set_config_value("envy.git.name", "Kie", quiet=True)
+            machine_nix.write_mirror_overrides({"envy.mirrors.overrides.npm.registry": "placeholder"})
+            self.machine.write_text(self.machine.read_text().replace('"placeholder"', registry))
+            machine_nix.write_mirror_overrides(
+                machine_nix.read_mirror_overrides() | {"envy.mirrors.overrides.pip.index": "https://pip.example/"}
+            )
+
+            text = self.machine.read_text()
+            self.assertEqual(text.count("envy.user.home ="), 1)
+            self.assertIn(f"  envy.user.home = {home};\n", text)
+            self.assertIn(f"  envy.mirrors.overrides.npm.registry = {registry};\n", text)
+            self.assertIn('  envy.git.name = "Kie";\n', text)
+            self.assertEqual(machine_nix.read_machine_nix()["envy.user.home"], home.strip('"'))
 
 
 if __name__ == "__main__":

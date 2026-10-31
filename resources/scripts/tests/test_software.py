@@ -738,6 +738,18 @@ class SoftwarePolicyTests(unittest.TestCase):
             report = refine.refine_software_policy()
         self.assertFalse(report.ok)
 
+    def test_interpolated_exclusions_are_rejected(self):
+        self.machine.write_text(
+            self.original.replace(
+                "  # Hand-written policy remains here.",
+                f'{policy_text.MANAGED_START}\n'
+                '  envy.software.nix.packages.exclude = [ "${pkgs.hello.pname}" ];\n'
+                f'{policy_text.MANAGED_END}',
+            )
+        )
+        with self.assertRaisesRegex(model.SoftwarePolicyError, "only literal strings"):
+            policy.read_managed_exclusions(self.machine)
+
     def test_invalid_managed_include_content_is_rejected(self):
         self.machine.write_text(
             self.original.replace(

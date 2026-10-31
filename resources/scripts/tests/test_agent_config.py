@@ -347,6 +347,22 @@ class AgentConfigTests(unittest.TestCase):
                 _write_values(values)
                 self.assertEqual(_read_values(path), values)
 
+    def test_render_writes_strings_as_nix_literals(self):
+        values = {
+            "envy.agents.codex.adapter": "codex",
+            "envy.agents.codex.model": 'step-${model} "q" \\ x',
+            "envy.agents.codex.aliases": ["${cx}"],
+        }
+        rendered = _render(values)
+        self.assertIn(r'envy.agents.codex.model = "step-\${model} \"q\" \\ x";', rendered)
+        self.assertIn(r'envy.agents.codex.aliases = [ "\${cx}" ];', rendered)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "machine.nix"
+            path.write_text("{ ... }: {\n}\n")
+            with patch("envy.agent.machine_config_file", return_value=path):
+                _write_values(values)
+                self.assertEqual(agent.read_managed_values(path), (values, True, []))
+
     def test_render_keeps_agent_block_separate(self):
         rendered = _render({"envy.agents.dsh.adapter": "openai-compatible-cli"})
         self.assertIn("BEGIN ENVY MANAGED AGENTS", rendered)

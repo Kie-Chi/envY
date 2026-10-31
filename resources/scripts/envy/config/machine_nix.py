@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 
 from envy.evaluation import invalidate_machine_manifest
+from envy.nix_literals import LiteralError, escape_string, unescape_string
 from envy.schemas.config import MACHINE_FIELDS, OBSOLETE_MACHINE_KEYS
 from envy.secure_io import atomic_write_text
 from envy.utils import (
@@ -19,12 +20,23 @@ MIRROR_MANAGED_START = "  # BEGIN ENVY MANAGED MIRROR OVERRIDES"
 MIRROR_MANAGED_END = "  # END ENVY MANAGED MIRROR OVERRIDES"
 
 
-def _escape_nix_string(value: str) -> str:
-    return str(value).replace("\\", "\\\\").replace('"', '\\"')
+class _Interpolation(str):
+    """Hand-written string source with Nix interpolation, kept verbatim."""
 
 
-def _unescape_nix_string(value: str) -> str:
-    return value.replace('\\"', '"').replace("\\\\", "\\")
+def _read_string(body: str) -> str:
+    try:
+        return unescape_string(body)
+    except LiteralError:
+        # An interpolation is an expression, not a value envY can re-escape.
+        # Keep its source so a rewrite of other fields preserves its meaning.
+        return _Interpolation(body)
+
+
+def _render_string(value) -> str:
+    if isinstance(value, _Interpolation):
+        return f'"{value}"'
+    return f'"{escape_string(str(value))}"'
 
 
 def _read_nix_assignments(path: Path) -> dict:
@@ -36,7 +48,7 @@ def _read_nix_assignments(path: Path) -> dict:
     for line in path.read_text().splitlines():
         string_match = string_pattern.match(line)
         if string_match:
-            values[string_match.group(1)] = _unescape_nix_string(string_match.group(2))
+            values[string_match.group(1)] = _read_string(string_match.group(2))
             continue
         bool_match = bool_pattern.match(line)
         if bool_match:
@@ -60,14 +72,15 @@ def _render_machine_block(values: dict) -> str:
         for f in MACHINE_FIELDS:
             if f.group != group:
                 continue
-            raw = str(values.get(f.path, f.default_fn()))
+            value = values.get(f.path, f.default_fn())
             if f.nix_type == "bool":
+                raw = str(value)
                 if raw.lower() not in {"true", "false"}:
                     raise ValueError(f"{f.path} must be true or false")
                 val = raw.lower()
                 lines.append(f"  {f.path} = {val};\n")
             else:
-                lines.append(f"  {f.path} = \"{_escape_nix_string(raw)}\";\n")
+                lines.append(f"  {f.path} = {_render_string(value)};\n")
     lines.append(MANAGED_END)
     return "".join(lines)
 
@@ -84,7 +97,8 @@ def write_machine_nix(values: dict, machine_id: str | None = None) -> None:
         rf"(?ms)^{re.escape(MANAGED_START)}$.*?^{re.escape(MANAGED_END)}$"
     )
     if managed_pattern.search(text):
-        updated = managed_pattern.sub(block, text, count=1)
+        # A callable keeps re from reading backslashes in block as escapes.
+        updated = managed_pattern.sub(lambda _: block, text, count=1)
     else:
         # Move flat assignments for managed fields into the controlled block
         # while leaving imports and all other machine policy untouched.
@@ -127,7 +141,7 @@ def read_mirror_overrides(machine_id: str | None = None) -> dict[str, str]:
     for line in match.group(0).splitlines():
         found = assignments.match(line)
         if found:
-            values[found.group(1)] = _unescape_nix_string(found.group(2))
+            values[found.group(1)] = _read_string(found.group(2))
     return values
 
 
@@ -139,7 +153,7 @@ def _render_mirror_override_block(values: dict[str, str]) -> str:
     for path, value in sorted(values.items()):
         if not re.fullmatch(r"envy\.mirrors\.overrides\.[A-Za-z0-9_.-]+", path):
             raise ValueError(f"invalid mirror override path: {path}")
-        lines.append(f'  {path} = "{_escape_nix_string(value)}";\n')
+        lines.append(f"  {path} = {_render_string(value)};\n")
     lines.append(MIRROR_MANAGED_END)
     return "".join(lines)
 
@@ -157,7 +171,7 @@ def write_mirror_overrides(
     block = _render_mirror_override_block(values)
     pattern = _mirror_managed_pattern()
     if pattern.search(text):
-        updated = pattern.sub(block, text, count=1)
+        updated = pattern.sub(lambda _: block, text, count=1)
     else:
         anchor = "  # END ENVY MANAGED CONFIG"
         anchor_index = text.find(anchor)

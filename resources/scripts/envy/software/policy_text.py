@@ -4,6 +4,7 @@ import json
 import re
 from typing import Any
 
+from envy.nix_literals import LiteralError, escape_string, unescape_string
 from envy.software.model import (
     GROUPS,
     ManagedInclude,
@@ -73,7 +74,7 @@ def render_managed_policy(
             elif group.ecosystem == "homebrew":
                 lines.append("[\n")
                 for item in includes:
-                    lines.append(f'    "{_escape_nix_string(item.name)}"\n')
+                    lines.append(f'    "{escape_string(item.name)}"\n')
                 lines.append("  ];\n")
             else:
                 payload = [item.to_selection() for item in includes]
@@ -86,7 +87,7 @@ def render_managed_policy(
         if names:
             lines.append(f"\n  {group.option}.exclude = [\n")
             for name in names:
-                lines.append(f'    "{_escape_nix_string(name)}"\n')
+                lines.append(f'    "{escape_string(name)}"\n')
             lines.append("  ];\n")
     lines.append(MANAGED_END)
     return "".join(lines)
@@ -371,7 +372,10 @@ def _parse_string_list(body: str, *, label: str = "exclusion") -> list[str]:
     for match in strings.finditer(body):
         if body[cursor:match.start()].strip():
             raise SoftwarePolicyError(f"{label} lists may contain only quoted strings")
-        values.append(_unescape_nix_string(match.group(1)))
+        try:
+            values.append(unescape_string(match.group(1)))
+        except LiteralError:
+            raise SoftwarePolicyError(f"{label} lists may contain only literal strings") from None
         cursor = match.end()
     if body[cursor:].strip():
         raise SoftwarePolicyError(f"{label} lists may contain only quoted strings")
@@ -420,11 +424,3 @@ def _ensure_module_argument(text: str, argument: str) -> str:
         )
     replacement = "{ " + ", ".join([argument, *tokens]) + " }:"
     return text[:header.start()] + header.group(1) + replacement + text[header.end():]
-
-
-def _escape_nix_string(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"').replace("${", "\\${")
-
-
-def _unescape_nix_string(value: str) -> str:
-    return value.replace('\\"', '"').replace("\\\\", "\\")

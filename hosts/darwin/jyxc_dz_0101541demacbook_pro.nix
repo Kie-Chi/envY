@@ -152,14 +152,14 @@
   envy.agents.codex.profile = "stepfun-openai-new";
   envy.agents.pi.adapter = "pi";
   envy.agents.pi.additionalSettings = builtins.fromJSON "{\"compaction\": {\"keepRecentTokens\": 27200, \"reserveTokens\": 40960}, \"defaultTools\": [\"+codemode\"]}";
-  envy.agents.pi.api = "anthropic-messages";
+  envy.agents.pi.api = "openai-responses";
   envy.agents.pi.contextWindow = 272000;
   envy.agents.pi.credential = "mp-new";
-  envy.agents.pi.endpoint = "stepfun-anthropic";
+  envy.agents.pi.endpoint = "stepfun-openai";
   envy.agents.pi.maxTokens = 128000;
-  envy.agents.pi.model = "claude-opus-5-5-qiye";
+  envy.agents.pi.model = "gpt-6.1-sol-qiye";
   envy.agents.pi.moreThinking = true;
-  envy.agents.pi.profile = "stepfun-anthropic";
+  envy.agents.pi.profile = "stepfun-openai-new";
   # END ENVY MANAGED AGENTS
 
 }

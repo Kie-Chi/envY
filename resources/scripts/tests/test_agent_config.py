@@ -97,6 +97,60 @@ class AgentConfigTests(unittest.TestCase):
         openai = _runtime_pi_models({}, {"api": "openai-responses", "model": "m"})
         self.assertNotIn("thinkingLevelMap", openai["providers"]["envy-pi"]["models"][0])
 
+    def test_runtime_pi_models_sol_excludes_unsupported_efforts(self):
+        for api in ("openai-completions", "openai-responses"):
+            for model in ("gpt-6.1-sol", "gpt-6.1-sol-qiye", "gpt-6.1-sol-2026-09-29"):
+                for more_thinking in (False, True):
+                    with self.subTest(api=api, model=model, more_thinking=more_thinking):
+                        data = _runtime_pi_models({}, {
+                            "api": api, "model": model, "moreThinking": more_thinking,
+                        })["providers"]["envy-pi"]["models"][0]
+                        expected = {"off": None, "minimal": None, "ultra": None}
+                        if more_thinking:
+                            expected.update({"xhigh": "xhigh", "max": "max"})
+                        self.assertEqual(data["thinkingLevelMap"], expected)
+
+    def test_runtime_pi_models_sol_mapping_respects_model_and_api_boundaries(self):
+        for model in ("gpt-6-astra", "gpt-6.1-solaris", None):
+            with self.subTest(model=model):
+                data = _runtime_pi_models({}, {
+                    "api": "openai-responses", "model": model, "moreThinking": True,
+                })["providers"]["envy-pi"]["models"][0]
+                self.assertEqual(data["thinkingLevelMap"], {"xhigh": "xhigh", "max": "max", "ultra": "ultra"})
+        data = _runtime_pi_models({}, {
+            "api": "anthropic-messages", "model": "gpt-6.1-sol", "moreThinking": True,
+        })["providers"]["envy-pi"]["models"][0]
+        self.assertEqual(data["thinkingLevelMap"], {"off": None, "xhigh": "xhigh", "max": "max", "ultra": "ultra"})
+
+    def test_refresh_runtime_keeps_sol_mapping_after_profile_switch(self):
+        values = {
+            "envy.agents.pi.adapter": "pi",
+            "envy.agents.pi.profile": "selected",
+            "envy.agents.pi.model": "old-model",
+            "envy.agents.pi.moreThinking": True,
+            "envy.agentProfiles.selected.endpoint": "test",
+            "envy.agentProfiles.selected.api": "openai-responses",
+            "envy.agentProfiles.selected.model": "gpt-6.1-sol-qiye",
+            "envy.llm.endpoints.test.baseUrl": "https://example.test/v1",
+            "envy.llm.endpoints.test.protocol": "openai-compatible",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            with patch.object(agent, "_RUNTIME_DIR", home / "runtime"), patch.object(
+                agent, "read_secrets_data", return_value=({}, True)
+            ), patch.object(Path, "home", return_value=home):
+                self.assertEqual(agent.refresh_runtime(values=values), ["pi"])
+                target = home / ".pi" / "agent" / "models.json"
+                model = json.loads(target.read_text())["providers"]["envy-pi"]["models"][0]
+                self.assertEqual(model["id"], "gpt-6.1-sol-qiye")
+                self.assertEqual(model["thinkingLevelMap"], {
+                    "off": None, "minimal": None, "ultra": None, "xhigh": "xhigh", "max": "max",
+                })
+                values["envy.agentProfiles.selected.model"] = "gpt-6-astra"
+                agent.refresh_runtime(values=values)
+                model = json.loads(target.read_text())["providers"]["envy-pi"]["models"][0]
+                self.assertEqual(model["thinkingLevelMap"], {"xhigh": "xhigh", "max": "max", "ultra": "ultra"})
+
     def test_multiline_settings_survive_shared_reader_and_rewrite(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "machine.nix"

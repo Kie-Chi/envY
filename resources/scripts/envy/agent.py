@@ -522,6 +522,11 @@ def _runtime_pi_models(values: dict[str, Any], agent: dict[str, Any]) -> dict[st
     thinking_level_map: dict[str, str | None] = {"off": None} if api == "anthropic-messages" else {}
     if agent.get("moreThinking"):
         thinking_level_map.update({"xhigh": "xhigh", "max": "max", "ultra": "ultra"})
+    if api in ("openai-completions", "openai-responses") and (
+        model == "gpt-6.1-sol" or model.startswith("gpt-6.1-sol-")
+    ):
+        # Sol cannot disable reasoning or use minimal/ultra.
+        thinking_level_map.update({"off": None, "minimal": None, "ultra": None})
     if thinking_level_map:
         model_data["thinkingLevelMap"] = thinking_level_map
     api_key = "$ANTHROPIC_API_KEY" if api == "anthropic-messages" else "$OPENAI_API_KEY"

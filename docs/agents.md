@@ -27,6 +27,14 @@ pi/package.nix 在 Pi 的 workspace 构建阶段打补丁，库和打包后的 C
 
 升级 Pi 时，如果补丁不再适用或上游已经修复，构建或安装检查会失败；这时更新或删除对应补丁。
 
+### 模型档位与 btw
+
+`pi/default.nix` 为 OpenAI Completions/Responses 下的 `gpt-6.1-sol` 及其带 `-` 后缀的别名、快照声明合法思考档位：排除 `off`、`minimal`、`ultra`，保留 `low/medium/high`；开启 `moreThinking` 时还保留 `xhigh/max`。显式请求不支持的档位由 Pi 钳制到合法档位，其他模型和 Anthropic 兼容设置保持原样。
+
+`/btw` 不继承主会话的思考档位。未指定档位的 Sol 请求省略推理 effort，由服务端采用默认值，避免发送会被拒绝的 `none`；不改扩展的认证、上下文、无工具或会话隔离边界。
+
+`envy agent` 的 Python 运行时生成器使用相同兼容规则，切换 profile 时不会把不支持的档位重新写回 `models.json`。`tests/models.nix` 求值实际 provider 的托管配置；`tests/pi-models.py` 对比 12 组 Nix 与运行时配置；`tests/pi-models.mjs` 用真实 `/btw` 执行函数与 Pi 请求编码器运行 85 项离线回归，检查模型 schema、档位钳制及两种 OpenAI API 和 Anthropic 的参数。两平台的 `pi-model-tests` flake check 和 CI 运行这些检查；使用假凭据，在请求发送前捕获参数并禁止 fetch，不调用模型。
+
 ### goal-x 扩展
 
 `pi/goal.nix` 固定 goal-x 0.33.0（兼容当前 Pi 1.1），在 npm 包解包后应用 `pi-goal-state-and-stages.patch`，不修改已安装的 store 路径或用户目标。`tests/pi-goal.mjs` 在构建时运行，并通过两平台的 `pi-goal-tests` flake check 暴露；测试只使用临时目录、假会话/UI 和真实扩展读写代码，不调用模型。

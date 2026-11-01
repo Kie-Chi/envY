@@ -38,6 +38,9 @@ let
   modelConfigFor = agent: apiKey: let
     endpoint = endpointFor agent;
     api = apiFor agent endpoint;
+    isSolModel = builtins.elem api [ "openai-completions" "openai-responses" ]
+      && agent.model != null
+      && (agent.model == "gpt-6.1-sol" || lib.hasPrefix "gpt-6.1-sol-" agent.model);
     # Adaptive-thinking Anthropic models reject thinking.type=disabled, which
     # Pi sends for requests without a reasoning level (for example /btw).
     thinkingLevelMap = lib.optionalAttrs (api == "anthropic-messages") {
@@ -46,6 +49,12 @@ let
       xhigh = "xhigh";
       max = "max";
       ultra = "ultra";
+    } // lib.optionalAttrs isSolModel {
+      # Sol accepts low through max, not none, minimal, or ultra. Null entries
+      # omit the default effort and clamp explicit unsupported requests.
+      off = null;
+      minimal = null;
+      ultra = null;
     };
   in {
     providers.${providerName} = {

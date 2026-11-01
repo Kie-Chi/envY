@@ -333,6 +333,37 @@
           touch "$out"
         '';
 
+      mkEnvyPiModelCheck = system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          piPackage = inputs.pi.packages.${system}.default;
+          python = pkgs.python3.withPackages (ps: [
+            ps.typer ps.rich ps.prompt-toolkit ps.pyyaml ps.tomli-w
+          ]);
+          patchedPi = import ./modules/agents/providers/pi/package.nix {
+            inherit lib piPackage;
+            moreThinking = true;
+          };
+          fixtures = pkgs.writeText "pi-model-fixtures.json" (builtins.toJSON
+            (import ./modules/agents/providers/pi/tests/models.nix { inherit lib pkgs piPackage; }));
+          extensions = import ./modules/agents/providers/pi/extensions.nix {
+            inherit lib pkgs piPackage;
+            piSource = inputs.pi.outPath;
+          };
+          btwPackage = extensions.home.file.".pi/agent/extensions/envy-btw".source;
+        in pkgs.runCommand "pi-model-tests" {
+          nativeBuildInputs = [ pkgs.nodejs_24 python ];
+        } ''
+          export HOME="$TMPDIR/home"
+          mkdir -p "$HOME"
+          export PYTHONPYCACHEPREFIX="$TMPDIR/pycache"
+          export PYTHONPATH="${./resources/scripts}"
+          python ${./modules/agents/providers/pi/tests/pi-models.py} ${fixtures}
+          node ${./modules/agents/providers/pi/tests/pi-models.mjs} \
+            ${patchedPi}/lib/pi/node_modules ${fixtures} ${btwPackage}
+          touch "$out"
+        '';
+
       mkEnvyPiGoalCheck = system:
         import ./modules/agents/providers/pi/goal.nix {
           inherit lib;
@@ -539,6 +570,7 @@
       checks.aarch64-darwin.envy-lint = mkEnvyLintCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-agent-tests = mkEnvyAgentCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-goal-tests = mkEnvyPiGoalCheck "aarch64-darwin";
+      checks.aarch64-darwin.pi-model-tests = mkEnvyPiModelCheck "aarch64-darwin";
       checks.x86_64-linux.platform-option-boundaries = mkPlatformOptionCheck "x86_64-linux";
       checks.x86_64-linux.linux-policy-boundaries = linuxPolicyCheck;
       checks.x86_64-linux.envy-python-tests = mkEnvyPythonCheck "x86_64-linux";
@@ -548,5 +580,6 @@
       checks.x86_64-linux.envy-lint = mkEnvyLintCheck "x86_64-linux";
       checks.x86_64-linux.envy-agent-tests = mkEnvyAgentCheck "x86_64-linux";
       checks.x86_64-linux.pi-goal-tests = mkEnvyPiGoalCheck "x86_64-linux";
+      checks.x86_64-linux.pi-model-tests = mkEnvyPiModelCheck "x86_64-linux";
     };
 }

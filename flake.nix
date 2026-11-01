@@ -349,6 +349,7 @@
             FETCH_AGENTS_PATH=${./modules/agents/amux/image/fetch-agents.py} python ${./modules/agents/amux/test_amux.py}
           zsh -n ${./modules/agents/amux/_amux}
           ENVY_READER_PATH=${./modules/agents/skills/read/scripts/read.py} python ${./modules/agents/tests/test_reader.py}
+          ENVY_DEEPSEEK_SEARCH_PATH=${./modules/agents/tools/deepseek_search.py} python ${./modules/agents/tests/test_deepseek_search.py}
           ${import ./modules/agents/tests/wrappers.nix { inherit lib pkgs; }}
           touch "$out"
         '';

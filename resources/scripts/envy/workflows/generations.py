@@ -117,7 +117,8 @@ def closure_diff(before: Path, after: Path) -> str:
         capture=True, check=False,
     )
     if result.returncode != 0:
-        detail = (result.stderr or "closure diff failed").strip().splitlines()[-1]
+        lines = [line.strip() for line in (result.stderr or "").splitlines() if line.strip()]
+        detail = lines[-1] if lines else "closure diff failed"
         raise RuntimeError(detail[:500])
     return (result.stdout or "").strip()
 

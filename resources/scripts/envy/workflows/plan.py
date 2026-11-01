@@ -26,7 +26,8 @@ def plan_configuration(*, json_output: bool = False) -> None:
         activity=f"build plan for {machine}",
     )
     if result.returncode != 0:
-        detail = (result.stderr or "plan build failed").strip().splitlines()[-1]
+        lines = [line.strip() for line in (result.stderr or "").splitlines() if line.strip()]
+        detail = lines[-1] if lines else "plan build failed"
         if json_output:
             log.console.print_json(json.dumps({
                 "schemaVersion": 1, "machine": machine, "ok": False,

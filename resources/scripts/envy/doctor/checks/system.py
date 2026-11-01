@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import shutil
+import tempfile
 from pathlib import Path
 
 from envy.doctor.model import SECTION_SYSTEM, CheckResult, error, info, ok, warn
@@ -106,9 +108,14 @@ def _workflow_leftovers() -> list[Path]:
         (ENVY_ROOT / "secrets", ".secrets-encrypted-*"),
         (ENVY_ROOT / "secrets", ".recovery-encrypted-*"),
         (AGE_KEY_DIR, "rotate_*.txt"),
+        (AGE_KEY_DIR, ".derive-*.txt"),
+        # Match each writer: mkstemp uses the cached tempfile directory, while
+        # secret_store chooses TMPDIR explicitly (or /tmp when unset).
+        (Path(tempfile.gettempdir()), ".envy-prepared-key-*.txt"),
+        (Path(os.environ.get("TMPDIR", "/tmp")), ".envy-secrets-plain-*.yaml"),
     ]
     paths: list[Path] = []
     for directory, pattern in patterns:
         if directory.exists():
-            paths.extend(directory.glob(pattern))
+            paths.extend(path for path in directory.glob(pattern) if path.is_file())
     return sorted(paths)

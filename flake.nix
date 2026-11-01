@@ -285,6 +285,10 @@
           touch "$out"
         '';
 
+      mkEnvyTuiCheck = system:
+        let pkgs = nixpkgs.legacyPackages.${system};
+        in pkgs.callPackage ./modules/cores/packages/envy-tui.nix {};
+
       mkEnvyShellCheck = system:
         let pkgs = nixpkgs.legacyPackages.${system};
         in pkgs.runCommand "envy-shell-checks" {
@@ -514,6 +518,7 @@
       devShells.x86_64-linux.default = mkDevShell "x86_64-linux";
       checks.aarch64-darwin.platform-option-boundaries = mkPlatformOptionCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-python-tests = mkEnvyPythonCheck "aarch64-darwin";
+      checks.aarch64-darwin.envy-tui-tests = mkEnvyTuiCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-shell-checks = mkEnvyShellCheck "aarch64-darwin";
       checks.aarch64-darwin.secret-safety = mkSecretSafetyCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-lint = mkEnvyLintCheck "aarch64-darwin";
@@ -521,6 +526,7 @@
       checks.x86_64-linux.platform-option-boundaries = mkPlatformOptionCheck "x86_64-linux";
       checks.x86_64-linux.linux-policy-boundaries = linuxPolicyCheck;
       checks.x86_64-linux.envy-python-tests = mkEnvyPythonCheck "x86_64-linux";
+      checks.x86_64-linux.envy-tui-tests = mkEnvyTuiCheck "x86_64-linux";
       checks.x86_64-linux.envy-shell-checks = mkEnvyShellCheck "x86_64-linux";
       checks.x86_64-linux.secret-safety = mkSecretSafetyCheck "x86_64-linux";
       checks.x86_64-linux.envy-lint = mkEnvyLintCheck "x86_64-linux";

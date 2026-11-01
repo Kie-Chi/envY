@@ -99,7 +99,7 @@ let
   };
 in
 {
-  imports = [ ./extensions.nix ];
+  imports = [ ./extensions.nix ./subagents.nix ];
 
   config = {
     sops.templates.${templateNameFor "pi"}.content = templateFor piConfig;

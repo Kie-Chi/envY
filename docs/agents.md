@@ -9,7 +9,7 @@ envY 的 modules/agents 管理 agent 安装、provider wrapper、skill catalog �
 - options.nix：`envy.agents`、`envy.agentProfiles` 与 amux 选项。
 - runtime-files.nix：把 additionalSettings 与 adapter 声明的 runtime 文件合并进应用自有配置。
 - wrapper.nix、prompts.nix：provider 共用的 wrapper 生成、endpoint/credential 解析、别名和 system prompt 拼接；`tests/wrappers.nix` 用假 agent 验证 env 文件加载次数、覆盖顺序和参数顺序。
-- providers/：claude.nix、codex.nix、generic.nix 与 pi/。pi/default.nix 生成 wrapper 和 models.json；pi/package.nix 给 Pi 打补丁；pi/extensions.nix 链接 Pi 扩展。官方示例来自锁定的 Pi source；第三方 npm 包（goal-x、btw）由 pi/npm-extension.nix 按固定版本和 registry sha512 解包，链接为 `~/.pi/agent/extensions/envy-<name>`。
+- providers/：claude.nix、codex.nix、generic.nix 与 pi/。pi/default.nix 生成 wrapper 和 models.json；pi/package.nix 给 Pi 打补丁；pi/extensions.nix 链接 Pi 扩展；pi/subagents.nix 管理 pi-subagents 与内置 agent 覆盖。官方示例来自锁定的 Pi source；第三方 npm 包（goal-x、btw、pi-subagents）由 pi/npm-extension.nix 按固定版本和 registry sha512 解包，链接为 `~/.pi/agent/extensions/envy-<name>`。
 - skills/：default.nix 按 adapter 解析 active skill 并建立 Home Manager discovery links；catalog.nix 是 skill 名称到上游目录的映射；read/、browser/ 是本仓库自带的 skill。
 - tools/：default.nix 管理 registry 安装的 agent 工具（codegraph、headroom）；obelisk.nix 从固定 npm tarball 打包会话历史检索 CLI `obelisk`，索引 `~/.obelisk/` 与项目内 `.obelisk/memories/` 归应用和用户所有；web.nix 管理 envy-read、受审查的 MCP 工具、mcp-nixos 与 deepseek-search。deepseek-search 只接入 Pi，复用 `llm-credential-deepseek`，启动时从 sops 文件读取 key，按成功调用计费。
 - amux/：容器化 agent 客户端、镜像和测试。

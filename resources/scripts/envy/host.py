@@ -7,6 +7,7 @@ from typing import Optional
 
 import typer
 from rich.table import Table
+from rich.text import Text
 
 from envy import log
 from envy.evaluation import informative_nix_error
@@ -484,17 +485,17 @@ def cmd_diff(
         return
     settings = differences["settings"]
     software = differences["software"]
-    table = Table(title=f"Machine diff - {left} → {right}")
+    table = Table(title=Text(f"Machine diff - {left} → {right}"))
     table.add_column("Kind")
     table.add_column("Path/Group")
-    table.add_column(left)
-    table.add_column(right)
+    table.add_column(Text(left))
+    table.add_column(Text(right))
     for row in settings:
-        table.add_row("setting", row["path"], str(row["left"]), str(row["right"]))
+        table.add_row("setting", Text(row["path"]), Text(str(row["left"])), Text(str(row["right"])))
     for row in software["leftOnly"]:
-        table.add_row("software", row["group"], row["item"], "-")
+        table.add_row("software", Text(row["group"]), Text(row["item"]), "-")
     for row in software["rightOnly"]:
-        table.add_row("software", row["group"], "-", row["item"])
+        table.add_row("software", Text(row["group"]), "-", Text(row["item"]))
     if not settings and not software["leftOnly"] and not software["rightOnly"]:
         table.add_row("-", "no evaluated differences", "", "")
     log.console.print(table)

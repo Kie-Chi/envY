@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any
 
 from rich.console import Console
+from rich.markup import escape
 
 console = Console()
 diagnostic_console = Console(stderr=True)
@@ -54,42 +55,42 @@ def is_debug() -> bool:
 def _format_kv(values: dict[str, Any]) -> str:
     if not values:
         return ""
-    return " " + " ".join(f"{key}={value}" for key, value in values.items())
+    return " " + " ".join(f"{escape(key)}={escape(str(value))}" for key, value in values.items())
 
 
 def step(scope: str, message: str, **values: Any) -> None:
-    console.print(f"[cyan]-->[/cyan] {scope}: {message}{_format_kv(values)}")
+    console.print(f"[cyan]-->[/cyan] {escape(scope)}: {escape(message)}{_format_kv(values)}")
 
 
 def info(scope: str, message: str, **values: Any) -> None:
-    console.print(f"[white]--[/white] {scope}: {message}{_format_kv(values)}")
+    console.print(f"[white]--[/white] {escape(scope)}: {escape(message)}{_format_kv(values)}")
 
 
 def ok(scope: str, message: str, **values: Any) -> None:
-    console.print(f"[green]OK[/green] {scope}: {message}{_format_kv(values)}")
+    console.print(f"[green]OK[/green] {escape(scope)}: {escape(message)}{_format_kv(values)}")
 
 
 def fix(scope: str, message: str, **values: Any) -> None:
-    console.print(f"[green]FIX[/green] {scope}: {message}{_format_kv(values)}")
+    console.print(f"[green]FIX[/green] {escape(scope)}: {escape(message)}{_format_kv(values)}")
 
 
 def warn(scope: str, message: str, **values: Any) -> None:
-    console.print(f"[yellow]WARN[/yellow] {scope}: {message}{_format_kv(values)}")
+    console.print(f"[yellow]WARN[/yellow] {escape(scope)}: {escape(message)}{_format_kv(values)}")
 
 
 def error(scope: str, message: str, **values: Any) -> None:
-    console.print(f"[red]ERR[/red] {scope}: {message}{_format_kv(values)}")
+    console.print(f"[red]ERR[/red] {escape(scope)}: {escape(message)}{_format_kv(values)}")
 
 
 def hint(message: str) -> None:
-    console.print(f"[dim]    {message}[/dim]")
+    console.print(f"[dim]    {escape(message)}[/dim]")
 
 
 def debug(scope: str, message: str, **values: Any) -> None:
     if is_debug():
         timestamp = datetime.now().astimezone().strftime("%H:%M:%S.%f")[:-3]
         diagnostic_console.print(
-            f"[dim]DBG {timestamp} {scope}: {message}{_format_kv(values)}[/dim]"
+            f"[dim]DBG {timestamp} {escape(scope)}: {escape(message)}{_format_kv(values)}[/dim]"
         )
 
 
@@ -98,5 +99,5 @@ def activity(scope: str, message: str, **values: Any) -> None:
     if not _activity_is_allowed():
         return
     diagnostic_console.print(
-        f"[yellow]…[/yellow] {scope}: {message}{_format_kv(values)}"
+        f"[yellow]…[/yellow] {escape(scope)}: {escape(message)}{_format_kv(values)}"
     )

@@ -7,6 +7,7 @@ from getpass import getpass
 
 import typer
 from rich.table import Table
+from rich.text import Text
 
 from envy import log
 from envy.evaluation import machine_manifest, manifest_settings
@@ -232,10 +233,10 @@ def cmd_show(
     table.add_column("Kind")
     table.add_column("Path")
     table.add_column("Value")
-    table.add_row("device", "device.machine_id", device_values.get("machine_id", ""))
-    table.add_row("device", "device.sops_label", device_values.get("sops_label", ""))
+    table.add_row("device", "device.machine_id", Text(device_values.get("machine_id", "")))
+    table.add_row("device", "device.sops_label", Text(device_values.get("sops_label", "")))
     for f in MACHINE_FIELDS:
-        table.add_row("value", f.path, config_values.get(f.path, ""))
+        table.add_row("value", Text(f.path), Text(str(config_values.get(f.path, ""))))
     for dynamic_field in dynamic_fields:
         path = dynamic_field["path"]
         if path.startswith("envy.llm.endpoints."):
@@ -244,14 +245,14 @@ def cmd_show(
             kind = "credential"
         else:
             kind = "agent"
-        table.add_row(kind, path, dynamic_field["value"])
+        table.add_row(kind, Text(path), Text(str(dynamic_field["value"])))
     credentials = manifest_llm.get("credentials", {}) if isinstance(manifest_llm, dict) else {}
     if isinstance(credentials, dict):
         for name, credential in sorted(credentials.items()):
             if isinstance(credential, dict):
                 table.add_row(
                     "secret",
-                    f"credential/{name}",
+                    Text(f"credential/{name}"),
                     "<set>" if credential.get("credentialSet") else "<empty>",
                 )
     if not manifest:
@@ -263,7 +264,7 @@ def cmd_show(
     for f in SECRET_FIELDS:
         value = secret_values_for_fields[f.path]
         status = "<set>" if value else "<empty>"
-        table.add_row("secret", f.yaml_path, status)
+        table.add_row("secret", Text(f.yaml_path), status)
 
     log.console.print(table)
 

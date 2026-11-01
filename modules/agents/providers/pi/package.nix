@@ -7,7 +7,10 @@
 # mkDerivation keeps `source` a plain path; the install checks below fail the
 # build if the patches stop landing after an upstream change.
 let
-  patches = [ ../../../../files/agents/patches/pi-anthropic-sse-crlf.patch ]
+  patches = [
+    ../../../../files/agents/patches/pi-anthropic-sse-crlf.patch
+    ../../../../files/agents/patches/pi-retry-patterns.patch
+  ]
     ++ lib.optional moreThinking ../../../../files/agents/patches/pi-ultra-thinking.patch;
 in
 (piPackage.override (args: {
@@ -20,6 +23,7 @@ in
 })).overrideAttrs (old: {
   postInstallCheck = (old.postInstallCheck or "") + ''
     node ${./tests/pi-sse-crlf.mjs} "$out/lib/pi/node_modules"
+    node ${./tests/pi-retry.mjs} "$out/lib/pi/node_modules"
   '' + lib.optionalString moreThinking ''
     node ${./tests/pi-thinking.mjs} "$out/lib/pi/node_modules"
   '';

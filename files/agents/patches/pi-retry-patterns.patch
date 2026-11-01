@@ -1,0 +1,28 @@
+--- a/packages/ai/src/utils/retry.ts
++++ b/packages/ai/src/utils/retry.ts
+@@ -104,6 +104,25 @@
+ 	// failures can arrive mid-stream without an HTTP 503 in the message.
+ 	"subscription_sharing_usage_unavailable",
+ 	"subscription_sharing_user_unavailable",
++
++	// Bedrock exception types that gateways forward mid-stream as JSON error
++	// events without an HTTP status, e.g. {"type":"internalServerException"}.
++	"InternalServerException",
++	"unexpected error has occurred internal",
++	"ThrottlingException",
++	"ServiceUnavailableException",
++	"ModelStreamErrorException",
++	"ModelNotReadyException",
++	"ModelTimeoutException",
++
++	// Streams cut off by a gateway: an error event without details, or an SSE
++	// event whose JSON payload was truncated.
++	"no error details in response",
++	"Could not parse .*SSE event.*Unexpected end of JSON input",
++
++	// Anthropic's usage-policy classifier can block a response mid-stream; a
++	// regenerated response may pass, and every retry is classified again.
++	"violative cyber content",
+ ]);
+ 
+ /**

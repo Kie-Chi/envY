@@ -22,6 +22,7 @@ envY 的 modules/agents 管理 agent 安装、provider wrapper、skill catalog �
 pi/package.nix 在 Pi 的 workspace 构建阶段打补丁，库和打包后的 CLI 会一起重新编译。上游求值时会从 `source` 读取 package 与 lock 文件，所以不能给 `source` 套补丁派生，否则会变成 import-from-derivation，导致在另一平台上无法求值那个平台的机器。
 
 - pi-anthropic-sse-crlf.patch：始终启用。Anthropic SSE 的 CRLF 被网络分包拆开时，上游会把 LF 当作空行，提前派发一个没有 data 的事件，报 `Could not parse Anthropic SSE event ...: Unexpected end of JSON input`。补丁让末尾的 CR 等下一个分块到达后再判断。`tests/pi-sse-crlf.mjs` 对库和 CLI bundle 分别验证。
+- pi-retry-patterns.patch：始终启用。扩充可自动重试的错误：网关在流中转发的 Bedrock 异常（`InternalServerException`、`ThrottlingException` 等）、无详情或 JSON 被截断的 SSE 错误事件，以及 Anthropic 的 `violative cyber content` 用量政策拦截（多在流中触发，重新生成可能通过，每次重试仍会重新判定）。配额、计费、权限和 Bedrock 内容过滤仍立即失败。重试次数沿用 Pi 默认的 `retry.maxRetries`（3 次）。`tests/pi-retry.mjs` 对库和 CLI bundle 分别验证。
 - pi-ultra-thinking.patch：仅在 `envy.agents.pi.moreThinking = true` 时启用，增加 `ultra` 思考等级；由 `tests/pi-thinking.mjs` 验证。
 
 升级 Pi 时，如果补丁不再适用或上游已经修复，构建或安装检查会失败；这时更新或删除对应补丁。

@@ -55,6 +55,8 @@ jobs:
         run: nix build "path:.#checks.${{ matrix.system }}.envy-lint"
       - name: Run agent tool tests
         run: nix build "path:.#checks.${{ matrix.system }}.envy-agent-tests"
+      - name: Run Pi goal regressions
+        run: nix build --no-link "path:.#checks.${{ matrix.system }}.pi-goal-tests"
       - name: Guard encrypted secrets
         run: nix build "path:.#checks.${{ matrix.system }}.secret-safety"
       - name: Check platform option boundaries

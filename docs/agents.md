@@ -27,6 +27,15 @@ pi/package.nix 在 Pi 的 workspace 构建阶段打补丁，库和打包后的 C
 
 升级 Pi 时，如果补丁不再适用或上游已经修复，构建或安装检查会失败；这时更新或删除对应补丁。
 
+### goal-x 扩展
+
+`pi/goal.nix` 固定 goal-x 0.33.0（兼容当前 Pi 1.1），在 npm 包解包后应用 `pi-goal-state-and-stages.patch`，不修改已安装的 store 路径或用户目标。`tests/pi-goal.mjs` 在构建时运行，并通过两平台的 `pi-goal-tests` flake check 暴露；测试只使用临时目录、假会话/UI 和真实扩展读写代码，不调用模型。
+
+- `/goal-clear` 在确认前先持久化缓冲修改，再绕过内存池、文件解析缓存和持久快照读取最新目标；确认后的焦点令牌与文件 revision 都必须仍有效。归档文件写入且 active 文件移除成功，才清空焦点。锁、写入、删除和 revision 冲突会报告具体错误，不再显示假成功。删除失败时可能已留下归档副本，但 active 目标与会话焦点仍保留，便于检查和重试。
+- 全局 `~/.pi/agent/pi-goal-x-settings.json` 通过 writable merge 只管理 `hideUnfocusedBanner = true`、`hideUnfocusedPrompt = true`、`autoSelectSingleGoal = false`，保留其他字段。没有焦点的会话不被自动提示阻拦，也不自动接管旧目标。仍可用 `/goal-list`、`/goal-focus`、`/goal-resume` 手动选择。扩展自身的环境变量与项目设置仍按上游优先级覆盖全局默认。
+- 普通 goal 与 Sisyphus 都保留完整阶段、顺序、约束和完成条件；不再要求正文只写一句。`create_goal` 支持与正文一起保存经过校验的父子任务树；未显式提供任务树时，从编号、清单及中英文阶段标记中派生任务，单步骤工作不强制拆分。直接创建时仍尊重关闭任务跟踪的设置。引导草拟还校验用户原始阶段数，拒绝阶段更少的摘要提案。
+- 界面短标题和 `get_goal` 默认摘要不是完整需求；正文用 `get_goal section=objective`、任务用 `section=tasks` 分页读取。补丁不反向重建以前已被模型压缩的目标，也不能仅凭阶段数判断每个阶段的语义是否完整，仍需核对确认提案。
+
 skill 的 source 来自锁定 flake input；catalog 校验每个选中 source 都有 SKILL.md，并检查 target 兼容性。claude-code 与 claude 共用发现目录。
 
 ## 配置边界

@@ -1,4 +1,4 @@
-{ lib, pkgs, piSource, ... }:
+{ lib, pkgs, piSource, piPackage, ... }:
 
 let
   # Use the same locked source as the Pi executable, so extension APIs and
@@ -21,13 +21,7 @@ let
   # Reviewed npm packages pinned to registry integrity hashes. Check their Pi
   # peer range against the locked Pi before changing a version.
   packages = {
-    # 0.34 and later require Pi 1.4.
-    goal-x = fetchPiExtension {
-      pname = "pi-goal-x";
-      version = "0.33.0";
-      url = "https://registry.npmjs.org/pi-goal-x/-/pi-goal-x-0.33.0.tgz";
-      hash = "sha512-FJdd4Fz9gWNzTybovN/BJp83o5BdgOytHZIeddBxU21HNFciEpFV83yVLpJO2lFIEvOLbXLeNJtMhk138urPGA==";
-    };
+    goal-x = import ./goal.nix { inherit lib pkgs piPackage; };
     btw = fetchPiExtension {
       pname = "rpiv-btw";
       version = "2.15.0";
@@ -45,6 +39,20 @@ in
     ++ lib.mapAttrsToList (name: link ".pi/agent/extensions/envy-${name}") packages
     ++ [ (link ".pi/agent/extensions/envy-notify.ts" "${examples}/notify.ts") ]
   );
+
+  # Merge only these shared defaults; goal records and project overrides stay
+  # extension-owned. Unfocused sessions may create their own goals without
+  # adopting goals that belong to other sessions.
+  envy.agents.pi.runtimeFiles = [ {
+    name = "goal-settings";
+    target = ".pi/agent/pi-goal-x-settings.json";
+    format = "json";
+    data = {
+      hideUnfocusedBanner = true;
+      hideUnfocusedPrompt = true;
+      autoSelectSingleGoal = false;
+    };
+  } ];
 
   # pi-goal-x keeps per-project goal state beside the working tree.
   programs.git.ignores = [ ".pi/goals/" ".pi/.goals-pool-snapshot.json" ];

@@ -1,0 +1,497 @@
+--- a/extensions/goal-commands.ts
++++ b/extensions/goal-commands.ts
+@@ -663,42 +663,50 @@
+ 		}
+ 	}
+ 	async function handleGoalClear(ctx: ExtensionContext): Promise<void> {
+-		core.reconcileFocusedGoalFromDisk(ctx);
+-		if (!core.state.goal && otherOpenGoalCount(core.goalsById, null) > 0) {
+-			const selected = await chooseOpenGoal(ctx, "Clear which open goal?");
+-			if (!selected) return;
+-		}
+-		if (!core.state.goal) {
+-			ctx.ui.notify(clearGoalCommandMessage({ archived: false }), "warning");
+-			return;
+-		}
+-		// Snapshot the selected goal id and focus revision before asking.
+-		const target = core.state.goal;
+-		const focusToken = core.focusedOperationToken(target.id);
+-		// Headless behavior is explicit: guidance without mutation. Clearing
+-		// requires an interactive confirmation (follow-up Stage 2).
+-		if (!ctx.hasUI) {
+-			ctx.ui.notify(`Run ${commandHint("goal-clear", core.loadedCommands)} in an interactive session to confirm clearing: ${oneLineSummary(target)}`, "warning");
+-			return;
+-		}
+-		const confirmed = await ctx.ui.confirm("Clear goal?", oneLineSummary(target));
+-		if (!confirmed) {
+-			ctx.ui.notify("Goal clear cancelled.", "info");
+-			return;
+-		}
+-		// Reconcile and validate the same focus token after confirmation, then
+-		// archive. Cancellation above changes no file, focus entry, ledger
+-		// entry, or runtime state.
+-		core.reconcileFocusedGoalFromDisk(ctx);
+-		if (!core.isFocusedOperationCurrent(focusToken) || !core.state.goal || core.state.goal.id !== target.id) {
+-			ctx.ui.notify("Goal changed while confirming; nothing was cleared.", "warning");
+-			return;
+-		}
+-		const archived = core.archiveCurrentGoal(ctx, "user");
+-		const didArchive = !!archived;
+-		core.setGoal(null, ctx, true, "cleared");
+-		const msg = clearGoalCommandMessage({ archived: didArchive });
+-		ctx.ui.notify(msg, didArchive ? "info" : "warning");
++		try {
++			if (ctx.hasUI) {
++				const flushError = core.goalService.flushForAudit(ctx);
++				if (flushError || core.goalService.isTurnBuffered()) {
++					ctx.ui.notify("Goal clear failed: " + (flushError ?? "Pending changes have not been persisted."), "error");
++					return;
++				}
++			}
++			core.reconcileFocusedGoalFromDisk(ctx, { fresh: true });
++			if (!core.state.goal && otherOpenGoalCount(core.goalsById, null) > 0) {
++				const selected = await chooseOpenGoal(ctx, "Clear which open goal?");
++				if (!selected) return;
++			}
++			if (!core.state.goal) {
++				ctx.ui.notify(clearGoalCommandMessage({ archived: false }), "warning");
++				return;
++			}
++			const target = core.state.goal;
++			const expectedRevision = target.revision ?? 0;
++			const focusToken = core.focusedOperationToken(target.id);
++			if (!ctx.hasUI) {
++				ctx.ui.notify("Run " + commandHint("goal-clear", core.loadedCommands) + " in an interactive session to confirm clearing: " + oneLineSummary(target), "warning");
++				return;
++			}
++			if (!await ctx.ui.confirm("Clear goal?", oneLineSummary(target))) {
++				ctx.ui.notify("Goal clear cancelled.", "info");
++				return;
++			}
++			// Do not replace the reviewed revision with a newer one after confirmation.
++			// The service revalidates memory and the locked active file before writing.
++			if (!core.isFocusedOperationCurrent(focusToken)) {
++				ctx.ui.notify("Goal changed while confirming; nothing was cleared.", "warning");
++				return;
++			}
++			const archived = core.archiveCurrentGoal(ctx, "user", { expectedGoalId: target.id, expectedRevision, focusToken });
++			if (!archived.ok) {
++				ctx.ui.notify("Goal clear failed: " + archived.message, "error");
++				return;
++			}
++			core.setGoal(null, ctx, true, "cleared");
++			ctx.ui.notify(clearGoalCommandMessage({ archived: true }), "info");
++		} catch (error) {
++			ctx.ui.notify("Goal clear failed: " + (error instanceof Error ? error.message : String(error)), "error");
++		}
+ 	}
+ 
+ 	async function runGoalTweak(replacement: string, ctx: ExtensionContext): Promise<void> {
+--- a/extensions/goal-core-tools.ts
++++ b/extensions/goal-core-tools.ts
+@@ -15,7 +15,7 @@
+ import { loadGoalSettings } from "./goal-settings.ts";
+ import { buildGoalHistoryBlock, buildGoalTaskDetailBlock } from "./goal-format.ts";
+ import { sisyphusStepProgress } from "./goal-policy.ts";
+-import { deriveTasksFromObjective } from "./goal-task-derive.ts";
++import { flatTaskSchema, proposedTaskList } from "./goal-drafting.ts";
+ import { nowIso, type GoalRecord, type GoalTask, validateTokenBudgetInput } from "./goal-record.ts";
+ import type { GoalCore } from "./goal-state.ts";
+ import { promptProfile } from "./prompts/goal-prompts.ts";
+@@ -173,9 +173,10 @@
+ 	label: "Create Goal",
+ 	description: "Create and focus a persistent goal only on explicit user request; other open goals remain unchanged.",
+ 	promptSnippet: "Create a goal only when explicitly requested.",
+-	promptGuidelines: ["Never infer persistent goals, Sisyphus mode, or token budgets from an ordinary task. The objective must faithfully preserve all user requirements and ordered steps."],
++	promptGuidelines: ["Never infer persistent goals, Sisyphus mode, or token budgets from an ordinary task. Preserve all requested phases, their order, constraints and done criteria as separate lines in the full objective, not a summary sentence. Include the task tree for staged plans; a regular goal supports stages without enabling Sisyphus."],
+ 	parameters: Type.Object({
+-		objective: Type.String({ description: "Full objective; preserve ordered steps and done criteria." }),
++		objective: Type.String({ description: "Full objective, not a short title; preserve each phase on separate lines, its ordering, constraints and done criteria." }),
++		tasks: Type.Optional(flatTaskSchema()),
+ 		mode: Type.Optional(StringEnum(["regular", "sisyphus"] as const, { description: "Default regular; sisyphus only if requested." })),
+ 		token_budget: Type.Optional(Type.Integer({ minimum: 1, description: "Whole-token budget, only if supplied by the user." })),
+ 	}, { additionalProperties: false }),
+@@ -205,8 +206,10 @@
+ 			tokenBudget = budgetGate.value;
+ 		}
+ 		const { objective: cleanedObjective, verificationContract } = extractVerificationContract(objective);
++		const taskResult = proposedTaskList(core, ctx, params.tasks, undefined);
++		if (!taskResult.ok) throw new Error(taskResult.message);
+ 		core.replaceGoal(
+-			{ objective: cleanedObjective, autoContinue: true, sisyphus: sisyphusFlag },
++			{ objective: cleanedObjective, autoContinue: true, sisyphus: sisyphusFlag, taskList: taskResult.value },
+ 			ctx,
+ 			true,
+ 			verificationContract,
+@@ -217,11 +220,8 @@
+ 		const otherLine = otherCount > 0
+ 			? `\n${otherCount} other open goal${otherCount === 1 ? "" : "s"} remain in .pi/goals — this goal is now the session focus.`
+ 			: "";
+-		// F2: the agent path stays tool-driven — surface the derivable task plan
+-		// as guidance so the agent proposes it via set_goal_tasks.
+-		const derived = !created?.taskList ? deriveTasksFromObjective(cleanedObjective) : null;
+-		const bootstrapLine = derived && derived.length > 0
+-			? `\n\nThe objective contains ${derived.length} ordered step${derived.length === 1 ? "" : "s"}; propose them as the task tree with set_goal_tasks if the user wants tracked milestones.`
++		const bootstrapLine = created?.taskList
++			? "\n\nSaved the stage task tree with the full objective. Use get_goal section=tasks to inspect it and get_goal section=objective to read all requirements."
+ 			: "";
+ 		return {
+ 			content: [{ type: "text", text: `${buildGoalCreatedReport({ objective: created?.objective ?? objective, detailedSummary: detailedSummary(created), tokenBudget: created?.tokenBudget })}${bootstrapLine}${otherLine}` }],
+--- a/extensions/goal-draft.ts
++++ b/extensions/goal-draft.ts
+@@ -146,20 +146,22 @@
+ 		"- Targeted read-only research is allowed when it helps define a better goal contract; do not start implementation before confirmation.",
+ 		"- If the topic is already concrete, you may proceed directly to propose_goal_draft.",
+ 		"- The goal contract should make the objective, success criteria, boundaries, constraints, and blocker rule explicit.",
++		"- Preserve every user-provided phase, its ordering, constraints and done criteria in separate objective lines and the task tree. Do not replace a staged plan with a summary sentence. Regular goals support stages; do not enable Sisyphus unless requested.",
+ 		"- Keep grilling assumptions until the objective, success criteria, boundaries, constraints, and blocker rule are clear enough to confirm.",
+ 		"- If the objective naturally decomposes into trackable milestones, you MUST include the task list in the `tasks` parameter of `propose_goal_draft` so the user can accept both goal and tasks in a single confirmation dialog. Do NOT propose the goal without tasks and then call `propose_task_list` separately.",
+ 		"- For simple single-step goals, no task list is required. The `tasks` parameter can be omitted.",
+ 		"- After goal creation, `propose_task_list` is still available for user-requested task additions or structural changes.",
+ 		"- propose_goal_draft opens the user's Confirm / Continue Chatting dialog. Confirm creates and focuses the goal; Continue Chatting means keep refining through normal proposal cycles.",
+ 		"- Call propose_goal_draft with the complete structured proposal. The tool call renderer is the scrollable, complete human presentation of the objective and task tree — do NOT duplicate the full proposal in a preceding prose message. A brief orientation sentence is fine.",
+-		"- create_goal is not a shortcut. Direct create_goal calls are rejected so the user keeps explicit say in goal creation.",
++		"- During guided drafting use propose_goal_draft, not create_goal, so the user can confirm the complete objective and task tree together.",
+ 	];
+ 
+ 	const goalFocusItems = [
+ 		"For /goal, propose a normal goal in this shape when ready:",
+ 		"=== Goal ===",
+-		"Objective: <one-sentence outcome>",
+-		"Success criteria: <observable evidence the goal is done>",
++		"Objective: <complete outcome and requirements, not a short title>",
++		"Ordered steps: <preserve each requested phase on its own numbered line, its ordering, constraints and done criteria; omit for single-step work>",
++		"Success criteria: <observable evidence the whole goal is done>",
+ 		"Boundaries: <in scope / out of scope>",
+ 		"Constraints: <hard rules>",
+ 		"Verification contract: <optional — what verification evidence is required before marking complete, e.g. 'Run npm test (0 failures), grep for remaining references, re-read requirements and confirm every item is addressed'>",
+@@ -171,7 +173,7 @@
+ 		"For /sisyphus, remember that Sisyphus is a prompt/criteria style, not a separate step-counter mechanism.",
+ 		"Propose a Sisyphus goal in this shape when ready:",
+ 		"=== Sisyphus Goal ===",
+-		"Objective: <one-sentence outcome>",
++		"Objective: <complete outcome and requirements, not a short title>",
+ 		"Success criteria: <observable evidence the whole ordered goal is done>",
+ 		"Boundaries: <in scope / out of scope>",
+ 		"Constraints: <hard rules, files not to touch, etc.>",
+--- a/extensions/goal-drafting.ts
++++ b/extensions/goal-drafting.ts
+@@ -187,7 +187,7 @@
+ 	}
+ }
+ 
+-function proposedTaskList(core: GoalCore, ctx: ExtensionContext, tasks: FlatTaskInput[] | undefined, blockCompletion: boolean | undefined): { ok: true; value?: GoalTaskList } | { ok: false; message: string } {
++export function proposedTaskList(core: GoalCore, ctx: ExtensionContext, tasks: FlatTaskInput[] | undefined, blockCompletion: boolean | undefined): { ok: true; value?: GoalTaskList } | { ok: false; message: string } {
+ 	if (tasks === undefined) return { ok: true };
+ 	if (!core.tasksEnabled) return { ok: false, message: "Task lists are disabled by settings; omit tasks from this proposal." };
+ 	const converted = convertFlatTasks(tasks, { maxSubtaskDepth: loadGoalSettings(ctx.cwd).subtaskDepth ?? 1 });
+@@ -227,7 +227,7 @@
+ 	return `${draft.mode === "tweak" ? `Current ${formatGoalBudget(current?.tokenBudget)}\nProposed ${formatGoalBudget(tokenBudget === undefined ? current?.tokenBudget : tokenBudget ?? undefined)}` : formatGoalBudget(tokenBudget ?? undefined)}\n\n${base}${tasksText}`;
+ }
+ 
+-function flatTaskSchema() {
++export function flatTaskSchema() {
+ 	return Type.Array(Type.Object({
+ 		id: Type.String({ description: "Short stable slug, for example task-1." }),
+ 		title: Type.String({ description: "Human-readable task title." }),
+@@ -311,7 +311,7 @@
+ 		promptSnippet: "Confirm the proposed goal and any useful task tree in one dialog.",
+ 		promptGuidelines: [
+ 			commandInstructions("Use only during a /goal, /sisyphus, or /goal-tweak guided draft.", core.loadedCommands),
+-			"Clarify ambiguity before proposing. Include tasks when the work naturally decomposes into trackable milestones; omit them for genuinely simple work.",
++			"Clarify ambiguity before proposing. Preserve every requested phase, its order, constraints and done criteria in the full objective and task tree. Do not compress a staged plan into a summary sentence. Omit tasks only for genuinely simple work.",
+ 			"Set token_budget only when the user explicitly asked for a token budget or a spend limit. Never invent, estimate, or infer one from the objective's size; omitting it creates a goal with no budget.",
+ 			"Confirmation creates or revises the goal atomically. Continue Chatting leaves drafting active for refinement.",
+ 		],
+@@ -333,6 +333,10 @@
+ 			}
+ 			const objective = params.objective.trim();
+ 			if (!objective) return { content: [{ type: "text", text: "The proposed objective must be at least 1 character." }], details: goalDetails(core.state.goal) };
++			const requestedStages = deriveTasksFromObjective(draft.originalTopic);
++			if (requestedStages && requestedStages.length > 1 && (deriveTasksFromObjective(objective)?.length ?? 0) < requestedStages.length) {
++				throw new Error(`The user provided ${requestedStages.length} ordered stages. Preserve each stage, its constraints and done criteria on separate objective lines; do not replace the plan with a shorter summary.`);
++			}
+ 			const objectiveMaxChars = loadGoalSettings(ctx.cwd).objectiveMaxChars ?? 0;
+ 			if (objectiveMaxChars > 0 && objective.length > objectiveMaxChars) return { content: [{ type: "text", text: `The proposed objective must be at most ${objectiveMaxChars} characters (${objective.length} given).` }], details: goalDetails(core.state.goal) };
+ 			const expectedSisyphus = draft.mode === "sisyphus";
+--- a/extensions/goal-service.ts
++++ b/extensions/goal-service.ts
+@@ -61,6 +61,8 @@
+ export interface GoalMutationSpec {
+ 	/** If provided, the focused goal id must equal this or the mutation is rejected. */
+ 	expectedGoalId?: string | null;
++	/** Revision the user reviewed before confirming a destructive operation. */
++	expectedRevision?: number;
+ 	/** If provided, the token must still be current (same goal id + focus revision). */
+ 	focusToken?: { goalId: string; revision: number };
+ 	/** Skip the leading disk reconciliation (used when the caller already reconciled or must not). */
+@@ -255,6 +257,8 @@
+ 
+ 	/** Completion must never audit state that failed to flush. */
+  flushForAudit(ctx: GoalServiceContext): string | null {
++  // Report this flush attempt, not a rejected transaction from an earlier command.
++  this.flushError = null;
+   this.flushTurn(ctx);
+   return this.flushError;
+  }
+@@ -316,9 +320,9 @@
+ 	}
+ 
+ 	/** Safe focused record reconciliation from disk. */
+-	reconcileFocused(ctx: GoalServiceContext, opts: { preserveMemoryUsage?: boolean } = {}): boolean {
++	reconcileFocused(ctx: GoalServiceContext, opts: { preserveMemoryUsage?: boolean; fresh?: boolean } = {}): boolean {
+ 		const current = this.ref.getFocused();
+-  const source = readActiveGoalPoolView(ctx);
++  const source = readActiveGoalPoolView(ctx, opts);
+   const focused = this.ref.getFocusedGoalId();
+   const view = this.ref.getPool();
+   const buffered = this.turn.active ? this.turn.goal : null;
+@@ -373,11 +377,7 @@
+ 	 */
+ 	private readFreshDiskGoal(ctx: GoalServiceContext, current: GoalRecord): GoalRecord | null {
+ 		if (!current.activePath) return null;
+-		try {
+-			return parseGoalFile(resolveGoalPath(ctx, GOALS_DIR, current.activePath));
+-		} catch {
+-			return null;
+-		}
++		return parseGoalFile(resolveGoalPath(ctx, GOALS_DIR, current.activePath), { fresh: true, strict: true });
+ 	}
+ 
+ 	/**
+@@ -411,6 +411,10 @@
+ 		}
+ 		if (spec.focusToken && !this.ref.isTokenCurrent(spec.focusToken)) {
+ 			return { ok: false, message: `Mutation cancelled because goal ${spec.focusToken.goalId} is no longer focused in this session. The shared goal was not modified.` };
++		}
++
++		if (spec.expectedRevision !== undefined && (current.revision ?? 0) !== spec.expectedRevision) {
++			return { ok: false, message: `Goal ${current.id} changed while confirming; review it and retry. The goal was not archived.` };
+ 		}
+ 
+ 		// 2b. P1-3: during a turn the mutation is buffered in memory (no lock, no
+--- a/extensions/goal-state.ts
++++ b/extensions/goal-state.ts
+@@ -32,7 +32,8 @@
+ 	readActiveGoalPoolAsync,
+ 	sanitizeGoalPaths,
+ } from "./storage/goal-files.ts";
+-import { GoalService } from "./goal-service.ts";
++import { GoalService, type GoalMutationOutcome, type GoalMutationSpec } from "./goal-service.ts";
++import { deriveTasksFromObjective } from "./goal-task-derive.ts";
+ import { goalActivityEvents } from "./goal-ledger.ts";
+ import { GoalAccounting } from "./goal-accounting.ts";
+ import { newGoalScheduler } from "./goal-scheduler-state.ts";
+@@ -114,7 +115,7 @@
+ 	toggleDashboardExpanded(): void;
+ 	/** §10: whether the unified dashboard is currently expanded. */
+ 	isDashboardExpanded(): boolean;
+-	reconcileFocusedGoalFromDisk(ctx: ExtensionContext, opts?: { preserveMemoryUsage?: boolean }): boolean;
++	reconcileFocusedGoalFromDisk(ctx: ExtensionContext, opts?: { preserveMemoryUsage?: boolean; fresh?: boolean }): boolean;
+ 	appendFocusEntry(goalId: string | null, reason: GoalFocusReason): void;
+ 	setFocusedGoalId(goalId: string | null, ctx: ExtensionContext, reason: GoalFocusReason, opts?: { recordLedger?: boolean }): void;
+ 	updateFocusedGoal(next: GoalRecord, ctx: ExtensionContext, shouldPersist?: boolean): void;
+@@ -130,7 +131,7 @@
+ 	clearGoalWidget(ctx: ExtensionContext): void;
+ 	loadState(ctx: ExtensionContext): Promise<void>;
+ 	setGoal(next: GoalRecord | null, ctx: ExtensionContext, shouldPersist?: boolean, focusReason?: GoalFocusReason): void;
+-	archiveCurrentGoal(ctx: ExtensionContext, reason: StopReason | undefined): GoalRecord | null;
++	archiveCurrentGoal(ctx: ExtensionContext, reason: StopReason | undefined, expected?: Pick<GoalMutationSpec, "expectedGoalId" | "expectedRevision" | "focusToken">): GoalMutationOutcome;
+ 	stopActiveGoal(status: Exclude<GoalStatus, "active">, reason: StopReason | undefined, ctx: ExtensionContext): void;
+ 	pauseActiveGoal(ctx: ExtensionContext): void;
+ 	/** §auditor-toggle: flip the focused goal's persisted per-goal skipAuditor and record the ledger event. */
+@@ -414,7 +415,7 @@
+ 		return openGoalsFromPool(goalsById);
+ 	}
+ 
+-	function reconcileFocusedGoalFromDisk(ctx: ExtensionContext, opts: { preserveMemoryUsage?: boolean } = {}): boolean {
++	function reconcileFocusedGoalFromDisk(ctx: ExtensionContext, opts: { preserveMemoryUsage?: boolean; fresh?: boolean } = {}): boolean {
+ 		return goalService.reconcileFocused(ctx, opts);
+ 	}
+ 
+@@ -800,19 +801,25 @@
+ 		updateUI(ctx);
+ 	}
+ 
+-	function archiveCurrentGoal(ctx: ExtensionContext, reason: StopReason | undefined): GoalRecord | null {
+-		if (!state.goal) return null;
+-		const result = goalService.apply(ctx, {
+-			reconcile: false,
+-			refreshFromDisk: true,
+-			archive: true,
+-			commitFocused: false,
+-			mutate: (g) => {
+-				const status = g.status === "complete" ? "complete" : "paused";
+-				return { ...g, status, stopReason: reason };
+-			},
+-		});
+-		return result.ok ? result.goal : null;
++	function archiveCurrentGoal(ctx: ExtensionContext, reason: StopReason | undefined, expected: Pick<GoalMutationSpec, "expectedGoalId" | "expectedRevision" | "focusToken"> = {}): GoalMutationOutcome {
++		try {
++			// Never report speculative in-turn archival as a persisted success.
++			const flushError = goalService.flushForAudit(ctx);
++			if (flushError || goalService.isTurnBuffered()) return { ok: false, message: flushError ?? "Pending goal changes have not been persisted." };
++			return goalService.apply(ctx, {
++				...expected,
++				reconcile: false,
++				refreshFromDisk: true,
++				archive: true,
++				commitFocused: false,
++				mutate: (g) => {
++					const status = g.status === "complete" ? "complete" : "paused";
++					return { ...g, status, stopReason: reason };
++				},
++			});
++		} catch (error) {
++			return { ok: false, message: error instanceof Error ? error.message : String(error) };
++		}
+ 	}
+ 
+ 	function stopActiveGoal(status: Exclude<GoalStatus, "active">, reason: StopReason | undefined, ctx: ExtensionContext): void {
+@@ -901,10 +908,18 @@
+ 	}
+ 
+ 	function replaceGoal(config: GoalCreationConfig, ctx: ExtensionContext, startNow = true, verificationContract?: string, tokenBudget?: number): void {
++		const flushError = goalService.flushForAudit(ctx);
++		if (flushError || goalService.isTurnBuffered()) throw new Error(flushError ?? "Pending goal changes have not been persisted.");
+ 		const goal = createGoal(config);
+ 		goal.scheduler = newGoalScheduler(ctx.sessionManager.getSessionId());
+ 		if (verificationContract) goal.verificationContract = verificationContract;
+ 		if (config.taskList) goal.taskList = config.taskList;
++		else if (tasksEnabled) {
++			// All creation paths persist the structured objective and its stages in
++			// one write; do not rely on a later model call to bootstrap the plan.
++			const derived = deriveTasksFromObjective(goal.objective);
++			if (derived) goal.taskList = { tasks: derived, blockCompletion: false, proposedAt: nowIso() };
++		}
+ 		if (typeof tokenBudget === "number" && tokenBudget > 0) goal.tokenBudget = Math.floor(tokenBudget);
+ 		const result = goalService.create(ctx, {
+ 			goal,
+--- a/extensions/goal-task-derive.ts
++++ b/extensions/goal-task-derive.ts
+@@ -29,9 +29,11 @@
+ 			continue;
+ 		}
+ 		// Ordered steps at line starts.
+-		const numbered = line.match(/^(\d{1,2})\s*[.):]\s+(.+)$/);
+-		if (numbered) {
+-			tasks.push({ id: `step-${tasks.length + 1}`, title: numbered[2]!.trim(), status: "pending" });
++		const numbered = line.match(/^(\d{1,2})\s*(?:[.):]\s+|[：、）]\s*)(.+)$/);
++		const phase = line.match(/^(?:(?:phase|stage)\s+\d+|阶段\s*[一二三四五六七八九十\d]+|第\s*[一二三四五六七八九十\d]+\s*阶段)\s*[:：.)、-]\s*(.+)$/i);
++		const title = numbered?.[2] ?? phase?.[1];
++		if (title) {
++			tasks.push({ id: `step-${tasks.length + 1}`, title: title.trim(), status: "pending" });
+ 		}
+ 	}
+ 
+--- a/extensions/storage/goal-files.ts
++++ b/extensions/storage/goal-files.ts
+@@ -411,26 +411,33 @@
+ 	return lines.slice(start + 1, end).join("\n").trim() || undefined;
+ }
+ 
+-export function parseGoalFile(filePath: string): GoalRecord | null {
++export function parseGoalFile(filePath: string, opts: { fresh?: boolean; strict?: boolean } = {}): GoalRecord | null {
+ 	let stat: fs.Stats;
+ 	try {
+ 		stat = fs.lstatSync(filePath);
+-	} catch {
++	} catch (error) {
+ 		goalFileParseCache.delete(filePath);
++		if (opts.strict && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+ 		return null;
+ 	}
+-	if (stat.isSymbolicLink()) return null;
++	if (stat.isSymbolicLink()) {
++		if (opts.strict) throw new Error(`Refusing to read symlinked goal file: ${filePath}`);
++		return null;
++	}
+ 	const cached = goalFileParseCache.get(filePath);
+-	if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
++	if (!opts.fresh && cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+ 		return cached.parsed;
+ 	}
+ 	let content: string;
+ 	try {
+ 		content = fs.readFileSync(filePath, "utf8");
+-	} catch {
++	} catch (error) {
++		if (opts.strict && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+ 		return null;
+ 	}
+-	return parseGoalContentCached(filePath, stat.mtimeMs, stat.size, content);
++	const parsed = parseGoalContentCached(filePath, stat.mtimeMs, stat.size, content);
++	if (!parsed && opts.strict) throw new Error(`Invalid goal file: ${filePath}`);
++	return parsed;
+ }
+ 
+ /**
+@@ -470,10 +477,13 @@
+ 	const next = sanitizeGoalPaths(ctx, { ...current, archivedPath, updatedAt: nowIso() });
+ 	delete next.activePath;
+ 	atomicWriteGoalFile(ctx, ARCHIVED_GOALS_DIR, archivedPath, serializeGoalFile(next));
+-	if (isSafeActivePath(ctx, current.activePath)) {
+-		try {
+-			safeUnlinkGoalFile(ctx, GOALS_DIR, current.activePath);
+-		} catch {}
++	if (current.activePath) {
++		if (!isSafeActivePath(ctx, current.activePath)) throw new Error(`Refusing to remove unsafe active goal path: ${current.activePath}`);
++		// An archived copy alone is not a completed archive while the active file remains.
++		safeUnlinkGoalFile(ctx, GOALS_DIR, current.activePath);
++		if (statIfPresent(resolveGoalPath(ctx, GOALS_DIR, current.activePath))) {
++			throw new Error(`Goal archive did not remove the active file: ${current.activePath}`);
++		}
+ 	}
+ 	return next;
+ }
+@@ -508,11 +518,11 @@
+ }
+ 
+ /** Uncached full scan (used when the zero-op pool cache is empty). */
+-function scanActiveGoalFiles(ctx: GoalFileContext, root: string): GoalRecord[] {
++function scanActiveGoalFiles(ctx: GoalFileContext, root: string, strict = false): GoalRecord[] {
+ 	let entries: string[];
+ 	try {
+ 		const rootStat = fs.lstatSync(root);
+-		if (rootStat.isSymbolicLink()) { if (isExternalGoalStorage(ctx)) throw new Error(`Goal root is a symlink: ${root}`); return []; }
++		if (rootStat.isSymbolicLink()) { if (strict || isExternalGoalStorage(ctx)) throw new Error(`Goal root is a symlink: ${root}`); return []; }
+ 		const cachedListing = goalDirListingCache.get(root);
+ 		if (cachedListing && cachedListing.mtimeMs === rootStat.mtimeMs) {
+ 			entries = cachedListing.names;
+@@ -523,22 +533,33 @@
+ 			goalDirListingCache.set(root, { mtimeMs: rootStat.mtimeMs, names: entries });
+ 		}
+ 	} catch (error) {
+-		if (isExternalGoalStorage(ctx)) throw error;
++		if (isExternalGoalStorage(ctx) || (strict && (error as NodeJS.ErrnoException).code !== "ENOENT")) throw error;
+ 		return [];
+ 	}
+ 	return entries
+ 		.map((name) => {
+ 			const relPath = `${GOALS_DIR}/${name}`;
+ 			if (!isSafeActivePath(ctx, relPath)) return null;
+-			const parsed = parseGoalFile(resolveGoalPath(ctx, GOALS_DIR, relPath));
++			const parsed = parseGoalFile(resolveGoalPath(ctx, GOALS_DIR, relPath), { fresh: strict, strict });
+ 			if (!parsed || parsed.status === "complete") return null;
+ 			return sanitizeGoalPaths(ctx, { ...parsed, activePath: relPath });
+ 		})
+ 		.filter((goal): goal is GoalRecord => goal !== null);
+ }
+ 
+-export function readActiveGoalPoolView(ctx: GoalFileContext): ReadonlyMap<string, GoalRecord> {
++export function readActiveGoalPoolView(ctx: GoalFileContext, opts: { fresh?: boolean } = {}): ReadonlyMap<string, GoalRecord> {
+  const root = goalStoragePath(ctx, GOALS_DIR);
++ if (opts.fresh) {
++  // Destructive commands must bypass both the zero-op cache and the persistent
++  // snapshot, which cannot detect in-place edits from another process.
++  invalidateGoalDirCache(root);
++  for (const filePath of goalFileParseCache.keys()) {
++   if (path.dirname(filePath) === root) goalFileParseCache.delete(filePath);
++  }
++  const pool = new Map(scanActiveGoalFiles(ctx, root, true).map(goal => [goal.id, goal]));
++  goalPoolCache.set(root, pool);
++  return pool;
++ }
+  const cached = goalPoolCache.get(root);
+  if (cached) return cached;
+  const pool = readPoolWithSnapshotSync(ctx, root);

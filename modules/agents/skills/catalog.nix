@@ -1,4 +1,4 @@
-{ academicResearchSkills, academicResearchSkillsCodex, antiDefensiveWriting, emilSkills, gptImage2PptSkills, pptMaster, promptMaster, vercelAgentSkills, wazaSource }:
+{ academicResearchSkills, academicResearchSkillsCodex, antiDefensiveWriting, emilSkills, gptImage2PptSkills, obeliskSkill, pptMaster, promptMaster, vercelAgentSkills, wazaSource }:
 
 {
   read = {
@@ -118,6 +118,12 @@
   # The repository root is the skill directory.
   prompt-master = {
     source = promptMaster;
+    targets = [ "codex" "claude" "claude-code" "pi" ];
+  };
+
+  # Instructions only; the obelisk CLI comes from tools/obelisk.nix.
+  obelisk = {
+    source = obeliskSkill + "/skills/obelisk";
     targets = [ "codex" "claude" "claude-code" "pi" ];
   };
 

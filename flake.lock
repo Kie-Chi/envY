@@ -293,6 +293,22 @@
         "type": "github"
       }
     },
+    "obelisk-skill": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1793326422,
+        "narHash": "sha256-Z0i033X/zunxkMZYB2PbhAHWYV9WCvrbKMinTBz+BeE=",
+        "owner": "tommy0103",
+        "repo": "obelisk-skill",
+        "rev": "db62981c9bb07124b960782c9f0d4e8b3bd5088d",
+        "type": "github"
+      },
+      "original": {
+        "owner": "tommy0103",
+        "repo": "obelisk-skill",
+        "type": "github"
+      }
+    },
     "pi": {
       "inputs": {
         "nixpkgs": [
@@ -355,6 +371,7 @@
         "mcp-nixos": "mcp-nixos",
         "nixgl": "nixgl",
         "nixpkgs": "nixpkgs_2",
+        "obelisk-skill": "obelisk-skill",
         "pi": "pi",
         "ppt-master": "ppt-master",
         "prompt-master": "prompt-master",

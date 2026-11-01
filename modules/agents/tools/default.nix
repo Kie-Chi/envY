@@ -1,7 +1,7 @@
 { pkgs, sys, ... }:
 
 {
-  imports = [ ./web.nix ];
+  imports = [ ./obelisk.nix ./web.nix ];
 
   # Registry-installed agent helpers are platform-neutral. Their installation
   # lifecycle belongs to modules/software; this feature owns only selection and

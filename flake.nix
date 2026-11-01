@@ -49,6 +49,12 @@
       url = "github:nidhinjs/prompt-master";
       flake = false;
     };
+    # Skill instructions only; the obelisk CLI is pinned separately in
+    # modules/agents/tools/obelisk.nix.
+    obelisk-skill = {
+      url = "github:tommy0103/obelisk-skill";
+      flake = false;
+    };
     mcp-nixos = {
       url = "github:utensils/mcp-nixos";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -105,6 +111,7 @@
         vercelAgentSkills = inputs.vercel-agent-skills;
         wazaSource = inputs.waza;
         promptMaster = inputs.prompt-master;
+        obeliskSkill = inputs.obelisk-skill;
         mcpNixosPackage = inputs.mcp-nixos.packages.${system}.default;
         piSource = inputs.pi.outPath;
         piPackage = inputs.pi.packages.${system}.default;

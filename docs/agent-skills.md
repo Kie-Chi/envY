@@ -9,6 +9,7 @@ skill catalog 位于 modules/agents/skills/catalog.nix，由 modules/agents/defa
 - academic research、presentation、animation、React/Vercel 等 skill：按 catalog 与 active 列表分发。
 - health、hunt、check：来自 waza，分别用于 agent 配置体检、先定位根因再修复、审查 diff 与发布前检查。
 - prompt-master：只在明确要求编写或改进 prompt 时触发。
+- obelisk：检索 Claude Code、Codex、Pi 的本地会话历史，并读写项目内 `.obelisk/memories/`；CLI 由 tools/obelisk.nix 提供。
 
 添加 skill：增加 flake input（flake = false）、catalog source/targets 和 active 名称，确认上游包含 SKILL.md，再运行全机器求值。不要把应用 auth、history、cache 或 session 文件纳入声明式配置。
 
@@ -24,7 +25,9 @@ envY 只管理扩展代码和 cron daemon 的 LaunchAgent。目标、任务、�
 
 升级 npm 扩展时，先确认新版本的 Pi peer 范围包含锁定的 Pi 版本，并确认没有运行时 dependencies，再同时更新版本、URL 和 registry integrity。
 
-官方示例 notify 与 subagent 在构建时做最小改写：notify 只在终端交互模式发送 OSC 通知；subagent 通过 envY `pi` wrapper 启动子进程，示例 agent 不固定模型而继承调用方模型。agent 链接为 `~/.pi/agent/agents/envy-<name>.md`，工作流模板提供 `/implement`、`/scout-and-plan`、`/implement-and-review`。
+官方示例 notify 在构建时做最小改写：只在有 UI 的终端交互会话发送 OSC 通知，子代理会话不发送。
+
+子代理由 `@gotgenes/pi-subagents` 提供，在父进程内运行，支持前台、后台、`get_subagent_result`、`steer_subagent` 与 resume。构建时只改一处：`provider/model` 形式的模型名必须精确匹配，不再模糊替换成其他模型。envY 用 `~/.pi/agent/agents/Explore.md`、`Plan.md` 覆盖内置只读 agent：不固定模型而继承调用方，工具为 read、grep、find、ls 与 codemode。`~/.pi/agent/subagents.json`、项目 `.pi/subagents.json` 和子会话记录由扩展自己维护。子代理会加载 `~/.pi/agent/extensions/` 下全部扩展；项目存在未完成的 goal 时，goal-x 会向子代理上下文注入一段 “PI GOAL UNFOCUSED” 提示，但不会接管或写入 goal。
 
 ## Claude Code 插件
 

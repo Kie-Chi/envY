@@ -1,4 +1,4 @@
-{ academicResearchSkills, academicResearchSkillsCodex, antiDefensiveWriting, emilSkills, gptImage2PptSkills, lib, pptMaster, promptMaster, vercelAgentSkills, wazaSource, ... }:
+{ academicResearchSkills, academicResearchSkillsCodex, antiDefensiveWriting, emilSkills, gptImage2PptSkills, lib, obeliskSkill, pptMaster, promptMaster, vercelAgentSkills, wazaSource, ... }:
 
 {
   home.file = {
@@ -12,7 +12,7 @@
   agents = {
     skills = {
       catalog = import ./skills/catalog.nix {
-        inherit academicResearchSkills academicResearchSkillsCodex antiDefensiveWriting emilSkills gptImage2PptSkills pptMaster promptMaster vercelAgentSkills wazaSource;
+        inherit academicResearchSkills academicResearchSkillsCodex antiDefensiveWriting emilSkills gptImage2PptSkills obeliskSkill pptMaster promptMaster vercelAgentSkills wazaSource;
       };
       active = [
         "anti-defensive-writing"
@@ -38,6 +38,7 @@
         "health"
         "hunt"
         "check"
+        "obelisk"
         "read"
         "browser"
       ];

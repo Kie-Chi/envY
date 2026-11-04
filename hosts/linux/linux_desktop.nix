@@ -70,27 +70,19 @@
   envy.agents.cc.endpoint = "sub2api-anthropic";
   envy.agents.cc.model = "opus-5";
   envy.agents.codex.adapter = "codex";
+  envy.agents.codex.additionalSettings = builtins.fromJSON "{\"model_auto_compact_token_limit\": 244800, \"model_context_window\": 272000}";
   envy.agents.codex.credential = "xikai";
   envy.agents.codex.endpoint = "xikai-openai";
   envy.agents.codex.model = "gpt-6.1-sol";
-  envy.agents.codex.additionalSettings = {
-    model_auto_compact_token_limit = 244800;
-    model_context_window = 272000;
-  };
   envy.agents.pi.adapter = "pi";
+  envy.agents.pi.additionalSettings = builtins.fromJSON "{\"compaction\": {\"keepRecentTokens\": 27200, \"reserveTokens\": 27200}, \"defaultTools\": [\"+codemode\"]}";
   envy.agents.pi.api = "openai-responses";
+  envy.agents.pi.contextWindow = 272000;
   envy.agents.pi.credential = "xikai";
   envy.agents.pi.endpoint = "xikai-openai";
-  envy.agents.pi.model = "gpt-6.1-sol";
-  envy.agents.pi.contextWindow = 272000;
   envy.agents.pi.maxTokens = 128000;
-  envy.agents.pi.additionalSettings = {
-    compaction = {
-      keepRecentTokens = 27200;
-      reserveTokens = 27200;
-    };
-    defaultTools = [ "+codemode" ];
-  };
+  envy.agents.pi.model = "gpt-6.1-sol";
+  envy.agents.pi.moreThinking = true;
   # END ENVY MANAGED AGENTS
 
 }

@@ -1,10 +1,6 @@
 { config, pkgs, lib, ... }:
 
 let
-  dracula-colors = pkgs.fetchurl {
-    url = "https://raw.githubusercontent.com/dracula/iterm/master/Dracula.itermcolors";
-    sha256 = "sha256-X+/B1lmyAggD5mIk0zNkuFPsUqVNIJ71PD18niEn/SA=";
-  };
   terminalScratchpadGesture = config.envy.habits.terminalScratchpad.gesture;
   quakeHotkeys = {
     F2 = { keyCode = 120; character = 63237; };
@@ -56,6 +52,14 @@ in
         item = "iterm2";
       }
     ];
+  };
+
+  # Let OSC 52 copies from terminal programs, including amux sessions, reach
+  # the macOS clipboard.
+  system.defaults.CustomUserPreferences = lib.mkIf (
+    builtins.elem "iterm2" config.envy.darwin.software.homebrew.casks.effective
+  ) {
+    "com.googlecode.iterm2".AllowClipboardAccess = true;
   };
 
   home-manager.users."${config.envy.user.name}" = lib.mkIf (

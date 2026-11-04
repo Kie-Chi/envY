@@ -2,6 +2,8 @@
   upstream = {
     nix = {
       substituters = [ "https://cache.nixos.org/" ];
+      # Linux binary caches used by single-user Nix inside amux containers.
+      containerSubstituters = [ "https://cache.nixos.org/" ];
       extraSubstituters = [ "https://cache.thalheim.io" ];
       extraTrustedPublicKeys = [
         "cache.thalheim.io-1:R7msbosLEZKrxk/lKxf9BTjOOH7Ax3H0Qj0/6wiHOgc="
@@ -39,6 +41,8 @@
       debianSecurity = "https://security.debian.org/debian-security";
     };
     dockerInstallerMirror = null;
+    # Registry host substituted for docker.io in container base images.
+    docker.registry = "docker.io";
     probes = {
       common = [
         { name = "Nix cache"; url = "https://cache.nixos.org/nix-cache-info"; }
@@ -67,6 +71,12 @@
       # USTC mirrors cache.nixos.org artifacts without replacing Nix signature checks.
       substituters = [
         "https://mirrors.ustc.edu.cn/nix-channels/store"
+        "https://cache.nixos.org/"
+      ];
+      # USTC mirrors only x86_64-linux; SJTU also serves aarch64-linux, which
+      # amux containers need on Apple silicon.
+      containerSubstituters = [
+        "https://mirror.sjtu.edu.cn/nix-channels/store"
         "https://cache.nixos.org/"
       ];
       extraSubstituters = [ "https://cache.thalheim.io" ];
@@ -111,9 +121,11 @@
       debianSecurity = "https://mirrors.tuna.tsinghua.edu.cn/debian-security";
     };
     dockerInstallerMirror = "Aliyun";
+    docker.registry = "docker.m.daocloud.io";
     probes = {
       common = [
         { name = "Nix cache"; url = "https://mirrors.ustc.edu.cn/nix-channels/store/nix-cache-info"; }
+        { name = "Nix container cache"; url = "https://mirror.sjtu.edu.cn/nix-channels/store/nix-cache-info"; }
         { name = "sops-nix cache"; url = "https://cache.thalheim.io/nix-cache-info"; }
         { name = "npm registry"; url = "https://registry.npmmirror.com/-/ping"; }
         { name = "PyPI index"; url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/pip/"; }

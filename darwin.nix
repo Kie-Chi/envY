@@ -9,7 +9,7 @@ assert lib.assertMsg (machinePlatform == "darwin")
     ./modules/envy/darwin.nix
     ./modules/software/sources.nix
     ./modules/mirrors/darwin.nix
-    ./modules/agents/darwin.nix
+    ./modules/agents/darwin/nix-darwin.nix
     ./modules/desktops/darwin/nix-darwin.nix
   ];
 }

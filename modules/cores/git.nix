@@ -1,4 +1,4 @@
-{ pkgs, lib, config, machinePlatform, ... }:
+{ lib, config, machinePlatform, ... }:
 
 {
   programs.git = {

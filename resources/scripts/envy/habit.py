@@ -11,7 +11,8 @@ import typer
 from rich.table import Table
 
 from envy import log
-from envy.config import machine_config_file, set_config_value
+from envy.config.machine_nix import machine_config_file
+from envy.config.updates import set_config_value
 from envy.evaluation import machine_manifest, manifest_software_groups
 from envy.mutation import offer_mutation_commit
 from envy.workflows.system import apply_configuration

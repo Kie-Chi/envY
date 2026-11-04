@@ -8,16 +8,12 @@ let
   };
 
   zoteroRoot = "${config.home.homeDirectory}/Library/Application Support/Zotero";
-  stepfunBaseUrl = lib.removeSuffix "/" config.envy.llm.steps.url;
-  claudeEndpoint =
-    if lib.hasSuffix "/v1/messages" stepfunBaseUrl then stepfunBaseUrl
-    else if lib.hasSuffix "/v1" stepfunBaseUrl then "${stepfunBaseUrl}/messages"
-    else "${stepfunBaseUrl}/v1/messages";
-  deepseekBaseUrl = lib.removeSuffix "/" config.envy.llm.deepseek.url;
-  deepseekChatEndpoint =
-    if lib.hasSuffix "/chat/completions" deepseekBaseUrl then deepseekBaseUrl
-    else if lib.hasSuffix "/v1" deepseekBaseUrl then "${deepseekBaseUrl}/chat/completions"
-    else "${deepseekBaseUrl}/v1/chat/completions";
+  # The translation services use fixed provider endpoints and models; only
+  # their keys come from the logical stepfun and deepseek credentials.
+  claudeEndpoint = "https://stepfun.com/v1/messages";
+  claudeModel = "step-3.7-flash";
+  deepseekChatEndpoint = "https://api.deepseek.com/v1/chat/completions";
+  deepseekModel = "deepseek-v4-pro";
   deepseekCustomParams = builtins.toJSON { max_tokens = 4096; };
   managedMarker = "// Managed by nix-darwin/home-manager: modules/desktops/darwin/zotero.nix";
   legacyManagedMarker = "// Managed by nix-darwin/home-manager: modules/desktops/zotero.nix";
@@ -45,8 +41,8 @@ let
 
       ZOTERO_ROOT=${lib.escapeShellArg zoteroRoot}
       PROFILES_INI="$ZOTERO_ROOT/profiles.ini"
-      STEPFUN_KEY_FILE=${lib.escapeShellArg config.sops.secrets.llm-steps-apikey.path}
-      DEEPSEEK_KEY_FILE=${lib.escapeShellArg config.sops.secrets.llm-deepseek-apikey.path}
+      STEPFUN_KEY_FILE=${lib.escapeShellArg config.sops.secrets.llm-credential-stepfun.path}
+      DEEPSEEK_KEY_FILE=${lib.escapeShellArg config.sops.secrets.llm-credential-deepseek.path}
 
       ${sys.cmds.mkdir} -p "$ZOTERO_ROOT"
       if [ ! -f "$PROFILES_INI" ]; then
@@ -131,13 +127,13 @@ let
             printf '%s\n' 'user_pref("extensions.zotero.ZoteroPDFTranslate.attachPaperContext", true);'
             printf '%s\n' 'user_pref("extensions.zotero.ZoteroPDFTranslate.hideUnconfiguredServices", true);'
             printf '%s\n' 'user_pref("extensions.zotero.ZoteroPDFTranslate.customGPT1.endPoint", ${builtins.toJSON deepseekChatEndpoint});'
-            printf '%s\n' 'user_pref("extensions.zotero.ZoteroPDFTranslate.customGPT1.model", ${builtins.toJSON config.envy.llm.deepseek.model});'
+            printf '%s\n' 'user_pref("extensions.zotero.ZoteroPDFTranslate.customGPT1.model", ${builtins.toJSON deepseekModel});'
             printf '%s\n' 'user_pref("extensions.zotero.ZoteroPDFTranslate.customGPT1.temperature", "0.3");'
             printf '%s\n' 'user_pref("extensions.zotero.ZoteroPDFTranslate.customGPT1.prompt", ${builtins.toJSON translationPrompt});'
             printf '%s\n' 'user_pref("extensions.zotero.ZoteroPDFTranslate.customGPT1.stream", true);'
             printf '%s\n' 'user_pref("extensions.zotero.ZoteroPDFTranslate.customGPT1.customParams", ${builtins.toJSON deepseekCustomParams});'
             printf '%s\n' 'user_pref("extensions.zotero.ZoteroPDFTranslate.claude.endPoint", ${builtins.toJSON claudeEndpoint});'
-            printf '%s\n' 'user_pref("extensions.zotero.ZoteroPDFTranslate.claude.model", ${builtins.toJSON config.envy.llm.steps.model});'
+            printf '%s\n' 'user_pref("extensions.zotero.ZoteroPDFTranslate.claude.model", ${builtins.toJSON claudeModel});'
             printf '%s\n' 'user_pref("extensions.zotero.ZoteroPDFTranslate.claude.temperature", "0.3");'
             printf '%s\n' 'user_pref("extensions.zotero.ZoteroPDFTranslate.claude.maxTokens", "4000");'
             printf '%s\n' 'user_pref("extensions.zotero.ZoteroPDFTranslate.claude.stream", true);'

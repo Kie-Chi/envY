@@ -57,6 +57,9 @@ let
       else
         export PYTHONPATH="$bundled:''${PYTHONPATH:-}"
       fi
+      # Repository sources are bundled and hashed by path: flake evaluation;
+      # keep their bytecode in the user cache instead of the checkout.
+      export PYTHONPYCACHEPREFIX="''${PYTHONPYCACHEPREFIX:-''${XDG_CACHE_HOME:-$HOME/.cache}/envy/pycache}"
 
       if [ "''${1:-}" = "tui" ] && [ "$#" -eq 1 ] \
         && [ -z "''${_ENVY_COMPLETE:-}" ] \
@@ -75,16 +78,8 @@ let
     '';
   };
 
-  envyTuiPackage = pkgs.rustPlatform.buildRustPackage {
-    pname = "envy-tui";
-    version = "0.1.0";
-    src = ../../resources/scripts/envy-tui;
-    cargoLock.lockFile = ../../resources/scripts/envy-tui/Cargo.lock;
-    meta = {
-      description = "Ratatui frontend for the envY configuration manager";
-      mainProgram = "envy-tui";
-    };
-  };
+  # Share the installed package and its test phase with the standalone CI check.
+  envyTuiPackage = pkgs.callPackage ./packages/envy-tui.nix {};
 
   packagedScripts = lib.filter (x: x != null) (packageScriptsFromDir scriptsSrc);
 

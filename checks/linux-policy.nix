@@ -22,6 +22,8 @@ let
         emilSkills = inputs.emil-skills;
         vercelAgentSkills = inputs.vercel-agent-skills;
         wazaSource = inputs.waza;
+        promptMaster = inputs.prompt-master;
+        obeliskSkill = inputs.obelisk-skill;
         mcpNixosPackage = inputs.mcp-nixos.packages.${system}.default;
         piSource = inputs.pi.outPath;
         piPackage = inputs.pi.packages.${system}.default;
@@ -37,10 +39,6 @@ let
           envy.repository.path = "/home/policy-check/.envy";
           envy.git.name = "Policy Check";
           envy.git.email = "policy-check@example.com";
-          envy.llm.steps.url = "https://example.com";
-          envy.llm.steps.model = "model";
-          envy.llm.deepseek.url = "https://api.deepseek.com";
-          envy.llm.deepseek.model = "model";
           envy.vscode.mode = "remote";
           envy.linux = { inherit option desktop; };
           envy.software.nix.packages = { inherit exclude; };

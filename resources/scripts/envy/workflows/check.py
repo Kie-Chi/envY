@@ -56,7 +56,8 @@ def changed_machine_entries() -> list[tuple[str, str]]:
             selected.add((match.group(1), match.group(2)))
         else:
             shared = True
-    return machine_entries() if shared else sorted(selected)
+    available = machine_entries()
+    return available if shared else sorted(selected & set(available))
 
 
 def select_entries(
@@ -100,8 +101,9 @@ def run_machine_checks(
             log.ok("check", "machine passed", machine=label)
         else:
             log.error("check", "machine failed", machine=label, exit_code=result.returncode)
-            if result.stderr:
-                log.hint(result.stderr.strip().splitlines()[-1][:500])
+            lines = [line.strip() for line in (result.stderr or "").splitlines() if line.strip()]
+            if lines:
+                log.hint(lines[-1][:500])
     return results
 
 

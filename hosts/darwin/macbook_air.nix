@@ -116,7 +116,7 @@
   envy.agents.codex.endpoint = "xikai-openai";
   envy.agents.codex.model = "gpt-6.1-sol";
   envy.agents.pi.adapter = "pi";
-  envy.agents.pi.additionalSettings = builtins.fromJSON "{\"compaction\": {\"keepRecentTokens\": 27200, \"reserveTokens\": 27200}, \"defaultTools\": [\"+codemode\"]}";
+  envy.agents.pi.additionalSettings = builtins.fromJSON "{\"compaction\": {\"keepRecentTokens\": 27200, \"reserveTokens\": 40960}, \"defaultTools\": [\"+codemode\"]}";
   envy.agents.pi.api = "openai-responses";
   envy.agents.pi.contextWindow = 272000;
   envy.agents.pi.credential = "xikai";

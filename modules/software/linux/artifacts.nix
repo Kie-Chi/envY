@@ -29,7 +29,7 @@ let
 
 in
 {
-  home.activation.installSystemArtifacts = sys.task.root {
+  home.activation.installSystemArtifacts = sys.task.activation {
     name = "system-artifacts";
     after = [ "configureNativeRepositories" ];
     script = ''

@@ -10,7 +10,7 @@ Cross-platform Nix configuration for Darwin (aarch64-darwin) and Linux (x86_64-l
 
 **Non-sensitive machine config** (`hosts/darwin/<id>.nix` or `hosts/linux/<id>.nix`): the sole source for user name, paths, git info, VS Code mode, local LLM URLs/models, and machine software policy. Darwin hosts additionally own Darwin-only proxy/Homebrew policy; Linux has no proxy schema. Values use the `envy.*` option tree and modules read them through `config.envy.*`.
 
-**Device metadata** (`.device-label`): Gitignored TOML containing `device.machine_id` and `device.sops_label`. It selects the default envY flake target and labels the device age key, but is not a second Nix configuration source. `envy config check/refine` validates and migrates it.
+**Device metadata** (`.device-label`): Gitignored TOML containing `device.machine_id` and `device.sops_label`. It selects the default envY flake target and labels the device age key, but is not a second Nix configuration source. `envy config check/refine` validates and completes it.
 
 **Encrypted secrets** (`secrets/secrets.yaml`): passwords, API keys, and proxy URLs with tokens. Managed by sops-nix, encrypted with age key. Referenced as `config.sops.secrets.xxx` (file path) or `config.sops.placeholder.xxx` (for templates). Decrypted only at activation time — **never available as string values at Nix eval time**.
 
@@ -28,22 +28,23 @@ Cross-platform Nix configuration for Darwin (aarch64-darwin) and Linux (x86_64-l
 | `.device-label` | Gitignored device-local TOML identity: machine target and sops key label only. |
 | `modules/envy/options.nix` | `envy.*` schema for meaningful machine values, package/Homebrew selections, and metadata. |
 | `modules/envy/darwin.nix` / `modules/envy/linux.nix` / `modules/envy/home.nix` | Platform manifest and package/Homebrew aggregators. |
-| `modules/llm/default.nix` | Shared LLM sops declarations, environment template, and shell integration. |
+| `modules/llm/default.nix` | Declares one `llm-credential-<name>` sops secret per logical LLM credential. |
 | `modules/mirrors/` | Versioned mirror catalog, common ecosystem environment, and Darwin/Linux implementations. |
 | `modules/cores/secrets.nix` | Core password secret required by host-level activation tasks. |
-| `modules/agents/` | Agent installers, provider wrappers, declarative skill catalog, and shared skill selection. |
+| `modules/libs/sys.nix` | Provides the `sys` module argument from `activation.nix` (log/esudo/sops prelude and `task.activation`), `deploy.nix` (render, root deploy, writable merge), and Linux-only `linux-packages.nix`. |
+| `modules/agents/` | Agent providers (`providers/`), shared defaults (`defaults.nix`), wrappers, declarative skill catalog, and agent tools; platform-only parts live in `darwin/` and `linux/`, static prompts and Pi patches in `files/agents/`. |
+| `modules/agents/amux/` | `amux` host client, session image, tmux baseline, and zsh completion for npm-latest Claude Code/Codex in detachable per-session Docker containers with a shared in-container Nix store. Host session history (`~/.codex/sessions`, `~/.codex/archived_sessions`, `~/.claude/projects`) is bind-mounted at the same paths; agent config, credentials, and SQLite state stay in the container. |
 | `docs/agents.md` | Architecture and maintenance guide for agent providers and skill subpackages. |
 | `install.sh` | Repository-independent bootstrap: clone/reuse a checkout, then hand off to setup with an interactive terminal. |
-| `setup.py` | Python rich + prompt_toolkit sequential CLI for initial setup and config editing. Reuses `envy.config` schema/read-write helpers, manages machine software exclusions, shows a change summary, then saves, encrypts, and offers one scoped Git commit for the selected machine and changed sops files. |
-| `resources/scripts/envy/config.py` | Machine managed-block and secret validation/read-write engine used by setup and `envy config`. |
-| `resources/scripts/envy/legacy.py` | Central registry and helpers for legacy config paths, field aliases, and retired agent/software migrations consumed by `envy config refine`. |
+| `setup.py` | Python rich + prompt_toolkit sequential CLI for initial setup and config editing. Reuses the `envy.config` package's schema/read-write helpers, manages machine software exclusions, shows a change summary, then saves, encrypts, and offers one scoped Git commit for the selected machine and changed sops files. |
+| `resources/scripts/envy/config/` | Machine managed-block and secret validation/read-write engine used by setup and `envy config`: `machine_nix` (managed config and mirror-override blocks), `secret_store` (sops secrets.yaml), `refine` (validation and completion), `updates` (single-value writes), and `cli`. |
 | `resources/scripts/envy/evaluation.py` | Shared reader for the evaluated machine manifest, with process-local and Git-fingerprinted persistent caches used by config views, setup, software policy, and doctor. |
 | `resources/scripts/envy/{process,secure_io,transaction}.py` | Shared command boundary, atomic/private file I/O, and multi-file rollback primitives. |
 | `resources/scripts/envy/jsonio.py` | Stable JSON envelope used by non-interactive frontends and future TUI clients. |
 | `resources/scripts/envy-tui/` | Rust/Ratatui frontend; invokes the envY CLI through its JSON boundary and owns no policy. |
 | `resources/scripts/envy/workflows/` | Check, update, system lifecycle, and shared-branch Git workflows kept out of the CLI registration layer. |
-| `resources/scripts/envy/keys/` | Age/sops storage, device identity, and recovery-key encryption primitives. |
-| `resources/scripts/envy/software.py` | Direct managed include/exclude policy, desired-state planner, checkbox model, atomic writes, and evaluation rollback. |
+| `resources/scripts/envy/keys/` | Age/sops storage, device identity, and recovery-key primitives, plus the `envy key` workflows (`operations`, `rotation`, `importing`, `prompts`, `commits`); `envy/key.py` only registers the CLI. |
+| `resources/scripts/envy/software/` | Direct managed include/exclude policy: `model` (groups, items, normalization), `policy_text` (managed block parse/render), `policy` (machine-file writes and evaluation rollback), `planner` (desired state), `completion`, `audit`, and `cli`. |
 | `resources/scripts/envy/sources/` | Unified source catalog, scoped adapters, signed native sources, artifact verification, and registration transactions. |
 | `resources/scripts/envy/search/` | Concurrent registry providers, normalized search results, manifest matching, and TTL cache. |
 | `resources/scripts/envy/search/index.py` | Private SQLite exact-identity index shared by software search/add, with positive and negative TTLs. |
@@ -84,17 +85,17 @@ composition root or cross-platform dispatcher owns that boundary.
 
 | Context | Format | Example |
 |---|---|---|
-| Non-sensitive machine config | `envy.xxx.yyy` (Nix option) | `envy.llm.steps.url` |
-| sops secret name | `xxx-yyy-zzz` (hyphen-separated) | `sops.secrets.llm-steps-apikey` |
+| Non-sensitive machine config | `envy.xxx.yyy` (Nix option) | `envy.git.email` |
+| sops secret name | `xxx-yyy-zzz` (hyphen-separated) | `sops.secrets.llm-credential-stepfun` |
 | sops secret key in YAML | `xxx/yyy/zzz` (slash-separated) | `llm/steps/apikey` |
-| sops placeholder | Same as secret name | `config.sops.placeholder.llm-steps-apikey` |
+| sops placeholder | Same as secret name | `config.sops.placeholder.llm-credential-stepfun` |
 
 ### Secret flow
 
 1. `setup.py` collects values → writes the managed blocks in the selected machine file + temporary plaintext `secrets.yaml` → encrypts secrets with sops → offers a scoped commit for that machine file and changed sops files
 2. The platform apply command evaluates `hosts/<platform>/<id>.nix`; sops-nix decrypts secrets during activation
 3. Decrypted secrets available as file paths (`config.sops.secrets.xxx.path`) or in rendered templates (`config.sops.placeholder.xxx`)
-4. Owning features declare their secrets and templates: `llm` owns `env-secrets`, Darwin proxies own `mihomo-config`, and Raycast owns `raycast-providers`
+4. Owning features declare their secrets and templates: `llm` owns the `llm-credential-*` secrets, Darwin proxies own `mihomo-config`, and Raycast owns `raycast-providers`
 
 ### age key management
 
@@ -103,6 +104,7 @@ Hybrid approach (in `setup.py`):
 - Else → `age-keygen` generates new key
 - Key stored at `~/Library/Application Support/sops/age/keys.txt` on Darwin or `~/.config/sops/age/keys.txt` on Linux
 - New device: add age public key to `.sops.yaml`, then `sops updatekeys secrets/secrets.yaml`
+- The age key and activation-decrypted secrets (including the sudo password) are readable by every process running as the user, including host-side agents. Run untrusted agents through `amux`, whose containers receive only the agent credentials they need.
 
 ## Commands
 
@@ -112,7 +114,7 @@ Hybrid approach (in `setup.py`):
 | `bash setup.sh` | Run setup TUI through the minimal setup runtime; it does not require Cargo/Rustc |
 | `envy status` | Show one coherent machine/Git/generation/software/Doctor snapshot and recommended next actions |
 | `envy config check` | Check `.device-label`, the selected machine file, and secrets.yaml without writing |
-| `envy config refine` | Migrate/refine device metadata, the machine managed block, and secret paths before apply |
+| `envy config refine` | Complete and validate device metadata, the machine and agent managed blocks, and secret paths before apply |
 | `envy config show` | Show evaluated machine scalar values and secret-set status |
 | `envy software` / `envy sw` | List the selected machine's manifest v3 software groups |
 | `envy sw ls --details` | Show structured selections, versions, and canonical references |
@@ -143,6 +145,7 @@ Hybrid approach (in `setup.py`):
 | `envy doctor apps --only perm` | Check only declared macOS TCC permissions |
 | `envy doctor system` / `network` | Check host workflow prerequisites or explicitly probe evaluated mirror endpoints |
 | `envy key repair` | Repair interrupted key rotations, permissions, and encrypted recovery state |
+| `amux [new] [-s name] [-d] [--no-history] [claude\|codex [agent args]]` | Start an agent in a per-session Docker container with tmux keys; words after the agent are its own (`amux codex resume [--last\|ID]`, `amux claude --resume [ID]`, `amux claude -c`), and resuming an ID without `-c` starts in that session's directory; `amux a [-t name]`, `amux ls [-F fmt]`, `amux kill -t name` manage sessions; `amux update` checks npm and rebuilds; `amux gc` collects the container Nix store |
 | `nix develop` | Enter devShell (jq, sops, age, ssh-to-age, Python, Typer, Rich, prompt_toolkit, cargo, and rustc) |
 | `envy apply` | Apply the locally selected `path:.#<machine-id>` target |
 | `sops --decrypt secrets/secrets.yaml` | View encrypted secrets |
@@ -211,13 +214,15 @@ For meeting apps such as Tencent Meeting or Feishu, open the app and actually st
 - The `.sops.yaml` file CAN be committed once it has real age public keys.
 - When adding secret fields, place the field in the common or platform config schema, declare it in the consuming feature module (not `home.nix`), gate platform-only declarations to the same platform, and let `envy config refine` create its YAML path.
 - When adding a genuinely machine-specific value, decide common vs platform-only first, declare the Nix option, add the matching Python schema field, expose it in the relevant manifest, and consume it through `config.envy.*`.
-- When adding an LLM agent/provider: keep its installer and stable command wrapper in `modules/agents`; never manage application-owned auth, history, cache, or session files declaratively.
+- When adding an LLM agent/provider: keep its installer and stable command wrapper in `modules/agents/providers` (platform-only parts in `modules/agents/darwin` or `linux`); never manage application-owned auth, history, cache, or session files declaratively.
 - When adding a reusable skill: create `modules/agents/skills/<skill-name>/SKILL.md`, register it in `skills/catalog.nix`, and select it through `agents.skills.active`. Keep detailed references and scripts inside the skill and load them only when needed.
 - When adding an app doctor target, place it in common only if its signals are platform-neutral; otherwise add it to the relevant platform app schema. Prefer generic fields before a custom checker.
 - When adding a new login/auth check: implement it in `resources/scripts/envy/doctor/checks/apps/auth.py` or another focused module, register it in `_load_custom_checkers()`, and never print account names, emails, tokens, API keys, cookies, or raw secret values.
 - When adding a new app permission check: add `PermissionReq` entries in `AppSpec.permissions`. Remember that missing TCC records may mean "not requested yet", not necessarily "denied".
 - Modules read non-sensitive machine values from `config.envy.*`; do not reintroduce a separate `cfg` argument.
 - sops-nix on darwin uses activation scripts (not systemd), so secrets are decrypted during `darwin-rebuild switch`.
+- Keep build caches outside the checkout: `path:` flake evaluation hashes every file, and bundled sources capture them in closures. The devShell, `./envy`, and the installed `envy` wrapper place `CARGO_TARGET_DIR` and `PYTHONPYCACHEPREFIX` under `~/.cache/envy`.
+- `./envy` reuses a GC-rooted devShell profile under `~/.cache/envy/devshell`, keyed by `flake.nix`, `flake.lock`, the Nix version, and the system. `mkDevShell` must not read other checkout paths besides `./resources/scripts`; otherwise add them to that key. Delete the directory to force a fresh evaluation.
 
 - Source definitions live in `envy.software.sources`; custom host definitions use a separate `ENVY MANAGED SOURCES` block. Search/add caches bind concrete source IDs and context fingerprints. Never substitute a global Nix registry lookup for project-locked inputs.
 - Shared source registration owns only flake managed input/binding blocks plus flake.lock, validates every machine, and rolls back all files on failure. Native source configuration owns only envY-named repository/keyring files.

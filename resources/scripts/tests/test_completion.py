@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from typer.main import get_command
 
-from envy.config import (
+from envy.config.cli import (
     complete_machine_paths,
     complete_machine_values,
     complete_secret_paths,
@@ -13,7 +13,8 @@ from envy.doctor.app import complete_doctor_selection
 from envy.habit import complete_habit_gestures, complete_habit_ids
 from envy.key import complete_export_formats
 from envy.main import cli
-from envy.mirror import complete_measurement_providers, complete_mirror_targets
+from envy.mirror.measure import complete_measurement_providers
+from envy.mirror.sources import complete_mirror_targets
 
 
 class CompletionTests(unittest.TestCase):

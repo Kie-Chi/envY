@@ -55,6 +55,7 @@ in
         "envy.linux.desktop" = policy.desktop;
         "envy.linux.option" = policy.option;
         "envy.mirrors.mode" = config.envy.mirrors.mode;
+        "envy.amux.skipPermissions" = config.envy.amux.skipPermissions;
       };
       llm = {
         credentials = lib.mapAttrs (_: credential: {

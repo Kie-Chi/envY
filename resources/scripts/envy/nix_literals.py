@@ -1,4 +1,4 @@
-"""Conservative parser for JSON-compatible Nix literals in managed blocks.
+"""Conservative parser and string escaping for Nix literals in managed blocks.
 
 This is not a Nix evaluator. Expressions and interpolation are rejected rather
 than guessed, so a managed-block rewrite cannot silently lose their meaning.
@@ -17,6 +17,37 @@ _TOKEN = re.compile(
 
 class LiteralError(ValueError):
     pass
+
+
+_STRING_ESCAPES = {"n": "\n", "r": "\r", "t": "\t"}
+# Nix reads "$$" as two literal dollars, so only a lone "${" interpolates.
+_STRING_PIECE = re.compile(r"\\(.)|\$\$|\$\{", re.DOTALL)
+
+
+def escape_string(value: str) -> str:
+    """Return the body of a double-quoted Nix string that evaluates to value."""
+    return (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("${", "\\${")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
+
+
+def unescape_string(body: str) -> str:
+    """Decode a double-quoted Nix string body, rejecting interpolation."""
+
+    def decode(match: re.Match[str]) -> str:
+        piece = match.group(0)
+        if piece == "${":
+            raise LiteralError("Nix interpolation is not supported")
+        if piece == "$$":
+            return piece
+        return _STRING_ESCAPES.get(match.group(1), match.group(1))
+
+    return _STRING_PIECE.sub(decode, body)
 
 
 class LiteralReader:

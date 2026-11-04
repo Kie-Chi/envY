@@ -1,4 +1,4 @@
-{ config, pkgs, lib, ... }:
+{ pkgs, lib, ... }:
 
 let
   # Helper Function to package a macOS App from a .dmg archive
@@ -29,15 +29,6 @@ let
         platforms = platforms.darwin;
       };
     };
-
-  v2rayNApp = makeMacDmgApp rec {
-    pname = "v2rayN";
-    version = "7.17.3";
-    url = "https://github.com/2dust/v2rayN/releases/download/${version}/v2rayN-macos-arm64.dmg";
-    hash = "sha256-EGWDManMYMdtzCb5Es70GoqSB5O4fkLtEZufZe/TYFc=";
-    description = "A GUI client for V2Ray/Xray/sing-box";
-    homepage = "https://github.com/2dust/v2rayN";
-  };
 
   okular = makeMacDmgApp rec {
     pname = "okular";

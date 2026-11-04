@@ -51,6 +51,34 @@ in
           default = null;
           description = "Default model passed to this agent, when supported.";
         };
+        models = mkOption {
+          type = types.listOf (types.submodule ({ options, ... }: {
+            options = {
+              profile = mkOption { type = types.nullOr types.nonEmptyStr; default = null; };
+              endpoint = mkOption { type = types.nullOr types.nonEmptyStr; default = null; };
+              credential = mkOption { type = types.nullOr types.nonEmptyStr; default = null; };
+              api = mkOption {
+                type = types.nullOr (types.enum [ "openai-completions" "openai-responses" "anthropic-messages" ]);
+                default = null;
+              };
+              model = mkOption { type = types.nullOr types.nonEmptyStr; default = null; };
+              contextWindow = mkOption { type = types.nullOr types.ints.positive; default = null; };
+              maxTokens = mkOption { type = types.nullOr types.ints.positive; default = null; };
+              _explicitFields = mkOption {
+                type = types.listOf types.str;
+                internal = true;
+                readOnly = true;
+                default = lib.filter (field: options.${field}.highestPrio < 1500)
+                  [ "profile" "endpoint" "credential" "api" "model" "contextWindow" "maxTokens" ];
+              };
+            };
+          }));
+          # Strip only schema defaults: an explicitly assigned null must still
+          # clear a profile value. Keep this bookkeeping out of the manifest.
+          apply = map (item: lib.getAttrs item._explicitFields item);
+          default = [];
+          description = "Pi model candidates with optional profile inheritance and explicit field overrides. The legacy selection remains the default; otherwise the first entry is used.";
+        };
         contextWindow = mkOption {
           type = types.nullOr types.ints.positive;
           default = null;
@@ -127,6 +155,11 @@ in
                 default = "json";
                 description = "Structured format of the application runtime file.";
               };
+              managedKeyPrefixes = mkOption {
+                type = types.attrsOf types.str;
+                default = {};
+                description = "Object sections whose adapter-owned key namespaces are replaced, preserving all other keys.";
+              };
               data = mkOption {
                 type = types.attrs;
                 description = "Declarative object merged into the runtime file.";
@@ -140,5 +173,15 @@ in
     }));
     default = { };
     description = "Machine-owned agent instances and their endpoint/model selection.";
+  };
+
+  # Kept outside envy.agents, whose every key is an agent instance.
+  options.envy.amux.skipPermissions = mkOption {
+    type = types.bool;
+    default = true;
+    description = ''
+      Start amux container agents with their permission prompts disabled.
+      `amux new --no-skip-permissions` keeps the prompts for one session.
+    '';
   };
 }

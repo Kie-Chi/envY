@@ -1,4 +1,4 @@
-{ pkgs, config, ... }:
+{ config, ... }:
 {
   system.stateVersion = 6;
   system.primaryUser = config.envy.user.name;
@@ -18,4 +18,7 @@
   system.defaults.NSGlobalDomain."com.apple.keyboard.fnState" = true;
 
   programs.zsh.enable = true;
+  # Home Manager's oh-my-zsh runs compinit with the final fpath. A second,
+  # global call with a different fpath rebuilds the dump on every shell start.
+  programs.zsh.enableGlobalCompInit = false;
 }

@@ -52,7 +52,7 @@
     '';
   };
 
-  home.activation.installNativeDocker = lib.mkIf (builtins.any (item: item.name == "docker-ce") config.envy.linux.software.native.packages.effective) (sys.task.root {
+  home.activation.installNativeDocker = lib.mkIf (builtins.any (item: item.name == "docker-ce") config.envy.linux.software.native.packages.effective) (sys.task.activation {
     name = "installNativeDocker";
     after = [ "installNativePackages" ];
     script = ''

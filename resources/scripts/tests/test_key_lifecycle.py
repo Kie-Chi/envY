@@ -3,8 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from envy import key
-from envy.keys import identity, storage
+from envy.keys import identity, operations, storage
 from envy.transaction import FileTransaction, transaction_lock
 from envy import utils
 
@@ -82,11 +81,22 @@ class KeyLifecycleTests(unittest.TestCase):
                     self.assertTrue(lock.exists())
 
     def test_key_remove_rejects_rotation_marker(self):
-        with patch.object(key, "read_sops_yaml_keys", return_value={
-            "envy_rotation_old_device": "age1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        }):
-            with self.assertRaisesRegex(ValueError, "rotation marker"):
-                key.key_remove("envy_rotation_old_device")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            # The lifecycle wrapper locks the checkout and snapshots every key
+            # file; keep both away from the real repository and device key.
+            key_files = {
+                name: root / name.lower()
+                for name in ("SOPS_YAML", "SECRETS_FILE", "RECOVERY_KEY_FILE", "AGE_KEY_FILE", "DEVICE_LABEL_FILE")
+            }
+            with patch.multiple(operations, ENVY_ROOT=root, **key_files), patch.object(
+                operations, "get_current_device_public_key", return_value="age1current"
+            ), patch.object(operations, "read_sops_yaml_keys", return_value={
+                "envy_rotation_old_device": "age1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            }):
+                with self.assertRaisesRegex(ValueError, "rotation marker"):
+                    operations.key_remove("envy_rotation_old_device")
+            self.assertEqual([path.name for path in root.iterdir()], [".envy-key.lock"])
 
     def test_run_cmd_pins_missing_age_file_instead_of_using_ambient_identity(self):
         with tempfile.TemporaryDirectory() as temporary:

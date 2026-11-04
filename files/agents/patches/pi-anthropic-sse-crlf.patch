@@ -1,0 +1,46 @@
+--- a/packages/ai/src/api/anthropic-messages.ts
++++ b/packages/ai/src/api/anthropic-messages.ts
+@@ -451,15 +451,23 @@
+ 	return Math.min(carriageReturnIndex, newlineIndex);
+ }
+ 
+-function consumeLine(text: string): { line: string; rest: string } | null {
++function consumeLine(text: string, final = false): { line: string; rest: string } | null {
+ 	const lineBreakIndex = nextLineBreakIndex(text);
+ 	if (lineBreakIndex === -1) {
+ 		return null;
+ 	}
+ 
+ 	let nextIndex = lineBreakIndex + 1;
+-	if (text[lineBreakIndex] === "\r" && text[nextIndex] === "\n") {
+-		nextIndex += 1;
++	if (text[lineBreakIndex] === "\r") {
++		// A CRLF pair can straddle two chunks. Until more input arrives, a
++		// trailing CR may be half of one, and splitting it early would turn the
++		// following LF into a blank line that dispatches an event without data.
++		if (nextIndex === text.length && !final) {
++			return null;
++		}
++		if (text[nextIndex] === "\n") {
++			nextIndex += 1;
++		}
+ 	}
+ 
+ 	return {
+@@ -501,14 +509,14 @@
+ 		}
+ 
+ 		buffer += decoder.decode();
+-		let consumed = consumeLine(buffer);
++		let consumed = consumeLine(buffer, true);
+ 		while (consumed) {
+ 			buffer = consumed.rest;
+ 			const event = decodeSseLine(consumed.line, state);
+ 			if (event) {
+ 				yield event;
+ 			}
+-			consumed = consumeLine(buffer);
++			consumed = consumeLine(buffer, true);
+ 		}
+ 
+ 		if (buffer.length > 0) {

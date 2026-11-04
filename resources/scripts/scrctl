@@ -30,16 +30,18 @@ function log_error()   { echo "[ERROR]   $1"; }
 # =========================================================
 
 function get_current_info() {
-    local current_line=$(xrandr | grep -e "\*" | head -n 1)
-    local res=$(echo "$current_line" | awk '{print $1}')
-    local rate=$(echo "$current_line" | grep -oE '[0-9]+\.[0-9]+(\*|\+)+' | sed 's/[*+]//g' | head -n 1)
+    local current_line res rate
+    current_line=$(xrandr | grep -e "\*" | head -n 1)
+    res=$(echo "$current_line" | awk '{print $1}')
+    rate=$(echo "$current_line" | grep -oE '[0-9]+\.[0-9]+(\*|\+)+' | sed 's/[*+]//g' | head -n 1)
     
     local monitor_scale="N/A"
     local text_scale="N/A"
 
     if command -v gsettings &> /dev/null; then
         # Monitor Scale
-        local raw_scale=$(gsettings get org.gnome.desktop.interface scaling-factor | awk '{print $NF}')
+        local raw_scale
+        raw_scale=$(gsettings get org.gnome.desktop.interface scaling-factor | awk '{print $NF}')
         if [[ "$raw_scale" == "0" ]]; then raw_scale=1; fi
         monitor_scale="$((raw_scale * 100))%"
 
@@ -59,9 +61,10 @@ function get_current_info() {
 }
 
 function save_current_state() {
-    local current_line=$(xrandr | grep -e "\*" | head -n 1)
-    local res=$(echo "$current_line" | awk '{print $1}')
-    local rate=$(echo "$current_line" | grep -oE '[0-9]+\.[0-9]+(\*|\+)+' | sed 's/[*+]//g' | head -n 1)
+    local current_line res rate
+    current_line=$(xrandr | grep -e "\*" | head -n 1)
+    res=$(echo "$current_line" | awk '{print $1}')
+    rate=$(echo "$current_line" | grep -oE '[0-9]+\.[0-9]+(\*|\+)+' | sed 's/[*+]//g' | head -n 1)
     echo "$res $rate" > "$STATE_FILE"
 }
 
@@ -70,8 +73,9 @@ function add_new_mode() {
     if [[ -z "$r" ]]; then log_error "Usage: add <W> <H> <R>"; return 1; fi
 
     log_info "Calculating Modeline..."
-    local cvt_out=$(cvt "$w" "$h" "$r")
-    local params=$(echo "$cvt_out" | grep "Modeline" | sed -r 's/.*Modeline *"[^"]*" *//')
+    local cvt_out params
+    cvt_out=$(cvt "$w" "$h" "$r")
+    params=$(echo "$cvt_out" | grep "Modeline" | sed -r 's/.*Modeline *"[^"]*" *//')
 
     if [ -z "$params" ]; then log_error "cvt failed to parse parameters."; return 1; fi
 
@@ -80,11 +84,12 @@ function add_new_mode() {
     xrandr --rmmode "$mode_name" 2>/dev/null
 
     log_info "Creating mode: $mode_name"
-    xrandr --newmode "$mode_name" $params
-    if [ $? -ne 0 ]; then log_error "Failed to create mode (xrandr --newmode)."; return 1; fi
+    # Modeline timings are separate xrandr arguments.
+    local timings
+    read -r -a timings <<< "$params"
+    if ! xrandr --newmode "$mode_name" "${timings[@]}"; then log_error "Failed to create mode (xrandr --newmode)."; return 1; fi
     
-    xrandr --addmode "$DISPLAY_NAME" "$mode_name"
-    if [ $? -eq 0 ]; then log_success "Mode added: $mode_name"; else log_error "Failed to add mode to display."; fi
+    if xrandr --addmode "$DISPLAY_NAME" "$mode_name"; then log_success "Mode added: $mode_name"; else log_error "Failed to add mode to display."; fi
 }
 
 function switch_mode() {
@@ -92,21 +97,23 @@ function switch_mode() {
     if [[ -z "$input" ]]; then log_error "Usage: switch <Name> [Rate]"; return 1; fi
 
     local target="$input"
-    if ! xrandr | grep -q "[[:space:]]$target[[:space:]]"; then
-        local match=$(xrandr | grep "${input}_" | grep "_User" | head -n 1 | awk '{print $1}')
+    if ! xrandr | grep -q "[[:space:]]${target}[[:space:]]"; then
+        local match
+        match=$(xrandr | grep "${input}_" | grep "_User" | head -n 1 | awk '{print $1}')
         if [ -n "$match" ]; then target="$match"; log_info "Auto-matched: $target"; fi
     fi
 
     save_current_state
     log_info "Switching to: $target ..."
     
-    if [ -n "$rate" ]; then
-        xrandr --output "$DISPLAY_NAME" --mode "$target" --rate "$rate" --scale 1x1
-    else
-        xrandr --output "$DISPLAY_NAME" --mode "$target" --scale 1x1
-    fi
+    local rate_args=()
+    if [ -n "$rate" ]; then rate_args=(--rate "$rate"); fi
 
-    if [ $? -eq 0 ]; then log_success "Switched successfully."; else log_error "Switch failed."; fi
+    if xrandr --output "$DISPLAY_NAME" --mode "$target" "${rate_args[@]}" --scale 1x1; then
+        log_success "Switched successfully."
+    else
+        log_error "Switch failed."
+    fi
 }
 
 function set_scale() {
@@ -134,9 +141,11 @@ function set_scale() {
     gsettings set org.gnome.mutter experimental-features "[]" 2>/dev/null
 
     log_info "Setting GNOME scaling-factor to: $factor ($input%)"
-    gsettings set org.gnome.desktop.interface scaling-factor "$factor"
-    
-    if [ $? -eq 0 ]; then log_success "Scale updated."; else log_error "Failed to set scale."; fi
+    if gsettings set org.gnome.desktop.interface scaling-factor "$factor"; then
+        log_success "Scale updated."
+    else
+        log_error "Failed to set scale."
+    fi
 }
 
 function set_text_scale() {
@@ -148,17 +157,18 @@ function set_text_scale() {
     fi
 
     log_info "Setting GNOME Text Scaling Factor to: $factor"
-    gsettings set org.gnome.desktop.interface text-scaling-factor "$factor"
-    
-    if [ $? -eq 0 ]; then log_success "Text scale updated."; else log_error "Failed to set text scale."; fi
+    if gsettings set org.gnome.desktop.interface text-scaling-factor "$factor"; then
+        log_success "Text scale updated."
+    else
+        log_error "Failed to set text scale."
+    fi
 }
 
 function restore_state() {
     if [ ! -f "$STATE_FILE" ]; then log_error "No history file found."; exit 1; fi
-    read l_res l_rate < "$STATE_FILE"
+    read -r l_res l_rate < "$STATE_FILE"
     log_info "Restoring: $l_res @ ${l_rate}Hz"
-    xrandr --output "$DISPLAY_NAME" --mode "$l_res" --rate "$l_rate" --scale 1x1
-    if [ $? -eq 0 ]; then log_success "Restored."; fi
+    if xrandr --output "$DISPLAY_NAME" --mode "$l_res" --rate "$l_rate" --scale 1x1; then log_success "Restored."; fi
 }
 
 function load_config() {
@@ -168,12 +178,15 @@ function load_config() {
     while read -r line || [ -n "$line" ]; do
         [[ "$line" =~ ^#.*$ ]] && continue
         [[ -z "${line// }" ]] && continue
-        read -r cmd args <<< "$line"
+        local words cmd
+        read -r -a words <<< "$line"
+        cmd=${words[0]}
+        local args=("${words[@]:1}")
         case "$cmd" in
-            add)        add_new_mode $args ;;
-            switch)     switch_mode $args ;;
-            scale)      set_scale $args ;;
-            text-scale) set_text_scale $args ;;
+            add)        add_new_mode "${args[@]}" ;;
+            switch)     switch_mode "${args[@]}" ;;
+            scale)      set_scale "${args[@]}" ;;
+            text-scale) set_text_scale "${args[@]}" ;;
             *)          log_warn "Unknown command: $cmd" ;;
         esac
     done < "$file"

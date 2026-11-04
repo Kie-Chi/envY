@@ -1,0 +1,109 @@
+#compdef amux
+# Completion for amux, whose commands and options follow tmux.
+
+_amux_sessions() {
+  local -a sessions
+  sessions=(${(f)"$(_call_program sessions "amux ls -F '#{session_name}:#{agent} #{workdir}'" 2>/dev/null)"})
+  _describe -t sessions 'session' sessions
+}
+
+_amux_formats() {
+  local -a formats
+  formats=('#{session_name}' '#{agent}' '#{workdir}' '#{created}')
+  _wanted formats expl 'format' compadd -a formats
+}
+
+# Words after the agent belong to it; offer only its session commands and
+# leave session IDs to the agent's own picker.
+_amux_agent_args() {
+  local -a commands
+  # "--" only separates amux options from the agent's own arguments.
+  if [[ $words[2] == -- ]] && (( CURRENT > 2 )); then
+    words[2]=(); (( CURRENT-- ))
+  fi
+  case $words[1] in
+    codex)
+      if (( CURRENT == 2 )); then
+        commands=('resume:resume a previous session' 'fork:fork a previous session')
+        _describe -t commands 'codex command' commands
+      elif [[ $words[2] == (resume|fork) ]]; then
+        shift words; (( CURRENT-- ))
+        _arguments \
+          '--last[use the most recent session]' \
+          '--all[show sessions from every directory]' \
+          '--include-non-interactive[include non-interactive sessions]'
+      fi
+      ;;
+    claude)
+      _arguments \
+        '(-r --resume -c --continue)'{-r,--resume}'[resume a session by ID or from the picker]' \
+        '(-r --resume -c --continue)'{-c,--continue}'[continue the most recent session here]' \
+        '--fork-session[use a new session ID when resuming]'
+      ;;
+  esac
+}
+
+_amux_new() {
+  local i=2
+  while (( i < CURRENT )); do
+    case $words[i] in
+      -s|-c|--add-dir) (( i += 2 )) ;;
+      claude|codex)
+        shift $(( i - 1 )) words; (( CURRENT -= i - 1 ))
+        _amux_agent_args
+        return
+        ;;
+      *) (( i++ )) ;;
+    esac
+  done
+  _arguments -s -S \
+    '-s[session name]:session name:' \
+    '-d[do not attach]' \
+    '-c[working directory]:directory:_directories' \
+    '*--add-dir[also share a directory, read-only unless suffixed with :rw]:directory:_directories' \
+    '--no-skip-permissions[keep the agent permission prompts]' \
+    '--no-history[keep history in the amux volume instead of the host]' \
+    '(-h --help)'{-h,--help}'[show help]' \
+    '1:agent:((claude\:"Claude Code" codex\:"Codex"))'
+}
+
+_amux() {
+  local -a commands agents
+  commands=(
+    'new-session:start a session (default command)'
+    'new:start a session (default command)'
+    'attach-session:attach to a session'
+    'attach:attach to a session'
+    'a:attach to a session'
+    'at:attach to a session'
+    'list-sessions:list sessions'
+    'ls:list sessions'
+    'kill-session:stop a session and its agent'
+    'kill:stop a session and its agent'
+    'update:check npm for newer agents and rebuild the image'
+    'gc:delete container Nix store paths that no session uses'
+  )
+  if (( CURRENT == 2 )) && [[ $words[2] != -* ]]; then
+    _describe -t commands 'amux command' commands
+    agents=('claude:start a Claude Code session' 'codex:start a Codex session')
+    _describe -t agents 'agent' agents
+    return
+  fi
+  local command=$words[2]
+  case $command in
+    new|new-session|claude|codex|-*)
+      [[ $command == (new|new-session) ]] && { shift words; (( CURRENT-- )) }
+      _amux_new
+      ;;
+    attach|attach-session|a|at|kill|kill-session)
+      shift words; (( CURRENT-- ))
+      _arguments '-t[target session]:session:_amux_sessions'
+      ;;
+    ls|list-sessions)
+      shift words; (( CURRENT-- ))
+      _arguments '-F[output format]:format:_amux_formats'
+      ;;
+  esac
+}
+
+_amux "$@"

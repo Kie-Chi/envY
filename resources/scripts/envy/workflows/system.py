@@ -9,7 +9,7 @@ from pathlib import Path
 import typer
 
 from envy import log
-from envy.config import refine_all
+from envy.config.refine import refine_all
 from envy.evaluation import machine_manifest, manifest_settings
 from envy.keys.storage import device_public_keys, read_sops_yaml_keys
 from envy.utils import AGE_KEY_FILE, SECRETS_FILE, age_key_file_for_home, run_cmd

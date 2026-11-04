@@ -28,13 +28,5 @@ SECRET_FIELDS = [
              validators=[is_url]),
 ]
 
-LEGACY_CONFIG_PATHS = {
-    "envy.darwin.services.mihomo.mode": (
-        "envy.darwin.proxy.mode", "envy.proxy.mode", "proxy.status",
-    ),
-    "envy.darwin.services.mihomo.tun": (
-        "envy.darwin.proxy.tun", "envy.proxy.tun", "proxy.tun",
-    ),
-}
 OBSOLETE_MACHINE_KEYS = ["envy.darwin.proxy.mode", "envy.darwin.proxy.tun"]
 OBSOLETE_SECRET_PATHS: list[str] = []

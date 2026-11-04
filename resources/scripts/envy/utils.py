@@ -31,9 +31,6 @@ def platform_name() -> str:
 # ==========================================
 
 HOME_DIR = Path.home()
-LEGACY_MACHINE_SELECTOR = HOME_DIR / ".config" / "envy" / "machine"
-LEGACY_USER_CONFIG = HOME_DIR / ".config" / "dotfiles" / "config.nix"
-LEGACY_SYSTEM_CONFIG = Path("/etc/dotfiles/config.nix")
 
 
 def _is_envy_checkout(path: Path) -> bool:
@@ -82,6 +79,14 @@ SECRETS_DIR = ENVY_ROOT / "secrets"
 SECRETS_FILE = SECRETS_DIR / "secrets.yaml"
 RECOVERY_KEY_FILE = SECRETS_DIR / "recovery-key.age"
 DEVICE_LABEL_FILE = ENVY_ROOT / ".device-label"
+DEVICE_METADATA_HINT = (
+    'Rewrite .device-label as TOML with version = 1 and a device table containing '
+    'machine_id = "<machine-id>" and sops_label = "<label>"'
+)
+
+
+class DeviceMetadataError(ValueError):
+    """The device-local .device-label document cannot be used."""
 SETUP_SCRIPT = ENVY_ROOT / "setup.sh"
 
 
@@ -102,7 +107,7 @@ SYSTEM_PROFILE = Path("/nix/var/nix/profiles/system")
 
 
 def read_device_metadata() -> dict[str, str]:
-    """Read .device-label TOML, accepting the previous one-line label once."""
+    """Read the versioned .device-label TOML document."""
     if not DEVICE_LABEL_FILE.exists():
         return {}
     text = DEVICE_LABEL_FILE.read_text().strip()
@@ -111,24 +116,20 @@ def read_device_metadata() -> dict[str, str]:
     try:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
-        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", text):
-            # Historically this file named only the sops key. Do not assume it
-            # was also the selected machine when legacy config may disagree.
-            return {"sops_label": text}
-        raise ValueError(f"invalid TOML in {DEVICE_LABEL_FILE}: {exc}") from exc
+        raise DeviceMetadataError(f"invalid TOML in {DEVICE_LABEL_FILE}: {exc}") from exc
 
     version = data.get("version", 1)
     if type(version) is not int or version != 1:
-        raise ValueError(f"unsupported device metadata version: {version}")
+        raise DeviceMetadataError(f"unsupported device metadata version: {version}")
     device = data.get("device", {})
     if not isinstance(device, dict):
-        raise ValueError(f"[device] must be a TOML table in {DEVICE_LABEL_FILE}")
+        raise DeviceMetadataError(f"[device] must be a TOML table in {DEVICE_LABEL_FILE}")
     result = {}
     for key in ("machine_id", "sops_label"):
         value = device.get(key)
         if value is not None:
             if not isinstance(value, str):
-                raise ValueError(f"device.{key} must be a string in {DEVICE_LABEL_FILE}")
+                raise DeviceMetadataError(f"device.{key} must be a string in {DEVICE_LABEL_FILE}")
             result[key] = value.strip()
     return result
 
@@ -166,31 +167,11 @@ def write_device_metadata(
 
 
 def current_machine_id() -> str:
-    """Resolve the machine target from device metadata and legacy inputs."""
+    """Resolve the machine target from ENVY_MACHINE, device metadata, or the hostname."""
     env_machine = os.environ.get("ENVY_MACHINE", "").strip()
     candidates = [env_machine]
     metadata = read_device_metadata()
     candidates.append(metadata.get("machine_id", ""))
-
-    if not metadata.get("machine_id"):
-        # One-time upgrade paths are consulted only until TOML device metadata
-        # has a machine ID; they are not part of the steady-state lookup.
-        if LEGACY_MACHINE_SELECTOR.exists():
-            try:
-                candidates.append(LEGACY_MACHINE_SELECTOR.read_text().strip())
-            except OSError:
-                pass
-
-        for config_path in (LEGACY_USER_CONFIG, ENVY_ROOT / "config.nix", LEGACY_SYSTEM_CONFIG):
-            if not config_path.exists():
-                continue
-            try:
-                text = config_path.read_text()
-            except OSError:
-                continue
-            match = re.search(r'^\s*envy\.machine\.id\s*=\s*"([A-Za-z0-9_-]+)"\s*;', text, re.MULTILINE)
-            if match:
-                candidates.append(match.group(1))
 
     # A sops label identifies an encryption recipient, not a machine target.
     # Never let a copied key or stale label select another host configuration.
@@ -207,12 +188,6 @@ def set_device_machine_id(machine_id: str) -> None:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", machine_id):
         raise ValueError("invalid machine ID")
     write_device_metadata(machine_id=machine_id)
-    if LEGACY_MACHINE_SELECTOR.is_file() or LEGACY_MACHINE_SELECTOR.is_symlink():
-        LEGACY_MACHINE_SELECTOR.unlink()
-        try:
-            LEGACY_MACHINE_SELECTOR.parent.rmdir()
-        except OSError:
-            pass
 
 
 def flake_target() -> str:

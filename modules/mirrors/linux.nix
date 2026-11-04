@@ -88,7 +88,7 @@ EOF
   '';
 in
 {
-  home.activation.configureAptMirror = sys.task.root {
+  home.activation.configureAptMirror = sys.task.activation {
     name = "configure-apt-mirror";
     script = if config.envy.mirrors.mode == "china"
       then configureChinaMirror

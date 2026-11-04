@@ -17,6 +17,7 @@ in
 profile // {
   nix = profile.nix // {
     substituters = field "nix" "substituters" profile.nix.substituters;
+    containerSubstituters = field "nix" "containerSubstituters" profile.nix.containerSubstituters;
     extraSubstituters = field "nix" "extraSubstituters" profile.nix.extraSubstituters;
     extraTrustedPublicKeys = field "nix" "extraTrustedPublicKeys" profile.nix.extraTrustedPublicKeys;
   };
@@ -54,6 +55,9 @@ profile // {
     ubuntuPorts = field "apt" "ubuntuPorts" profile.apt.ubuntuPorts;
     debian = field "apt" "debian" profile.apt.debian;
     debianSecurity = field "apt" "debianSecurity" profile.apt.debianSecurity;
+  };
+  docker = profile.docker // {
+    registry = field "docker" "registry" profile.docker.registry;
   };
   flakeSourceMirror = valueAt [ "flakeSourceMirror" ] (profile.flakeSourceMirror or null);
   dockerInstallerMirror = valueAt [ "dockerInstallerMirror" ] profile.dockerInstallerMirror;

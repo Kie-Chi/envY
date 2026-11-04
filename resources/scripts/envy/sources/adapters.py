@@ -6,14 +6,12 @@ import json
 import os
 import re
 import subprocess
-import tempfile
 import urllib.error
 import urllib.parse
-from pathlib import Path
 
 from envy.process import run_process
 from envy.search.model import ProviderReport, ResolveResult, SearchResult
-from envy.sources.catalog import catalog, native_manager
+from envy.sources.catalog import native_manager
 from envy.sources.model import Source, SourceError
 from envy.utils import ENVY_ROOT
 

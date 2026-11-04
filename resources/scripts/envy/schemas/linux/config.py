@@ -13,6 +13,5 @@ MACHINE_FIELDS = [
 ]
 
 SECRET_FIELDS: list[FieldDef] = []
-LEGACY_CONFIG_PATHS: dict[str, str] = {}
 OBSOLETE_MACHINE_KEYS: list[str] = []
 OBSOLETE_SECRET_PATHS: list[str] = []

@@ -9,15 +9,15 @@ from envy import log
 from envy.remote_agent import app as remote_agent_app
 from envy.agent import app as agent_app
 from envy import _check_schema_api
-from envy.config import app as config_app
+from envy.config.cli import app as config_app
 from envy.doctor import app as doctor_app
 from envy.habit import app as habit_app
 from envy.journal import show_log
 from envy.key import app as key_app
-from envy.mirror import app as mirror_app
+from envy.mirror.cli import app as mirror_app
 from envy.overview import show as show_overview
 from envy.host import app as host_app, complete_platforms
-from envy.software import app as software_app
+from envy.software.cli import app as software_app
 from envy.process import run_process
 from envy.workflows.check import check_or_exit
 from envy.workflows.update import update_homebrew, update_inputs

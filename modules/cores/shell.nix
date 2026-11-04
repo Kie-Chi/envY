@@ -99,7 +99,6 @@ in
 
   home.activation.setZshAsDefault = lib.mkIf (machinePlatform == "linux") (sys.task.activation {
     name = "setZshAsDefault";
-    asRoot = true;
     script = ''
       zsh_path="${config.home.profileDirectory}/bin/zsh"
       if [ "$SHELL" != "$zsh_path" ]; then

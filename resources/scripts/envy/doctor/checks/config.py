@@ -3,13 +3,12 @@
 from pathlib import Path
 
 from envy import _source_info
-from envy.config import (
+from envy.config.machine_nix import machine_config_file, read_machine_nix
+from envy.config.secret_store import (
     _MISSING,
     _lookup_nested,
     _secret_scalar_text,
     _secret_type_name,
-    machine_config_file,
-    read_machine_nix,
     read_secrets_data,
 )
 from envy.evaluation import machine_manifest, manifest_settings
@@ -20,11 +19,8 @@ from envy.git_safety import (
     assert_worktree_secret_encrypted,
 )
 from envy.schemas.config import MACHINE_FIELDS, SECRET_FIELDS
-from envy.software import (
-    SoftwarePolicyError,
-    groups_for_manifest,
-    read_managed_policy,
-)
+from envy.software.model import SoftwarePolicyError, groups_for_manifest
+from envy.software.policy import read_managed_policy
 from envy.doctor.model import (
     SECTION_CONFIG,
     SECTION_DOCTOR,
@@ -41,6 +37,7 @@ from envy.utils import (
     AGE_KEY_FILE,
     AGE_KEY_DIR,
     DEVICE_LABEL_FILE,
+    DEVICE_METADATA_HINT,
     ENVY_ROOT,
     SECRETS_FILE,
     device_metadata_is_toml,
@@ -63,7 +60,7 @@ def run_checks() -> list[CheckResult]:
             SECTION_CONFIG,
             "device metadata",
             str(exc),
-            hint="Fix .device-label or run: envy config refine",
+            hint=DEVICE_METADATA_HINT,
         ))
         return results
 
@@ -71,7 +68,7 @@ def run_checks() -> list[CheckResult]:
         results.append(error(
             SECTION_CONFIG,
             "device metadata",
-            ".device-label is missing or uses the legacy one-line format",
+            ".device-label is missing or is not versioned TOML device metadata",
             hint="Run: envy config refine",
         ))
         return results
@@ -311,8 +308,8 @@ def _check_secret_write_capability() -> list[CheckResult]:
     with --age) before they surface as a rolled-back rotate/setup. Never touches
     the real secrets.yaml.
     """
-    from envy.config import SECRETS_DIR, _sops_encrypt_argv
-    from envy.key import read_sops_yaml_keys
+    from envy.config.secret_store import SECRETS_DIR, _sops_encrypt_argv
+    from envy.keys.storage import read_sops_yaml_keys
 
     recipients = ",".join(read_sops_yaml_keys().values())
     if not recipients:
@@ -340,7 +337,10 @@ def _check_secret_write_capability() -> list[CheckResult]:
 
 def _check_device_key_distinct_from_recovery() -> list[CheckResult]:
     """Warn when this device uses the recovery key as its device key."""
-    from envy.key import get_current_device_public_key, read_sops_yaml_keys
+    from envy.keys.storage import (
+        current_device_public_key as get_current_device_public_key,
+        read_sops_yaml_keys,
+    )
 
     keys = read_sops_yaml_keys()
     recovery = keys.get("recovery")

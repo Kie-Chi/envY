@@ -13,7 +13,6 @@ import shlex
 import shutil
 import socket
 import subprocess
-import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,7 +28,6 @@ app = typer.Typer(
 )
 
 DEFAULT_CONFIG = Path.home() / ".config" / "envy" / "remote-agents.toml"
-LEGACY_CONFIG = Path.home() / ".config" / "envy" / "agents.toml"
 DEFAULT_REMOTE_IDENTITY = "~/.ssh/id_ed25519"
 DEFAULT_AUTHORIZED_KEYS = Path.home() / ".ssh" / "authorized_keys"
 MANDATORY_SYSTEM_PROMPT = (
@@ -153,10 +151,6 @@ def _config_path(value: Path | None) -> Path:
     configured = os.environ.get("ENVY_REMOTE_AGENT_CONFIG") or os.environ.get("ENVY_AGENT_CONFIG")
     if configured:
         return Path(configured).expanduser()
-    # Keep an older agents.toml usable, but new init commands are explicit about
-    # the remote-agent role and write remote-agents.toml.
-    if not DEFAULT_CONFIG.exists() and LEGACY_CONFIG.exists():
-        return LEGACY_CONFIG
     return DEFAULT_CONFIG
 
 

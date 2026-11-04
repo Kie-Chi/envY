@@ -4,14 +4,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from envy import key
+from envy.keys import commits, prompts
 
 
 class SetupGitTests(unittest.TestCase):
     def test_key_confirmation_has_no_implicit_no_default(self):
-        with patch.object(key.Confirm, "ask", return_value=True) as ask:
-            self.assertTrue(key.confirm("Commit managed files?"))
-        ask.assert_called_once_with("Commit managed files?", console=key.log.console)
+        with patch.object(prompts.Confirm, "ask", return_value=True) as ask:
+            self.assertTrue(prompts.confirm("Commit managed files?"))
+        ask.assert_called_once_with("Commit managed files?", console=prompts.log.console)
 
     def test_staging_explicit_setup_files_leaves_other_changes_unstaged(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -34,8 +34,8 @@ class SetupGitTests(unittest.TestCase):
             )
             subprocess.run(["git", "init", "-q"], cwd=root, check=True)
 
-            with patch.object(key, "ENVY_ROOT", root):
-                changed = key._stage_repo_files([selected])
+            with patch.object(commits, "ENVY_ROOT", root):
+                changed = commits._stage_repo_files([selected])
 
             staged = subprocess.run(
                 ["git", "diff", "--cached", "--name-only"],
@@ -55,16 +55,16 @@ class SetupGitTests(unittest.TestCase):
                 root / "secrets" / "secrets.yaml",
                 root / "secrets" / "recovery-key.age",
             ]
-            with patch.object(key, "ENVY_ROOT", root), patch.object(
-                key, "SOPS_YAML", candidates[1]
-            ), patch.object(key, "SECRETS_FILE", candidates[2]), patch.object(
-                key, "RECOVERY_KEY_FILE", candidates[3]
+            with patch.object(commits, "ENVY_ROOT", root), patch.object(
+                commits, "SOPS_YAML", candidates[1]
+            ), patch.object(commits, "SECRETS_FILE", candidates[2]), patch.object(
+                commits, "RECOVERY_KEY_FILE", candidates[3]
             ), patch.object(
-                key, "_stage_repo_files", return_value=["hosts/darwin/work-mac.nix"]
-            ) as stage, patch.object(key, "_commit_staged_files") as commit:
+                commits, "_stage_repo_files", return_value=["hosts/darwin/work-mac.nix"]
+            ) as stage, patch.object(commits, "_commit_staged_files") as commit:
                 (root / ".git").mkdir()
 
-                key.git_commit_setup_files(machine)
+                commits.git_commit_setup_files(machine)
 
         stage.assert_called_once_with(candidates)
         commit.assert_called_once_with(
@@ -76,12 +76,12 @@ class SetupGitTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             machine = root / "hosts" / "darwin" / "work-mac.nix"
-            with patch.object(key, "ENVY_ROOT", root), patch.object(
-                key, "_stage_repo_files", return_value=[]
-            ), patch.object(key, "_commit_staged_files") as commit:
+            with patch.object(commits, "ENVY_ROOT", root), patch.object(
+                commits, "_stage_repo_files", return_value=[]
+            ), patch.object(commits, "_commit_staged_files") as commit:
                 (root / ".git").mkdir()
 
-                key.git_commit_setup_files(machine)
+                commits.git_commit_setup_files(machine)
 
         commit.assert_not_called()
 
@@ -92,15 +92,15 @@ class SetupGitTests(unittest.TestCase):
             secrets = root / "secrets.yaml"
             recovery = root / "recovery-key.age"
             sops.write_text("before")
-            with patch.object(key, "SOPS_YAML", sops), patch.object(
-                key, "SECRETS_FILE", secrets
-            ), patch.object(key, "RECOVERY_KEY_FILE", recovery), patch.object(
-                key, "git_commit_sops_files"
+            with patch.object(commits, "SOPS_YAML", sops), patch.object(
+                commits, "SECRETS_FILE", secrets
+            ), patch.object(commits, "RECOVERY_KEY_FILE", recovery), patch.object(
+                commits, "git_commit_sops_files"
             ) as commit:
-                key._run_key_operation("noop", lambda: None)
+                commits._run_key_operation("noop", lambda: None)
                 commit.assert_not_called()
 
-                key._run_key_operation("change", lambda: sops.write_text("after"))
+                commits._run_key_operation("change", lambda: sops.write_text("after"))
                 commit.assert_called_once_with("change")
 
 

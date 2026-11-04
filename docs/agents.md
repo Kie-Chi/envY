@@ -33,7 +33,35 @@ pi/package.nix 在 Pi 的 workspace 构建阶段打补丁，库和打包后的 C
 
 `/btw` 不继承主会话的思考档位。未指定档位的 Sol 请求省略推理 effort，由服务端采用默认值，避免发送会被拒绝的 `none`；不改扩展的认证、上下文、无工具或会话隔离边界。
 
-`envy agent` 的 Python 运行时生成器使用相同兼容规则，切换 profile 时不会把不支持的档位重新写回 `models.json`。`tests/models.nix` 求值实际 provider 的托管配置；`tests/pi-models.py` 对比 12 组 Nix 与运行时配置；`tests/pi-models.mjs` 用真实 `/btw` 执行函数与 Pi 请求编码器运行 85 项离线回归，检查模型 schema、档位钳制及两种 OpenAI API 和 Anthropic 的参数。两平台的 `pi-model-tests` flake check 和 CI 运行这些检查；使用假凭据，在请求发送前捕获参数并禁止 fetch，不调用模型。
+`envy agent` 的 Python 运行时生成器使用相同兼容规则，切换 profile 时不会把不支持的档位重新写回 `models.json`。`tests/models.nix` 求值实际 provider 的托管配置；`tests/pi-models.py` 对比 Nix 与运行时配置；`tests/model-lists.nix` 通过实际选项 schema 和共享默认值验证模型列表、profile 覆盖、显式 null、去重及非法输入；`tests/pi-models.mjs` 用真实 `/btw` 执行函数与 Pi 请求编码器执行离线回归，检查模型 schema、档位钳制及两种 OpenAI API 和 Anthropic 的参数。两平台的 `pi-model-tests` flake check 和 CI 运行这些检查；使用假凭据，在请求发送前捕获参数并禁止 fetch，不调用模型。
+
+### Pi 多模型列表
+
+`envy.agents.pi.models` 可以同时注册多个模型，混用 `openai-completions`、`openai-responses` 和 `anthropic-messages`。只有 Pi 实例支持非空列表，其他 adapter 的配置不变。
+
+```nix
+envy.agents.pi.models = [
+  { profile = "stepfun-openai-new"; }
+  { profile = "stepfun-openai-new"; model = "deepseek-v4.1-flash-qiye"; }
+  { profile = "hb-sub2api"; }
+  {
+    model = "deepseek-v4-pro";
+    endpoint = "deepseek-openai";
+    credential = "deepseek";
+    api = "openai-completions";
+  }
+];
+```
+
+示例中的 profile 和连接名称需先在所选机器中定义。`envy.agents.pi.contextWindow`、`maxTokens` 是默认模型与所有候选模型的公共参数，覆盖顺序为 Pi 级公共参数 → 当前引用的 profile 非空参数 → 列表条目显式参数；profile 中未填写或为 `null` 的模型参数保留 Pi 级值。endpoint、credential、api 和 model 不在候选之间传播，仍由各自 profile 或条目决定。显式 `null` 清除继承值：`api = null` 恢复按最终 endpoint 协议推导，`credential = null` 使用无认证占位 key，不借用其他连接的凭据，模型参数设为 `null` 则不输出该参数。最终 model 和 endpoint 必须有效。
+
+保留列表外的 `profile` 或单模型字段时，原选择仍为默认模型并自动加入候选；列表外的 profile 保持原有优先级，不采用列表项的覆盖语义。只配置列表时，第一项为默认模型。空列表回到旧单模型方式；重复的最终配置去重，同一连接、同一模型的冲突参数会报错。
+
+多模型模式按 endpoint、最终 API、credential 引用生成稳定的 provider 标识；调整顺序、切换默认 profile 不改变已有连接标识。每个连接从 sops 模板或私有运行时环境读取独立的 key，`models.json` 不保存密钥。首次切换到列表模式会使用新的 provider 标识；单模型模式继续使用 `envy-pi`。
+
+`envy agent set envy.agents.pi.models '<JSON array>'` 会校验、保存并即时刷新运行时配置，`envy agent profile use pi <profile>` 只更新默认选择，不丢弃候选列表或改写 Pi 级公共模型参数；编辑 Pi 级 `contextWindow`、`maxTokens` 也保留默认 profile 引用。两者都对新启动的 Pi 生效。直接编辑机器 Nix 文件或使用 `envy config set` 后，通过 `envy apply` 部署。之后日常用 Pi 的 `/model`、`/scoped-models` 或 `Ctrl+P` 切换已注册的模型，不再需要改配置。
+
+部署和即时刷新只替换 `models.json` 中的 `envy-pi` / `envy-pi-*` 命名空间，清理退出列表的托管 provider，保留其他 provider 和用户字段。apply 会清除 envY 自己的 Pi 即时覆盖文件，使机器配置重新成为生效来源，不修改 Pi 的 auth、会话或历史。
 
 ### goal-x 扩展
 

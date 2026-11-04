@@ -12,6 +12,7 @@ assert.ok(nodeModules && fixturesPath && btwPackage,
   "Usage: node pi-models.mjs <Pi node_modules> <model fixtures.json> <btw package>");
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "envy-pi-models-"));
 process.env.PI_CODING_AGENT_DIR = path.join(root, "agent");
+process.env.PI_OFFLINE = "1";
 let networkCalls = 0;
 const forbidNetwork = async () => {
   networkCalls++;
@@ -28,6 +29,9 @@ const require = createRequire(path.join(modulesDir, "envy-pi-model-check.cjs"));
 const load = (pkg, file) => import(pathToFileURL(path.join(modulesDir, "@earendil-works", pkg, "dist", file + ".js")));
 const { Check } = await import(pathToFileURL(require.resolve("typebox/value")));
 const { ModelsConfigSchema } = await load("pi-coding-agent", "core/model-config");
+const { ModelRuntime } = await load("pi-coding-agent", "core/model-runtime");
+const { ModelRegistry } = await load("pi-coding-agent", "core/model-registry");
+const { AuthStorage } = await load("pi-coding-agent", "core/auth-storage");
 const { getSupportedThinkingLevels, clampThinkingLevel } = await load("pi-ai", "models");
 const { normalizeContext } = await load("pi-ai", "utils/transcript");
 const { createJiti } = require("jiti");
@@ -60,7 +64,58 @@ async function capture(model, context, options = {}) {
   return { payload, response };
 }
 
-for (const fixture of fixtures) {
+for (const fixture of fixtures.filter(item => item.modelListFixture)) {
+  test(fixture.name + ": model picker availability and isolated credentials", async () => {
+    const modelsPath = path.join(root, fixture.name + ".json");
+    fs.writeFileSync(modelsPath, JSON.stringify(fixture.data));
+    const previous = new Map();
+    const expected = new Map();
+    for (const [id, provider] of Object.entries(fixture.data.providers)) {
+      let key = provider.apiKey;
+      if (key.startsWith("$")) {
+        const variable = key.slice(1);
+        previous.set(variable, process.env[variable]);
+        key = "fake-key-" + id;
+        process.env[variable] = key;
+      }
+      expected.set(id, key);
+    }
+    try {
+      const runtime = await ModelRuntime.create({
+        credentials: AuthStorage.inMemory(), modelsPath, allowModelNetwork: false, refreshOnCreate: false,
+      });
+      const registry = new ModelRegistry(runtime);
+      await runtime.getAvailable();
+      assert.equal(registry.getError(), undefined);
+      const available = registry.getAvailable().filter(model => expected.has(model.provider));
+      assert.equal(available.length, fixture.expectedModels);
+      for (const model of available) {
+        const auth = await registry.getApiKeyAndHeaders(model);
+        assert.equal(auth.ok, true);
+        assert.equal(auth.apiKey, expected.get(model.provider));
+        assert.equal(model.api, fixture.data.providers[model.provider].api);
+        assert.equal(model.baseUrl, fixture.data.providers[model.provider].baseUrl);
+        const declared = fixture.data.providers[model.provider].models.find(item => item.id === model.id);
+        assert.equal(model.contextWindow, declared.contextWindow ?? 128000);
+        assert.equal(model.maxTokens, declared.maxTokens ?? 16384);
+      }
+    } finally {
+      for (const [variable, value] of previous) {
+        if (value === undefined) delete process.env[variable];
+        else process.env[variable] = value;
+      }
+    }
+  });
+
+  test(fixture.name + ": multi-provider model schema", () => {
+    assert.equal(Check(ModelsConfigSchema, fixture.data), true);
+    const provider = fixture.data.providers[fixture.defaultProvider];
+    assert.ok(provider.models.some(model => model.id === fixture.defaultModel));
+    assert.equal(Object.keys(fixture.data.providers).length, fixture.expectedProviders);
+  });
+}
+
+for (const fixture of fixtures.filter(item => !item.modelListFixture)) {
   const provider = fixture.data.providers["envy-pi"];
   const model = {
     ...provider.models[0], api: provider.api, provider: "envy-pi", baseUrl: provider.baseUrl,

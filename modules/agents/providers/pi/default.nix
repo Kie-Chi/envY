@@ -7,7 +7,14 @@ let
     inherit lib piPackage;
     inherit (piConfig) moreThinking;
   };
-  providerName = "envy-pi";
+  selections = import ./models.nix { inherit lib; } {
+    agent = piConfig;
+    profiles = config.envy.agentProfiles or {};
+    endpoints = config.envy.llm.endpoints;
+    credentials = config.envy.llm.credentials or {};
+  };
+  defaultSelection = selections.default;
+  defaultAgent = piConfig // defaultSelection.selection;
   wrapper = import ../../wrapper.nix { inherit lib pkgs; };
   endpointFor = agent: (wrapper.resolve config agent).endpoint;
   apiFor = agent: endpoint:
@@ -35,7 +42,7 @@ let
     # The image-PPT skill reads this selector from the caller environment.
     export GPT_IMAGE_MODEL_NAME=gpt-image-2
   '';
-  modelConfigFor = agent: apiKey: let
+  modelConfigFor = providerName: agent: apiKey: let
     endpoint = endpointFor agent;
     api = apiFor agent endpoint;
     isSolModel = builtins.elem api [ "openai-completions" "openai-responses" ]
@@ -95,13 +102,15 @@ let
           exec ${lib.getExe selectedPiPackage} "$@"
           ;;
       esac
+      unset ENVY_AGENT_MODEL ENVY_AGENT_PROVIDER
     '';
-    beforeArgs = prompts.shellArgs "pi" + lib.optionalString (piConfig.model != null) ''
-
+    beforeArgs = prompts.shellArgs "pi" + "\n" + ''
       if [[ -n "''${ENVY_AGENT_MODEL:-}" ]]; then
-        cmd+=(--model "${providerName}/''${ENVY_AGENT_MODEL}")
+        cmd+=(--model "''${ENVY_AGENT_PROVIDER:-envy-pi}/''${ENVY_AGENT_MODEL}")
+      ${lib.optionalString (defaultAgent.model != null) ''
       else
-        cmd+=(--model ${lib.escapeShellArg "${providerName}/${piConfig.model}"})
+        cmd+=(--model ${lib.escapeShellArg "${defaultSelection.provider}/${defaultAgent.model}"})
+      ''}
       fi
     '';
     inherit (piConfig) args;
@@ -111,7 +120,22 @@ in
   imports = [ ./extensions.nix ./subagents.nix ];
 
   config = {
-    sops.templates.${templateNameFor "pi"}.content = templateFor piConfig;
+    sops.templates.${templateNameFor "pi"}.content = templateFor defaultAgent
+      + lib.concatMapStrings (entry: let
+        resolved = wrapper.resolve config entry.selection;
+      in lib.optionalString (selections.multi && resolved.credentialName != null) ''
+        export ${entry.keyVariable}=${lib.escapeShellArg resolved.credential}
+      '') (lib.unique (map (entry: {
+        inherit (entry) keyVariable;
+        selection = { endpoint = null; credential = entry.selection.credential; };
+      }) selections.bindings));
+
+    # Activation supersedes envY's live overrides, not Pi-owned state.
+    home.activation.resetPiRuntime = lib.hm.dag.entryAfter [ "mergeAgentRuntime-pi-models" ] ''
+      if [ -z "$DRY_RUN_CMD" ]; then
+        rm -f "$HOME/.config/envy/agent-runtime/pi.env"
+      fi
+    '';
 
     agents.settingsFiles.pi = {
       target = ".pi/agent/settings.json";
@@ -121,11 +145,12 @@ in
       name = "models";
       target = ".pi/agent/models.json";
       format = "json";
-      data = let
-        endpoint = endpointFor piConfig;
-        api = apiFor piConfig endpoint;
-        apiKey = if isAnthropicApi api then "$ANTHROPIC_API_KEY" else "$OPENAI_API_KEY";
-      in modelConfigFor piConfig apiKey;
+      managedKeyPrefixes = { providers = "envy-pi"; };
+      data.providers = builtins.foldl' (acc: entry: let
+        generated = (modelConfigFor entry.provider (piConfig // entry.selection) entry.apiKey).providers.${entry.provider};
+        previous = acc.${entry.provider} or (generated // { models = []; });
+      in acc // { ${entry.provider} = previous // { models = previous.models ++ generated.models; }; }
+      ) {} selections.bindings;
     } ];
     envy.software.nix.packages.include = [ piWrapper ];
     envy.software.nix.packages.sourceDependencies = { pi = [ "nix:pi" ]; };

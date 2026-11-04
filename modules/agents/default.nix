@@ -1,4 +1,4 @@
-{ lib, machinePlatform, ... }:
+{ config, lib, machinePlatform, ... }:
 
 {
   # Feature composition only. Shared agent, endpoint, and skill policy lives in
@@ -13,4 +13,9 @@
     ./tools
   ] ++ lib.optionals (machinePlatform == "darwin") [ ./darwin ]
     ++ lib.optionals (machinePlatform == "linux") [ ./linux ];
+
+  config.assertions = lib.mapAttrsToList (name: agent: {
+    assertion = agent.models == [] || (name == "pi" && agent.adapter == "pi");
+    message = "Model lists are currently supported only by envy.agents.pi with the pi adapter.";
+  }) config.envy.agents;
 }

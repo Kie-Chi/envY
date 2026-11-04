@@ -45,4 +45,4 @@ in
   (fixture "anthropic" "claude-opus-5-5" "anthropic-messages" false (lib.tail ordinary) null)
   (fixture "anthropic-extended" "claude-opus-5-5" "anthropic-messages" true (lib.tail extended) null)
   (fixture "anthropic-api-boundary" "gpt-6.1-sol" "anthropic-messages" true (lib.tail extended) null)
-]
+] ++ import ./model-lists.nix { inherit lib pkgs piPackage; }

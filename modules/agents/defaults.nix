@@ -1,4 +1,4 @@
-{ academicResearchSkills, academicResearchSkillsCodex, antiDefensiveWriting, emilSkills, gptImage2PptSkills, lib, obeliskSkill, pptMaster, promptMaster, vercelAgentSkills, wazaSource, ... }:
+{ config, academicResearchSkills, academicResearchSkillsCodex, antiDefensiveWriting, emilSkills, gptImage2PptSkills, lib, obeliskSkill, pptMaster, promptMaster, vercelAgentSkills, wazaSource, ... }:
 
 {
   home.file = {
@@ -113,6 +113,6 @@
     # the shared StepFun endpoint so Linux targets remain configured.
     endpoint = lib.mkDefault "stepfun-openai";
     credential = lib.mkDefault "stepfun";
-    model = lib.mkDefault "gpt-6.1-sol";
+    model = lib.mkDefault (if config.envy.agents.pi.models == [] then "gpt-6.1-sol" else null);
   };
 }

@@ -77,7 +77,7 @@ rec {
 
   # Merge declarations into application-owned files after Home Manager has
   # generated its links, leaving a writable user-owned result.
-  mergeWritable = { name, format ? "json", data, target }:
+  mergeWritable = { name, format ? "json", data, target, managedKeyPrefixes ? {} }:
     let
       source = renderedFile { inherit name data; format = "json"; };
       python = pkgs.python3.withPackages (ps: [ ps.pyyaml ps.tomli-w ]);
@@ -87,6 +87,7 @@ rec {
         PYTHONPATH=${../../resources/scripts} ${python}/bin/python -m envy.structured_config \
           --format ${lib.escapeShellArg format} \
           --source ${lib.escapeShellArg (toString source)} \
+          --managed-key-prefixes ${lib.escapeShellArg (builtins.toJSON managedKeyPrefixes)} \
           --target "$HOME"/${lib.escapeShellArg target}
       fi
     '';

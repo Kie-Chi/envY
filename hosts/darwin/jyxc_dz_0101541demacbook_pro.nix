@@ -87,6 +87,7 @@
   envy.llm.credentials.deepseek.secretPath = "llm/deepseek/apikey";
   envy.llm.credentials.hbapi.kind = "api-key";
   envy.llm.credentials.hbapi.secretPath = "llm/hbapi/apikey";
+  envy.llm.credentials.mp-go.secretPath = "llm/mp-go/apikey";
   envy.llm.credentials.mp-new.kind = "api-key";
   envy.llm.credentials.mp-new.secretPath = "llm/mp-new/apikey";
   envy.llm.credentials.mp.kind = "api-key";
@@ -109,10 +110,6 @@
   envy.llm.endpoints.xikai-openai.protocol = "openai-compatible";
 
   # --- AGENT PROFILES ---
-  envy.agentProfiles.hb-sub2api.api = "anthropic-messages";
-  envy.agentProfiles.hb-sub2api.credential = "hbapi";
-  envy.agentProfiles.hb-sub2api.endpoint = "sub2api-anthropic";
-  envy.agentProfiles.hb-sub2api.model = "claude-opus-5";
   envy.agentProfiles.stepfun-anthropic.api = "anthropic-messages";
   envy.agentProfiles.stepfun-anthropic.credential = "mp-new";
   envy.agentProfiles.stepfun-anthropic.endpoint = "stepfun-anthropic";
@@ -125,10 +122,16 @@
   envy.agentProfiles.stepfun-openai-new.credential = "mp-new";
   envy.agentProfiles.stepfun-openai-new.endpoint = "stepfun-openai";
   envy.agentProfiles.stepfun-openai-new.model = "gpt-6.1-sol-qiye";
-  envy.agentProfiles.stepfun-openai.api = "openai-responses";
-  envy.agentProfiles.stepfun-openai.credential = "mp";
-  envy.agentProfiles.stepfun-openai.endpoint = "stepfun-openai";
-  envy.agentProfiles.stepfun-openai.model = "gpt-6-astra";
+  envy.agentProfiles.mpo.api = "openai-responses";
+  envy.agentProfiles.mpo.endpoint = "stepfun-openai";
+  envy.agentProfiles.mpo.contextWindow = 272000;
+  envy.agentProfiles.mpo.maxTokens = 128000;
+  envy.agentProfiles.mpo.model = "<redacted>";
+  envy.agentProfiles.mpa.api = "anthropic-messages";
+  envy.agentProfiles.mpa.endpoint = "stepfun-openai";
+  envy.agentProfiles.mpa.model = "<redacted>";
+  envy.agentProfiles.mpa.contextWindow = 272000;
+  envy.agentProfiles.mpa.maxTokens = 128000;
   envy.agentProfiles.xikai-magpie.api = "openai-responses";
   envy.agentProfiles.xikai-magpie.contextWindow = 272000;
   envy.agentProfiles.xikai-magpie.credential = "xikai";
@@ -151,6 +154,35 @@
   envy.agents.codex.model = "gpt-6.1-sol-qiye";
   envy.agents.codex.profile = "stepfun-openai-new";
   envy.agents.pi.adapter = "pi";
+  envy.agents.pi.models = [
+    {
+      profile = "mpo";
+      credential = "mp-go";
+      model = "gpt-6-astra";
+    }
+    {
+      profile = "mpo";
+      credential = "mp-go";
+      model = "stepcode-gpt-6.1-sol-eastus2";
+    }
+    {
+      profile = "mpa";
+      credential = "mp-go";
+      model = "claude-opus-5-5";
+    }
+    {
+      profile = "stepfun-openai-new";
+    }
+    {
+      profile = "stepfun-anthropic";
+    }
+    {
+      profile = "stepfun-openai-ds";
+    }
+    {
+      profile = "xikai-magpie";
+    }
+  ];
   envy.agents.pi.additionalSettings = builtins.fromJSON "{\"compaction\": {\"keepRecentTokens\": 27200, \"reserveTokens\": 40960}, \"defaultTools\": [\"+codemode\"]}";
   envy.agents.pi.api = "openai-responses";
   envy.agents.pi.contextWindow = 272000;

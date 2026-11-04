@@ -114,6 +114,8 @@ def complete_agent_paths(ctx, incomplete):
             fields.append("api")
         if agent.get("adapter") == "pi":
             fields.append("moreThinking")
+            if name == "pi":
+                fields.append("models")
         for field in fields:
             paths[f"envy.agents.{name}.{field}"] = "agent setting"
     profiles = _profile_values(_managed_values())

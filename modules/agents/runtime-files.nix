@@ -45,6 +45,7 @@ in
       lib.nameValuePair "mergeAgentRuntime-${file.name}" (sys.mergeWritable {
         name = "mergeAgentRuntime-${file.name}";
         inherit (file) target format data;
+        managedKeyPrefixes = file.managedKeyPrefixes or {};
       })
     ) runtimeFiles);
     assertions = [

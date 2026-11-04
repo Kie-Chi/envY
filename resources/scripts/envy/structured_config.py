@@ -49,10 +49,15 @@ def equal(left: Any, right: Any) -> bool:
     return left == right
 
 
-def update_file(target: Path, declared: dict[str, Any], *, format: str = "json") -> bool:
+def update_file(
+    target: Path, declared: dict[str, Any], *, format: str = "json",
+    managed_key_prefixes: dict[str, str] | None = None,
+) -> bool:
     """Atomically replace store links, preserve runtime fields and owner writability."""
     if format not in {"json", "yaml", "toml"} or not isinstance(declared, dict):
         raise ValueError("expected an object and json, yaml or toml format")
+    if managed_key_prefixes is not None and not isinstance(managed_key_prefixes, dict):
+        raise ValueError("managed key prefixes must be an object")
     try:
         text = target.read_text()
         mode = (target.stat().st_mode & 0o777) | 0o600
@@ -75,7 +80,16 @@ def update_file(target: Path, declared: dict[str, Any], *, format: str = "json")
         existing = {}
     if not isinstance(existing, dict):
         raise ValueError(f"configuration root must be an object: {target}")
-    updated = merge(existing, declared)
+    base = deepcopy(existing)
+    for section, prefix in (managed_key_prefixes or {}).items():
+        if not isinstance(prefix, str) or not prefix or not isinstance(declared.get(section), dict):
+            raise ValueError("managed key prefixes require a non-empty namespace and a declared object")
+        members = base.get(section, {})
+        if not isinstance(members, dict):
+            raise ValueError("managed configuration section must be an object")
+        base[section] = {key: value for key, value in members.items()
+                         if key != prefix and not key.startswith(prefix + "-")}
+    updated = merge(base, declared)
     if target.exists() and not target.is_symlink() and equal(existing, updated):
         if target.stat().st_mode & 0o777 != mode:
             target.chmod(mode)
@@ -96,9 +110,11 @@ def main() -> int:
     parser.add_argument("--format", choices=["json", "yaml", "toml"], default="json")
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--target", type=Path, required=True)
+    parser.add_argument("--managed-key-prefixes", type=json.loads, default={})
     args = parser.parse_args()
     try:
-        update_file(args.target, json.loads(args.source.read_text()), format=args.format)
+        update_file(args.target, json.loads(args.source.read_text()), format=args.format,
+                    managed_key_prefixes=args.managed_key_prefixes)
     except (OSError, ValueError, TypeError, yaml.YAMLError):
         print(f"envY could not merge configuration; original retained: {args.target}", file=sys.stderr)
         return 1

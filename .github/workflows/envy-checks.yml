@@ -55,6 +55,8 @@ jobs:
         run: nix build "path:.#checks.${{ matrix.system }}.envy-lint"
       - name: Run agent tool tests
         run: nix build "path:.#checks.${{ matrix.system }}.envy-agent-tests"
+      - name: Run Pi queue regressions
+        run: nix build --no-link "path:.#checks.${{ matrix.system }}.pi-queue-tests"
       - name: Run Pi goal regressions
         run: nix build --no-link "path:.#checks.${{ matrix.system }}.pi-goal-tests"
       - name: Run Pi model and btw regressions

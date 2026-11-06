@@ -22,6 +22,7 @@ let
   # peer range against the locked Pi before changing a version.
   packages = {
     goal-x = import ./goal.nix { inherit lib pkgs piPackage; };
+    queue-steer = import ./queue.nix { inherit lib pkgs piPackage; };
     btw = fetchPiExtension {
       pname = "rpiv-btw";
       version = "2.15.0";
@@ -40,19 +41,37 @@ in
     ++ [ (link ".pi/agent/extensions/envy-notify.ts" "${examples}/notify.ts") ]
   );
 
-  # Merge only these shared defaults; goal records and project overrides stay
-  # extension-owned. Unfocused sessions may create their own goals without
-  # adopting goals that belong to other sessions.
-  envy.agents.pi.runtimeFiles = [ {
-    name = "goal-settings";
-    target = ".pi/agent/pi-goal-x-settings.json";
-    format = "json";
-    data = {
-      hideUnfocusedBanner = true;
-      hideUnfocusedPrompt = true;
-      autoSelectSingleGoal = false;
-    };
-  } ];
+  # Each queued prompt gets its own delivery boundary rather than merging
+  # several pending prompts into one turn. Machine settings may override this.
+  envy.agents.pi.additionalSettings = {
+    steeringMode = lib.mkDefault "one-at-a-time";
+    followUpMode = lib.mkDefault "one-at-a-time";
+  };
+
+  # Merge only owned fields into writable files; Pi keeps session and queue
+  # state. The queue editor derives next-row navigation from the dequeue key.
+  envy.agents.pi.runtimeFiles = [
+    {
+      name = "queue-keybindings";
+      target = ".pi/agent/keybindings.json";
+      format = "json";
+      data = {
+        "tui.input.submit" = "enter";
+        "app.message.followUp" = "alt+enter";
+        "app.message.dequeue" = "alt+up";
+      };
+    }
+    {
+      name = "goal-settings";
+      target = ".pi/agent/pi-goal-x-settings.json";
+      format = "json";
+      data = {
+        hideUnfocusedBanner = true;
+        hideUnfocusedPrompt = true;
+        autoSelectSingleGoal = false;
+      };
+    }
+  ];
 
   # pi-goal-x keeps per-project goal state beside the working tree.
   programs.git.ignores = [ ".pi/goals/" ".pi/.goals-pool-snapshot.json" ];

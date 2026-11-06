@@ -263,11 +263,11 @@ def refine_agents(*, write: bool = True, strict: bool = False) -> RefineReport:
     report.errors.extend(result.get("errors", []))
     report.changed = bool(result.get("changed", False))
     if report.errors:
+        # Each field already produced its own reason; do not repeat the list.
         log.error(
             "agents",
             "agent refinement blocked by invalid fields",
             count=len(report.errors),
-            fields=", ".join(report.errors),
         )
     else:
         log.debug("agents", "managed agent validation passed", changed=report.changed)

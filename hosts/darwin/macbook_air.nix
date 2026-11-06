@@ -80,6 +80,8 @@
   envy.llm.endpoints.sub2api-anthropic.protocol = "anthropic-compatible";
   envy.llm.endpoints.xikai-openai.baseUrl = "https://api.xikai.site/v1";
   envy.llm.endpoints.xikai-openai.protocol = "openai-compatible";
+  envy.llm.endpoints.nisl-openai.baseUrl = "https://cn.api.xikai.site:34443/v1";
+  envy.llm.endpoints.nisl-openai.protocol = "openai-compatible";
 
   # --- AGENT PROFILES ---
   envy.agentProfiles.deepseek.api = "openai-completions";
@@ -90,20 +92,16 @@
   envy.agentProfiles.hb-sub2api.credential = "hbapi";
   envy.agentProfiles.hb-sub2api.endpoint = "sub2api-anthropic";
   envy.agentProfiles.hb-sub2api.model = "claude-opus-5";
-  envy.agentProfiles.stepfun-anthropic.api = "anthropic-messages";
-  envy.agentProfiles.stepfun-anthropic.credential = "stepfun";
-  envy.agentProfiles.stepfun-anthropic.endpoint = "stepfun-anthropic";
-  envy.agentProfiles.stepfun-anthropic.model = "step-3.7-flash";
-  envy.agentProfiles.stepfun-openai.api = "openai-completions";
-  envy.agentProfiles.stepfun-openai.credential = "stepfun";
-  envy.agentProfiles.stepfun-openai.endpoint = "stepfun-openai";
-  envy.agentProfiles.stepfun-openai.model = "step-3.7-flash";
   envy.agentProfiles.xikai-magpie.api = "openai-responses";
   envy.agentProfiles.xikai-magpie.contextWindow = 272000;
   envy.agentProfiles.xikai-magpie.credential = "xikai";
   envy.agentProfiles.xikai-magpie.endpoint = "xikai-openai";
   envy.agentProfiles.xikai-magpie.maxTokens = 128000;
   envy.agentProfiles.xikai-magpie.model = "gpt-6.1-sol";
+  envy.agentProfiles.nisl.api = "openai-responses";
+  envy.agentProfiles.nisl.credential = "nisl";
+  envy.agentProfiles.nisl.endpoint = "nisl-openai";
+  envy.agentProfiles.nisl.model = "deepseek-v4.1-flash";
 
   # --- AGENTS ---
   envy.agents.cc.adapter = "claude-code";
@@ -116,6 +114,11 @@
   envy.agents.codex.endpoint = "xikai-openai";
   envy.agents.codex.model = "gpt-6.1-sol";
   envy.agents.pi.adapter = "pi";
+  envy.agents.pi.models = [
+    { profile = "xikai-magpie"; model = "gpt-6.1-sol"; }
+    { profile = "xikai-magpie"; model = "gpt-6-astra"; }
+    { profile = "nisl"; model = "deepseek-v4.1-flash"; }
+  ];
   envy.agents.pi.additionalSettings = builtins.fromJSON "{\"compaction\": {\"keepRecentTokens\": 27200, \"reserveTokens\": 40960}, \"defaultTools\": [\"+codemode\"]}";
   envy.agents.pi.api = "openai-responses";
   envy.agents.pi.contextWindow = 272000;

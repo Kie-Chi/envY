@@ -16,7 +16,7 @@ from typing import Any, Optional
 
 import typer
 
-from envy import log
+from envy import error, log
 from envy.agent_models import API_CHOICES, MODEL_LIMIT_FIELDS, model_bindings, profile_fields
 from envy.agent_completion import (
     complete_adapters,
@@ -34,6 +34,7 @@ from envy.agent_completion import (
 from envy.config.machine_nix import machine_config_file
 from envy.config.secret_store import read_secrets_data
 from envy.config.updates import set_secret_value
+from envy.errno import ErrorCode
 from envy.evaluation import invalidate_machine_manifest, machine_manifest
 from envy.jsonio import emit, emit_error
 from envy.mutation import offer_mutation_commit
@@ -54,6 +55,32 @@ _KNOWN_CREDENTIALS = {"stepfun", "deepseek"}
 _RUNTIME_DIR = Path.home() / ".config" / "envy" / "agent-runtime"
 _LIVE_AGENT_FIELDS = {"model", "endpoint", "credential", "api", "contextWindow", "maxTokens"}
 _LIVE_ENDPOINT_FIELDS = {"baseUrl", "protocol"}
+_PROFILE_FIELDS = ("api", "contextWindow", "credential", "endpoint", "maxTokens", "model")
+_AGENT_FIELDS = (
+    "adapter", "additionalSettings", "aliases", "api", "args", "command", "contextWindow",
+    "credential", "endpoint", "maxTokens", "model", "models", "moreThinking", "profile", "skills",
+)
+_ENDPOINT_FIELDS = ("baseUrl", "protocol")
+_ENDPOINT_PROTOCOLS = ("anthropic-compatible", "native", "openai-compatible")
+_CREDENTIAL_FIELDS = ("kind", "secretPath")
+_CREDENTIAL_KINDS = ("api-key", "basic", "token")
+_NAMESPACE_RE = re.compile(
+    r"envy\.(agents|agentProfiles|llm\.(?:endpoints|credentials))\."
+    r"([A-Za-z0-9][A-Za-z0-9_-]*)(?:\.([A-Za-z0-9_-]+))?"
+)
+
+
+def _object_hint(namespace: str, name: str) -> str:
+    if namespace == "agentProfiles":
+        return (
+            "Assign each profile field separately, or run: "
+            f"envy agent profile add {name} --endpoint <endpoint> --model <model>"
+        )
+    if namespace == "agents":
+        return f"Assign each agent field separately, or run: envy agent add {name} --adapter <adapter>"
+    if namespace == "llm.endpoints":
+        return "Assign baseUrl and protocol separately."
+    return "Assign kind and secretPath separately."
 
 
 def _block_pattern() -> re.Pattern[str]:
@@ -65,26 +92,30 @@ def _read_values(path: Path | None = None) -> dict[str, Any]:
     return values
 
 
-def read_managed_values(path: Path | None = None) -> tuple[dict[str, Any], bool, list[str]]:
+def read_managed_values(path: Path | None = None) -> tuple[dict[str, Any], bool, list[error.ConfigError]]:
     """Read the agent block and report malformed content without secret values."""
     path = path or machine_config_file()
     if not path.exists():
-        return {}, False, [f"missing machine configuration: {path}"]
+        return {}, False, [
+            error.managed_block_missing(str(path), hint="Create it with: envy config refine")
+        ]
     text = path.read_text()
     starts = text.count(MANAGED_START)
     ends = text.count(MANAGED_END)
     if starts == 0 and ends == 0:
         return {}, False, []
-    if starts != 1 or ends != 1:
-        return {}, True, ["agent managed block has unbalanced or duplicate markers"]
     match = _block_pattern().search(text)
-    if not match:
-        return {}, True, ["agent managed block markers are malformed"]
+    if starts != 1 or ends != 1 or not match:
+        return {}, True, [error.managed_block_markers(str(path), starts=starts, ends=ends)]
     values: dict[str, Any] = {}
-    errors: list[str] = []
+    errors: list[error.ConfigError] = []
     block = match.group(0)
     reader = LiteralReader(block)
     base_line = text.count("\n", 0, match.start()) + 1
+
+    def line() -> int:
+        return base_line + block.count("\n", 0, reader.position)
+
     while True:
         # Errors name the field and line only, never assignment values.
         field = "agent managed block"
@@ -96,20 +127,23 @@ def read_managed_values(path: Path | None = None) -> tuple[dict[str, Any], bool,
                 reader.take()
                 parts.append(reader.take())
             field = ".".join(parts)
-            if not _PATH_RE.fullmatch(field):
-                raise LiteralError("invalid managed field path")
             reader.expect("=")
             value = reader.value()
             reader.expect(";")
-            if field in values:
-                raise LiteralError("duplicate managed assignment")
-            values[field] = value
         except LiteralError as exc:
-            line = base_line + block.count("\n", 0, reader.position)
-            errors.append(f"{field}: {exc} (line {line})")
+            errors.append(error.syntax(field, str(exc), line=line()))
             # Do not attempt recovery inside a nested attrset: doing so could
             # interpret its members as independent machine assignments.
             break
+        if not _PATH_RE.fullmatch(field):
+            errors.append(
+                error.invalid_path(field, expected="envy.<namespace>.<name>.<field>", line=line())
+            )
+            break
+        if field in values:
+            errors.append(error.duplicate(field, line=line()))
+            break
+        values[field] = value
     log.debug("agents", "managed block parsed", path=str(path), fields=len(values), errors=len(errors))
     return values, True, errors
 
@@ -139,112 +173,166 @@ def _initial_values() -> dict[str, Any]:
     }
 
 
-def _validate_values(values: dict[str, Any]) -> list[str]:
-    errors: list[str] = []
-    agent_names: set[str] = set()
-    profile_names: set[str] = set()
-    endpoint_names: set[str] = set()
-    credential_names: set[str] = set()
+def _validate_issues(values: dict[str, Any]) -> list[error.ConfigError]:
+    """Return one actionable problem per invalid managed field."""
+    issues: list[error.ConfigError] = []
+    flat_agents: set[str] = set()
+    flat_profiles: set[str] = set()
+    flat_endpoints: set[str] = set()
+    flat_credentials: set[str] = set()
+    declared_profiles: set[str] = set()
+    declared_endpoints: set[str] = set()
+    declared_credentials: set[str] = set()
     for path, value in values.items():
-        match = re.fullmatch(r"envy\.(agents|agentProfiles|llm\.(?:endpoints|credentials))\.([A-Za-z0-9][A-Za-z0-9_-]*)(?:\.([A-Za-z0-9_-]+))?", path)
+        match = _NAMESPACE_RE.fullmatch(path)
         if not match:
-            errors.append(path)
+            issues.append(error.invalid_path(path, expected="envy.<namespace>.<name>.<field>"))
             continue
         namespace, name, field = match.groups()
         if namespace == "agentProfiles":
-            profile_names.add(name)
-            if field not in {"endpoint", "credential", "api", "model", "contextWindow", "maxTokens"}:
-                errors.append(path)
-            elif field in {"contextWindow", "maxTokens"} and value is not None and (isinstance(value, bool) or not isinstance(value, int) or value <= 0):
-                errors.append(path)
-            elif field == "api" and value is not None and value not in API_CHOICES:
-                errors.append(path)
-            elif field in {"endpoint", "credential", "model"} and value is not None and not isinstance(value, str):
-                errors.append(path)
-        elif namespace == "agents":
-            agent_names.add(name)
-            if field not in {"profile", "models", "adapter", "api", "endpoint", "credential", "model", "contextWindow", "maxTokens", "command", "args", "aliases", "skills", "additionalSettings", "moreThinking"}:
-                errors.append(path)
-            elif field in {"contextWindow", "maxTokens"} and value is not None and (
-                isinstance(value, bool) or not isinstance(value, int) or value <= 0
-            ):
-                errors.append(path)
-            elif field in {"args", "aliases", "skills"} and (
-                not isinstance(value, list) or not all(isinstance(item, str) for item in value)
-            ):
-                errors.append(path)
-            elif field == "additionalSettings" and not isinstance(value, dict):
-                errors.append(path)
-            elif field == "moreThinking" and not isinstance(value, bool):
-                errors.append(path)
-            elif field == "api" and value is not None and value not in API_CHOICES:
-                errors.append(path)
-            elif field in {"profile", "adapter", "endpoint", "credential", "model", "command"} and value is not None and not isinstance(value, str):
-                errors.append(path)
+            declared_profiles.add(name)
         elif namespace == "llm.endpoints":
-            endpoint_names.add(name)
-            if field not in {"baseUrl", "protocol"} or not isinstance(value, str):
-                errors.append(path)
-            elif field == "protocol" and value not in {"openai-compatible", "anthropic-compatible", "native"}:
-                errors.append(path)
-            elif field == "baseUrl" and not value.startswith(("http://", "https://")):
-                errors.append(path)
+            declared_endpoints.add(name)
         elif namespace == "llm.credentials":
-            credential_names.add(name)
-            if field not in {"kind", "secretPath"} or not isinstance(value, str):
-                errors.append(path)
-            elif field == "kind" and value not in {"api-key", "token", "basic"}:
-                errors.append(path)
+            declared_credentials.add(name)
+        if field is None:
+            # Report the whole-object assignment once instead of inspecting
+            # members that may be legitimate values of a field-less object.
+            issues.append(error.unsupported_object(path, hint=_object_hint(namespace, name)))
+            continue
+        if namespace == "agentProfiles":
+            flat_profiles.add(name)
+            if field not in _PROFILE_FIELDS:
+                issues.append(error.unknown_field(path, _PROFILE_FIELDS))
+            elif field in MODEL_LIMIT_FIELDS:
+                if value is not None and (
+                    isinstance(value, bool) or not isinstance(value, int) or value <= 0
+                ):
+                    issues.append(error.invalid_type(path, "a positive integer or null"))
+            elif field == "api":
+                if value is not None and value not in API_CHOICES:
+                    issues.append(error.invalid_choice(path, API_CHOICES))
+            elif value is not None and not isinstance(value, str):
+                issues.append(error.invalid_type(path, "a string or null"))
+        elif namespace == "agents":
+            flat_agents.add(name)
+            if field not in _AGENT_FIELDS:
+                issues.append(error.unknown_field(path, _AGENT_FIELDS))
+            elif field in MODEL_LIMIT_FIELDS:
+                if value is not None and (
+                    isinstance(value, bool) or not isinstance(value, int) or value <= 0
+                ):
+                    issues.append(error.invalid_type(path, "a positive integer or null"))
+            elif field in {"args", "aliases", "skills"}:
+                if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+                    issues.append(error.invalid_type(path, "a list of strings"))
+            elif field == "additionalSettings":
+                if not isinstance(value, dict):
+                    issues.append(error.invalid_type(path, "an object"))
+            elif field == "moreThinking":
+                if not isinstance(value, bool):
+                    issues.append(error.invalid_type(path, "true or false"))
+            elif field == "api":
+                if value is not None and value not in API_CHOICES:
+                    issues.append(error.invalid_choice(path, API_CHOICES))
+            elif field in {"profile", "adapter", "endpoint", "credential", "model", "command"}:
+                if value is not None and not isinstance(value, str):
+                    issues.append(error.invalid_type(path, "a string or null"))
+        elif namespace == "llm.endpoints":
+            flat_endpoints.add(name)
+            if field not in _ENDPOINT_FIELDS:
+                issues.append(error.unknown_field(path, _ENDPOINT_FIELDS))
+            elif not isinstance(value, str):
+                issues.append(error.invalid_type(path, "a string"))
+            elif field == "protocol" and value not in _ENDPOINT_PROTOCOLS:
+                issues.append(error.invalid_choice(path, _ENDPOINT_PROTOCOLS))
+            elif field == "baseUrl" and not value.startswith(("http://", "https://")):
+                issues.append(error.invalid_value(path, "expected an http:// or https:// URL"))
+        else:
+            flat_credentials.add(name)
+            if field not in _CREDENTIAL_FIELDS:
+                issues.append(error.unknown_field(path, _CREDENTIAL_FIELDS))
+            elif not isinstance(value, str):
+                issues.append(error.invalid_type(path, "a string"))
+            elif field == "kind" and value not in _CREDENTIAL_KINDS:
+                issues.append(error.invalid_choice(path, _CREDENTIAL_KINDS))
             elif field == "secretPath" and not _SAFE_SECRET_PATH.fullmatch(value):
-                errors.append(path)
+                issues.append(
+                    error.invalid_value(
+                        path, "expected slash-separated letters, digits, '_' or '-'"
+                    )
+                )
 
-    for name in sorted(profile_names):
-        if f"envy.agentProfiles.{name}.endpoint" not in values or f"envy.agentProfiles.{name}.model" not in values:
-            errors.append(f"envy.agentProfiles.{name}")
-    declared_profiles = set(profile_names)
-    declared_endpoints = {path.split(".")[3] for path in values if path.startswith("envy.llm.endpoints.")}
-    declared_credentials = {path.split(".")[3] for path in values if path.startswith("envy.llm.credentials.")}
-    for name in sorted(agent_names):
-        if f"envy.agents.{name}.adapter" not in values:
-            errors.append(f"envy.agents.{name}.adapter")
-    for name in sorted(endpoint_names):
-        if f"envy.llm.endpoints.{name}.baseUrl" not in values:
-            errors.append(f"envy.llm.endpoints.{name}.baseUrl")
-    for name in sorted(credential_names):
-        if f"envy.llm.credentials.{name}.secretPath" not in values:
-            errors.append(f"envy.llm.credentials.{name}.secretPath")
+    for name in sorted(flat_profiles):
+        for required in ("endpoint", "model"):
+            if f"envy.agentProfiles.{name}.{required}" not in values:
+                issues.append(error.missing_required(f"envy.agentProfiles.{name}", required))
+    for name in sorted(flat_agents):
+        path = f"envy.agents.{name}.adapter"
+        if path not in values:
+            issues.append(error.missing_required(path, hint=f"Run: envy agent set {path} <adapter>"))
+    for name in sorted(flat_endpoints):
+        path = f"envy.llm.endpoints.{name}.baseUrl"
+        if path not in values:
+            issues.append(error.missing_required(path, hint="Add the endpoint base URL."))
+    for name in sorted(flat_credentials):
+        path = f"envy.llm.credentials.{name}.secretPath"
+        if path not in values:
+            issues.append(
+                error.missing_required(
+                    path,
+                    hint=f"Run: envy agent credential-set {name} --secret-path <yaml-path> --stdin",
+                )
+            )
+
     for path, value in values.items():
-        if path.startswith("envy.agents.") and path.endswith(".profile") and isinstance(value, str) and value not in declared_profiles:
-            errors.append(path)
-        if not path.startswith("envy.agents.") or not path.endswith((".endpoint", ".credential")) or not isinstance(value, str):
+        if path.startswith("envy.agents.") and path.endswith(".profile") and isinstance(value, str):
+            if value not in declared_profiles:
+                issues.append(
+                    error.unknown_reference(
+                        path, "agent profile", declared="envy.agentProfiles.<name>"
+                    )
+                )
+            continue
+        if not path.startswith("envy.agents.") or not path.endswith((".endpoint", ".credential")):
+            continue
+        if not isinstance(value, str):
             continue
         if path.endswith(".endpoint") and value not in declared_endpoints | _KNOWN_ENDPOINTS:
-            errors.append(path)
+            issues.append(
+                error.unknown_reference(path, "endpoint", declared="envy.llm.endpoints.<name>")
+            )
         if path.endswith(".credential") and value not in declared_credentials | _KNOWN_CREDENTIALS:
-            errors.append(path)
+            issues.append(
+                error.unknown_reference(path, "credential", declared="envy.llm.credentials.<name>")
+            )
+
     _, agents = _managed_manifest(values)
     for name, item in agents.items():
         if not isinstance(item, dict) or "models" not in item:
             continue
         path = f"envy.agents.{name}.models"
         if item["models"] and (name != "pi" or item.get("adapter") != "pi"):
-            errors.append(path)
+            issues.append(error.invalid_value(path, "only the pi agent supports a non-empty model list"))
             continue
         try:
             model_bindings(_initial_values() | values, item)
-        except (ValueError, TypeError):
-            errors.append(path)
-    return sorted(set(errors))
+        except (ValueError, TypeError) as exc:
+            issues.append(error.invalid_value(path, str(exc)))
+    return sorted(set(issues), key=lambda item: (item.path, item.message))
+
+
+def _validate_values(values: dict[str, Any]) -> list[str]:
+    """Return the invalid paths; use _validate_issues when reporting details."""
+    return sorted({item.path for item in _validate_issues(values)})
 
 
 def refine_managed(*, write: bool = True, path: Path | None = None) -> dict[str, Any]:
     """Validate or create the agent block used by config refine/check."""
     values, present, errors = read_managed_values(path)
-    result: dict[str, Any] = {"added": [], "removed": [], "warnings": [], "errors": list(errors), "changed": False}
+    result: dict[str, Any] = {"added": [], "removed": [], "warnings": [], "errors": [], "changed": False}
     if errors:
-        for error in errors:
-            log.error("agents", "cannot parse managed agent configuration", path=str(path or machine_config_file()), reason=error)
-        log.hint("Use literal Nix settings or builtins.fromJSON in the managed agent block; no values were changed.")
+        result["errors"].extend(error.report("agents", errors))
         return result
     if not present:
         initial = _initial_values()
@@ -254,17 +342,16 @@ def refine_managed(*, write: bool = True, path: Path | None = None) -> dict[str,
             result["changed"] = True
             log.fix("agents", "created the managed agent block", count=len(initial))
         else:
-            result["errors"].append("envy agents managed block")
-            log.error("agents", "agent managed block is missing")
-            log.hint("Run: envy config refine")
+            result["errors"].extend(error.report("agents", [
+                error.managed_block_missing(
+                    "envy agents managed block", hint="Run: envy config refine"
+                )
+            ]))
         return result
 
-    invalid = _validate_values(values)
-    if invalid:
-        result["errors"].extend(invalid)
-        for field in invalid:
-            log.error("agents", "invalid agent managed field", field=field)
-        log.hint("Run: envy agent set ... or edit the managed agent block")
+    issues = _validate_issues(values)
+    if issues:
+        result["errors"].extend(error.report("agents", issues))
     else:
         log.ok("agents", "managed agent selections are valid", fields=len(values))
     return result
@@ -632,11 +719,30 @@ def _runtime_change_kind(path: str) -> str:
 
 def _validate_path(path: str) -> None:
     if not _PATH_RE.fullmatch(path):
-        raise typer.BadParameter(f"invalid envY agent path: {path}")
+        raise typer.BadParameter(
+            error.summary([
+                error.invalid_path(
+                    path,
+                    expected=(
+                        "envy.<agents|agentProfiles|llm.endpoints|llm.credentials>"
+                        ".<name>.<field>"
+                    ),
+                )
+            ])
+        )
 
 
 def _set(path: str, value: Any) -> Path:
     _validate_path(path)
+    whole_object = _NAMESPACE_RE.fullmatch(path)
+    if whole_object is not None and whole_object.group(3) is None:
+        raise typer.BadParameter(
+            error.summary([
+                error.unsupported_object(
+                    path, hint=_object_hint(whole_object.group(1), whole_object.group(2))
+                )
+            ])
+        )
     if path.startswith("envy.agents."):
         field = path.rsplit(".", 1)[-1]
         if field in {"args", "aliases", "skills"}:
@@ -644,16 +750,24 @@ def _set(path: str, value: Any) -> Path:
                 try:
                     value = json.loads(value)
                 except json.JSONDecodeError as exc:
-                    raise typer.BadParameter(f"{path} requires a JSON array of strings") from exc
+                    raise typer.BadParameter(error.summary([
+                        error.invalid_type(path, "a JSON array of strings")
+                    ])) from exc
             if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-                raise typer.BadParameter(f"{path} requires a JSON array of strings")
+                raise typer.BadParameter(error.summary([
+                    error.invalid_type(path, "a JSON array of strings")
+                ]))
         elif field == "models":
             try:
                 value = json.loads(value) if isinstance(value, str) else value
             except (ValueError, TypeError):
-                raise typer.BadParameter("models must be a JSON array of model objects") from None
+                raise typer.BadParameter(error.summary([
+                    error.invalid_type(path, "a JSON array of model objects")
+                ])) from None
             if not isinstance(value, list):
-                raise typer.BadParameter("models must be a JSON array of model objects")
+                raise typer.BadParameter(error.summary([
+                    error.invalid_type(path, "a JSON array of model objects")
+                ]))
         elif field in {"profile", "endpoint", "credential", "model", "api", "contextWindow", "maxTokens"}:
             if value == "null":
                 value = None
@@ -661,11 +775,15 @@ def _set(path: str, value: Any) -> Path:
                 try:
                     value = int(value)
                 except (TypeError, ValueError):
-                    raise typer.BadParameter(f"{path} must be a positive integer or null") from None
+                    raise typer.BadParameter(error.summary([
+                        error.invalid_type(path, "a positive integer or null")
+                    ])) from None
                 if value <= 0:
-                    raise typer.BadParameter(f"{path} must be a positive integer or null")
+                    raise typer.BadParameter(error.summary([
+                        error.invalid_type(path, "a positive integer or null")
+                    ]))
     if path.startswith("envy.agents.") and path.endswith(".api") and value is not None and value not in API_CHOICES:
-        raise typer.BadParameter(f"api must be one of: {', '.join(API_CHOICES)}")
+        raise typer.BadParameter(error.summary([error.must_be_one_of("api", API_CHOICES)]))
     if path.startswith("envy.agents.") and path.endswith(".additionalSettings"):
         try:
             value = json.loads(value) if isinstance(value, str) else value
@@ -673,23 +791,27 @@ def _set(path: str, value: Any) -> Path:
                 raise ValueError
             json.dumps(value, allow_nan=False)
         except (ValueError, TypeError):
-            raise typer.BadParameter("additionalSettings must be a JSON object") from None
+            raise typer.BadParameter(error.summary([
+                error.invalid_type(path, "a JSON object")
+            ])) from None
     if path.startswith("envy.agents.") and path.endswith(".moreThinking"):
         if isinstance(value, str) and value in {"true", "false"}:
             value = value == "true"
         if not isinstance(value, bool):
-            raise typer.BadParameter(f"{path} must be true or false")
-    values, _present, errors = read_managed_values()
-    if errors:
-        raise ValueError("cannot edit malformed agent managed block")
+            raise typer.BadParameter(error.summary([error.invalid_type(path, "true or false")]))
+    values, _present, parse_errors = read_managed_values()
+    if parse_errors:
+        raise typer.BadParameter(
+            error.summary(parse_errors, prefix="cannot edit malformed agent managed block")
+        )
     if path.startswith("envy.agents.") and path.rsplit(".", 1)[-1] in _LIVE_AGENT_FIELDS:
         agent_prefix = f"envy.agents.{path.split('.')[2]}."
         if values.get(agent_prefix + "adapter") != "pi" or path.rsplit(".", 1)[-1] not in MODEL_LIMIT_FIELDS:
             values.pop(agent_prefix + "profile", None)
     values[path] = value
-    errors = _validate_values(values)
-    if errors:
-        raise typer.BadParameter("invalid agent configuration fields: " + ", ".join(errors))
+    issues = _validate_issues(values)
+    if issues:
+        raise typer.BadParameter(error.summary(issues, prefix="invalid agent configuration"))
     return _write_values(values)
 
 
@@ -755,17 +877,22 @@ def cmd_profile_add(
     yes: bool = typer.Option(False, "--yes", "-y"),
 ):
     if not re.fullmatch(_NAME, name):
-        raise typer.BadParameter(f"invalid profile name: {name}")
+        raise typer.BadParameter(error.summary([error.invalid_name("profile", name)]))
     if api is not None and api not in API_CHOICES:
-        raise typer.BadParameter(f"api must be one of: {', '.join(API_CHOICES)}")
+        raise typer.BadParameter(error.summary([error.must_be_one_of("api", API_CHOICES)]))
     if context_window is not None and context_window <= 0:
-        raise typer.BadParameter("context window must be positive")
+        raise typer.BadParameter(error.summary([error.positive_integer("context window")]))
     if max_tokens is not None and max_tokens <= 0:
-        raise typer.BadParameter("max tokens must be positive")
+        raise typer.BadParameter(error.summary([error.positive_integer("max tokens")]))
     values = _read_values()
     prefix = f"envy.agentProfiles.{name}."
     if any(path.startswith(prefix) for path in values):
-        raise typer.BadParameter(f"agent profile already exists: {name}")
+        raise typer.BadParameter(error.summary([
+            error.already_exists(
+                "agent profile", name,
+                hint=f"Run: envy agent set {prefix}<field> <value>",
+            )
+        ]))
     values.update({
         prefix + "endpoint": endpoint,
         prefix + "model": model,
@@ -774,9 +901,9 @@ def cmd_profile_add(
         prefix + "contextWindow": context_window,
         prefix + "maxTokens": max_tokens,
     })
-    errors = _validate_values(values)
-    if errors:
-        raise typer.BadParameter("invalid profile configuration: " + ", ".join(errors))
+    issues = _validate_issues(values)
+    if issues:
+        raise typer.BadParameter(error.summary(issues, prefix="invalid profile configuration"))
     target = _write_values(values)
     offer_mutation_commit([target], f"chore(agent): add profile {name}", quiet=json_output or yes)
     if json_output:
@@ -797,17 +924,21 @@ def cmd_profile_use(
     profiles = _profile_values(values)
     profile = profiles.get(profile_name)
     if profile is None:
-        raise typer.BadParameter(f"unknown agent profile: {profile_name}")
+        raise typer.BadParameter(error.summary([
+            error.not_found("agent profile", profile_name, hint="Run: envy agent profile list")
+        ]))
     agent_prefix = f"envy.agents.{agent_name}."
     if not values.get(agent_prefix + "adapter"):
-        raise typer.BadParameter(f"unknown managed agent: {agent_name}")
+        raise typer.BadParameter(error.summary([
+            error.not_found("managed agent", agent_name, hint="Run: envy agent list")
+        ]))
     for field, value in _profile_agent_fields(profile).items():
         if values[agent_prefix + "adapter"] != "pi" or field not in MODEL_LIMIT_FIELDS:
             values[agent_prefix + field] = value
     values[agent_prefix + "profile"] = profile_name
-    errors = _validate_values(values)
-    if errors:
-        raise typer.BadParameter("profile cannot be applied: " + ", ".join(errors))
+    issues = _validate_issues(values)
+    if issues:
+        raise typer.BadParameter(error.summary(issues, prefix="profile cannot be applied"))
     target = _write_values(values)
     refreshed = refresh_runtime(values=values)
     offer_mutation_commit([target], f"chore(agent): use profile {profile_name} for {agent_name}", quiet=json_output or yes)
@@ -851,10 +982,11 @@ def cmd_show(name: str = typer.Argument(..., autocompletion=complete_agent_names
     """Show one evaluated agent and its non-sensitive selections."""
     agents = _manifest_agents()
     if name not in agents:
+        message = error.summary([error.not_found("agent", name, hint="Run: envy agent list")])
         if json_output:
-            emit_error("agent.show", f"unknown agent: {name}", code="not-found")
+            emit_error("agent.show", message, code=ErrorCode.NOT_FOUND.value)
             raise typer.Exit(code=1)
-        raise typer.BadParameter(f"unknown agent: {name}")
+        raise typer.BadParameter(message)
     if json_output:
         emit("agent.show", data={"name": name, "agent": agents[name]})
     else:
@@ -873,7 +1005,7 @@ def cmd_set(
         _set(path, value)
     except (OSError, ValueError, typer.BadParameter) as exc:
         if json_output:
-            emit_error("agent.set", str(exc), code="invalid-value")
+            emit_error("agent.set", str(exc), code=ErrorCode.INVALID_VALUE.value)
             raise typer.Exit(code=1) from exc
         raise
     changed_kind = _runtime_change_kind(path)
@@ -903,13 +1035,17 @@ def cmd_add(
 ):
     """Create an agent instance from an adapter and optional LLM selection."""
     if not re.fullmatch(_NAME, name):
-        raise typer.BadParameter(f"invalid agent name: {name}")
+        raise typer.BadParameter(error.summary([error.invalid_name("agent", name)]))
     values = _read_values()
     prefix = f"envy.agents.{name}."
     if any(key.startswith(prefix) for key in values):
-        raise typer.BadParameter(f"agent already exists: {name}")
+        raise typer.BadParameter(error.summary([
+            error.already_exists(
+                "managed agent", name, hint=f"Run: envy agent remove {name} first"
+            )
+        ]))
     if api is not None and api not in API_CHOICES:
-        raise typer.BadParameter(f"api must be one of: {', '.join(API_CHOICES)}")
+        raise typer.BadParameter(error.summary([error.must_be_one_of("api", API_CHOICES)]))
     values[prefix + "adapter"] = adapter
     for field, value in (("api", api), ("endpoint", endpoint), ("credential", credential), ("model", model), ("command", command)):
         if value is not None:
@@ -928,10 +1064,13 @@ def cmd_remove(name: str = typer.Argument(..., autocompletion=complete_managed_a
     prefix = f"envy.agents.{name}."
     removed = [key for key in values if key.startswith(prefix)]
     if not removed:
+        message = error.summary([
+            error.not_found("managed agent", name, hint="Run: envy agent list")
+        ])
         if json_output:
-            emit_error("agent.remove", f"unknown managed agent: {name}", code="not-found")
+            emit_error("agent.remove", message, code=ErrorCode.NOT_FOUND.value)
             raise typer.Exit(code=1)
-        raise typer.BadParameter(f"unknown managed agent: {name}")
+        raise typer.BadParameter(message)
     for key in removed:
         values.pop(key, None)
     target = _write_values(values)
@@ -949,9 +1088,19 @@ def cmd_credential_set(
 ):
     """Create/update a logical credential and set its encrypted value."""
     if not stdin:
-        raise typer.BadParameter("credential values require --stdin")
+        raise typer.BadParameter(error.summary([
+            error.invalid_argument(
+                "credential values require --stdin",
+                hint="Pipe the value instead of passing it on the command line.",
+            )
+        ]))
     if not re.fullmatch(r"[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*", secret_path):
-        raise typer.BadParameter("secret path must contain slash-separated safe names")
+        raise typer.BadParameter(error.summary([
+            error.invalid_value(
+                f"envy.llm.credentials.{name}.secretPath",
+                "expected slash-separated letters, digits, '_' or '-'",
+            )
+        ]))
     value = __import__("sys").stdin.read().rstrip("\r\n")
     machine_path = machine_config_file()
     with FileTransaction([machine_path, SECRETS_FILE]) as transaction:

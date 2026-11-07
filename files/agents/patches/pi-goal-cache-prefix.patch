@@ -1,0 +1,146 @@
+--- a/extensions/goal-events.ts
++++ b/extensions/goal-events.ts
+@@ -28,1 +28,1 @@
+-import { LiveTailRetention } from "./goal-live-retention.ts";
++import { LiveTailRetention, type FreshLiveTails } from "./goal-live-retention.ts";
+@@ -92,2 +92,2 @@
+-			// Only genuinely new state/counters content is appended.
+-			const { messages: retained } = liveRetention.apply(sessionKey, base, { state: parts.state, counters: parts.counters });
++			// Task progress appends independently; counters refresh at checkpoints.
++			const { messages: retained } = liveRetention.apply(sessionKey, base, parts);
+@@ -417,2 +417,2 @@
+-	/** Request-only goal state split into a rarely-changing policy block and per-turn counters. Other branches are stable-only. */
+-	function currentGoalContextParts(ctx: ExtensionContext): { state: string; counters?: string } | undefined {
++	/** Standing requirements, task snapshots, and checkpointed counters stay separate. */
++	function currentGoalContextParts(ctx: ExtensionContext): FreshLiveTails | undefined {
+@@ -485,1 +485,1 @@
+-		const { state: policy, counters } = goalPromptParts(activeGoal, { ...settings, commands: core.loadedCommands }, ctx.getContextUsage?.());
++		const { state: policy, progress, counters, counterKey } = goalPromptParts(activeGoal, { ...settings, commands: core.loadedCommands }, ctx.getContextUsage?.());
+@@ -517,1 +517,1 @@
+-		return { state, counters };
++		return { state, progress, counters, counterKey };
+--- a/extensions/goal-live-retention.ts
++++ b/extensions/goal-live-retention.ts
+@@ -21,3 +21,3 @@
+- * edits), an unsafe insertion point, or overflow all perform one documented
+- * full reset instead of silently shifting the prefix or corrupting message
+- * structure.
++ * edits), an unsafe insertion point, or excessive task snapshots reset replay.
++ * Counters have a separate soft allowance: exhausted observations are skipped
++ * instead of invalidating the cached conversation prefix.
+@@ -28,1 +28,1 @@
+-export type LiveTailKind = "goal-state" | "goal-counters";
++export type LiveTailKind = "goal-state" | "goal-progress" | "goal-counters";
+@@ -40,4 +40,2 @@
+- * Upper bound on retained tails per session. Retained tails are small (the
+- * per-turn volatile counters), so the steady-state wire overhead stays near
+- * a few kilobytes; exceeding the bound performs a single full reset, i.e. at
+- * most one prefix break per MAX_RETAINED_LIVE_TAILS state changes.
++ * Bound standing requirements plus task snapshots per session. Counters use
++ * a separate allowance of the same count and never cause a replay reset.
+@@ -49,1 +47,1 @@
+-/** Extra historical observations, excluding the single current policy block. */
++/** Soft byte allowance for historical usage observations only. */
+@@ -53,0 +52,1 @@
++	progress?: string | undefined;
+@@ -54,0 +54,2 @@
++	/** Changes only at usage milestones, independently of per-turn numbers. */
++	counterKey?: string | undefined;
+@@ -69,4 +69,0 @@
+-}
+-
+-function freshBlocks(fresh: FreshLiveTails): string[] {
+-	return fresh.counters === undefined ? [fresh.state] : [fresh.state, fresh.counters];
+@@ -148,0 +146,1 @@
++			|| (session.lastFresh.progress !== undefined && fresh.progress === undefined)
+@@ -180,12 +178,9 @@
+-		const blocks = freshBlocks(fresh);
+-		// Append only the suffix that differs from the last emitted tails, so
+-		// unchanged content across repeats, tool loops, and history advances
+-		// adds zero blocks while keeping the prefix literal.
+-		const previous = session.lastFresh === undefined ? [] : freshBlocks(session.lastFresh);
+-		let shared = 0;
+-		while (shared < blocks.length && shared < previous.length && blocks[shared] === previous[shared]) shared++;
+-		// Overflow is measured against what this request actually appends: an
+-		// unchanged request adds nothing and must never trigger a reset.
+-		if (session.tails.length + (blocks.length - shared) > MAX_RETAINED_LIVE_TAILS
+-			|| session.tails.filter(tail => tail.kind === "goal-counters").reduce((n, tail) => n + Buffer.byteLength(tail.content), 0)
+-				+ (fresh.counters === undefined || shared === blocks.length ? 0 : Buffer.byteLength(fresh.counters)) > MAX_RETAINED_COUNTER_BYTES) {
++		let previous = session.lastFresh;
++		const pending: Array<Pick<RetainedTail, "kind" | "content">> = [];
++		if (previous === undefined) pending.push({ kind: "goal-state", content: fresh.state });
++		if (fresh.progress !== undefined && fresh.progress !== previous?.progress) {
++			pending.push({ kind: "goal-progress", content: fresh.progress });
++		}
++		// Mandatory task updates remain bounded. Usage observations cannot spend
++		// this allowance or trigger a reset by themselves.
++		if (session.tails.filter(tail => tail.kind !== "goal-counters").length + pending.length > MAX_RETAINED_LIVE_TAILS) {
+@@ -193,1 +188,13 @@
+-			shared = 0;
++			previous = undefined;
++			pending.length = 0;
++			pending.push({ kind: "goal-state", content: fresh.state });
++			if (fresh.progress !== undefined) pending.push({ kind: "goal-progress", content: fresh.progress });
++		}
++		const checkpoint = previous === undefined || fresh.progress !== previous.progress || fresh.counterKey !== previous.counterKey;
++		if (checkpoint && fresh.counters !== undefined) {
++			const observations = session.tails.filter(tail => tail.kind === "goal-counters");
++			const bytes = observations.reduce((sum, tail) => sum + Buffer.byteLength(tail.content), 0);
++			if (fresh.counters !== observations.at(-1)?.content && observations.length < MAX_RETAINED_LIVE_TAILS
++				&& bytes + Buffer.byteLength(fresh.counters) <= MAX_RETAINED_COUNTER_BYTES) {
++				pending.push({ kind: "goal-counters", content: fresh.counters });
++			}
+@@ -200,3 +207,1 @@
+-		for (let i = shared; i < blocks.length; i++) {
+-			const content = blocks[i]!;
+-			const kind: LiveTailKind = i === 0 ? "goal-state" : "goal-counters";
++		for (const { content, kind } of pending) {
+@@ -207,2 +212,2 @@
+-		session.lastFresh = { state: fresh.state, counters: fresh.counters };
+-		return { messages, transientContents: [...new Set([...session.tails.map(tail => tail.content), ...blocks])] };
++		session.lastFresh = { ...fresh };
++		return { messages, transientContents: [...new Set(session.tails.map(tail => tail.content))] };
+--- a/extensions/prompts/goal-prompts.ts
++++ b/extensions/prompts/goal-prompts.ts
+@@ -211,2 +211,1 @@
+-  goal.verificationContract, settings?.disableTasks ? undefined : taskIndex(goal.taskList?.tasks),
+-  goal.taskList?.blockCompletion, promptProfile(), goal.currentTaskId, settings?.disableTasks, settings?.disableContracts, settings?.maxAutonomousRuns !== 0, settings?.strictExecutionContract === true, !!goal.scheduler?.wait, settings?.commands ? JSON.stringify(settings.commands) : undefined];
++  goal.verificationContract, promptProfile(), settings?.disableContracts, settings?.maxAutonomousRuns !== 0, settings?.strictExecutionContract === true, !!goal.scheduler?.wait, settings?.commands ? JSON.stringify(settings.commands) : undefined];
+@@ -219,2 +218,1 @@
+- const chars = goal.objective.length + (goal.verificationContract?.length ?? 0) + value.length
+-  + (goal.taskList ? goal.taskList.tasks.reduce((n, task) => n + retainedTaskChars(task), 0) : 0);
++ const chars = goal.objective.length + (goal.verificationContract?.length ?? 0) + value.length;
+@@ -227,9 +225,8 @@
+-function retainedTaskChars(task: GoalTask): number {
+- return task.id.length + task.title.length + (task.verificationContract?.length ?? 0) + (task.evidence?.length ?? 0)
+-  + (task.skipReason?.length ?? 0) + (task.subtasks?.reduce((n, child) => n + retainedTaskChars(child), 0) ?? 0);
+-}
+-
+-export function goalPromptParts(goal: GoalRecord, settings?: GoalSettings, contextUsage?: GoalContextUsage): { state: string; counters: string } {
+-	// The policy block changes only when the goal itself changes; the counters
+-	// change nearly every turn. Splitting them lets request-only injection retain
+-	// each at its own rate so consecutive provider requests stay prefix-stable.
++/** Display checkpoints mirror budget warnings; enforcement uses exact accounting. */
++function counterMilestone(used: number, limit?: number): number {
++ return limit !== undefined && limit > 0 ? [0.5, 0.75, 0.9].filter(threshold => used >= threshold * limit).length : 0;
++}
++
++export function goalPromptParts(goal: GoalRecord, settings?: GoalSettings, contextUsage?: GoalContextUsage): { state: string; progress: string; counters: string; counterKey: string } {
++	// Keep standing requirements independent of task progress and usage. Task
++	// snapshots append at their own anchors; usage refreshes only at checkpoints.
+@@ -241,1 +238,2 @@
+-	const state = [fixed, instructions, limits, "Usage spans goal turns, not context. Latest snapshot supersedes earlier snapshots."].filter(Boolean).join("\n");
++	const state = [fixed, instructions, limits, "Usage spans goal turns, not context. Usage snapshots are historical; get_goal reports exact current usage."].filter(Boolean).join("\n");
++	const progress = `[GOAL TASK SNAPSHOT goalId=${goal.id}]\nThis snapshot supersedes all earlier task snapshots, including their focus, contracts, and task gates.\n${settings?.disableTasks ? "Task tracking is disabled." : taskListBlock(goal, settings) || "There is no task list."}`;
+@@ -243,1 +241,2 @@
+-	return { state, counters };
++	const counterKey = `${counterMilestone(goal.usage.tokensUsed, goal.tokenBudget)}:${counterMilestone(goal.scheduler?.used ?? 0, settings?.maxAutonomousRuns)}`;
++	return { state, progress, counters, counterKey };
+@@ -247,2 +246,2 @@
+-	const { state, counters } = goalPromptParts(goal, settings);
+-	return `${state}\n${counters}`;
++	const { state, progress, counters } = goalPromptParts(goal, settings);
++	return `${state}\n${progress}\n${counters}`;
+@@ -258,1 +257,1 @@
+-  untrustedObjectiveBlock(goal), taskListBlock(goal, settings), verificationContractBlock(goal, settings),
++  untrustedObjectiveBlock(goal), verificationContractBlock(goal, settings),

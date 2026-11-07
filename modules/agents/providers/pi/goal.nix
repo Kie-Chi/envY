@@ -11,6 +11,7 @@ fetchPiExtension {
   hash = "sha512-FJdd4Fz9gWNzTybovN/BJp83o5BdgOytHZIeddBxU21HNFciEpFV83yVLpJO2lFIEvOLbXLeNJtMhk138urPGA==";
   postUnpack = ''
     ${pkgs.patch}/bin/patch --batch --fuzz=0 -p1 < ${../../../../files/agents/patches/pi-goal-state-and-stages.patch}
+    ${pkgs.patch}/bin/patch --batch --fuzz=0 -p1 < ${../../../../files/agents/patches/pi-goal-cache-prefix.patch}
     HOME="$TMPDIR/goal-test-home" ${lib.getExe pkgs.nodejs_24} \
       ${./tests/pi-goal.mjs} "$out" ${piPackage}/lib/pi/node_modules
   '';

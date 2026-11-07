@@ -23,7 +23,10 @@ let
     && !(builtins.elem "ruff" config.envy.software.nix.packages.exclude);
   # Reviewed npm packages pinned to registry integrity hashes. Check their Pi
   # peer range against the locked Pi before changing a version.
+  views = import ./views.nix { inherit lib pkgs; };
   packages = {
+    "context-view" = views.context;
+    diff = views.diff;
     goal-x = import ./goal.nix { inherit lib pkgs piPackage; };
     queue-steer = import ./queue.nix { inherit lib pkgs piPackage; };
     lsp = import ./lsp.nix {

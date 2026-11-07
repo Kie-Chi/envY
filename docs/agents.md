@@ -71,6 +71,24 @@ envy.agents.pi.models = [
 
 `pi-lsp-tests` 通过真实 Pi SDK 包装工具启动 Ruff，验证 F401、非空修复预览且源文件不变、正常完成后退出、初始化后取消，以及错误启动参数的负例。测试使用私有 HOME 与配置目录、清空凭据环境并阻断网络，不调用外部模型。两平台都有对应 flake check 与 CI 入口。
 
+### 上下文视图
+
+`pi/views.nix` 固定 `pi-context-view` 0.7.0；实际发布包声明的最低 Pi 版本为 1.1.0，没有额外 npm 运行时依赖。`/context usage` 显示上下文分类，`/context injections` 显示系统提示、工具和注入内容。
+
+打开视图不会自动发起模型探测。已有请求快照时使用捕获的数据；还没有快照时显示估算及明确提示，扩展增量尚未捕获，之后的正常请求会更新快照。配置、快照和会话仍归扩展及 Pi 管理，envY 只拥有扩展链接和禁止自动探测的固定补丁。
+
+`pi-context-tests` 使用真实 SDK 和离线 provider 验证请求计数、捕获与渲染；`nix run path:.#checks.aarch64-darwin.pi-context-tests.tui` 使用私有 HOME 在真实 CLI/PTY 验证视图与编辑器切换。TUI 入口在本机执行，两平台 CI 使用对应 system 的入口，不依赖构建沙箱提供终端。
+
+### 差异视图与共存检查
+
+`pi/views.nix` 固定 `@lyrumu/pi-diff` 0.1.0 和唯一运行时依赖 `diff` 8.0.2，将依赖实体复制到扩展旁，不执行 npm 安装。作者 README 的开发基线是 Pi 1.2；本仓库使用真实 Pi 1.1 SDK 与 CLI/PTY 验证，无需升级宿主或添加 diff 兼容补丁。
+
+`/diff` 查看 Git 差异，`v` 切换布局，Tab 切换范围，Esc 或 q 返回编辑器。检查使用临时 index 基线及实际 before/after 内容，并断言查看前后文件和 index 不变。扩展的历史与缓存仍由应用管理。
+
+`pi-diff-tests` 运行 SDK 检查，`.tui` 入口复用 context 的真实终端驱动，同时打开两个扩展。`pi-coexist-tests` 使用 Nix 生成的全部非 cron 扩展来源，验证注册无冲突和真实 codemode → LSP → Ruff F401；其 `.tui` 入口在同一 CLI 加载这些扩展，核对视图、快捷键和编辑器恢复。cron 的 daemon 不在此共存测试中启动；Doctor 明确报告该跳过项。
+
+切换委派模型时使用具体的 `<provider>/<model>` 并核对实际运行报告；本轮改用独立的 Sol 低推理任务，避免模型名称命中默认供应方及重复携带长上下文。
+
 ### Pi 消息队列
 
 `pi/queue.nix` 固定 pi-queue-steer-factory 0.17.8，通过 registry SHA-512 校验解包，链接为 `~/.pi/agent/extensions/envy-queue-steer`。这个版本已有 Pi 1.0 的上游宿主验证，envY 的构建检查使用锁定的 Pi 1.1。普通队列功能不依赖 Pi Fabric。

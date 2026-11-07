@@ -415,6 +415,102 @@
           touch "$out"
         '';
 
+      mkEnvyPiContextCheck = system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          piPackage = inputs.pi.packages.${system}.default;
+          patchedPi = import ./modules/agents/providers/pi/package.nix {
+            inherit lib piPackage;
+            moreThinking = true;
+          };
+          views = import ./modules/agents/providers/pi/views.nix { inherit lib pkgs; };
+          tui = pkgs.writeShellApplication {
+            name = "pi-context-tui-tests";
+            runtimeInputs = [ pkgs.python3 ];
+            text = ''
+              exec python3 ${./modules/agents/providers/pi/tests/pi-context-tui.py} \
+                ${pkgs.nodejs_24}/bin/node \
+                ${patchedPi}/lib/pi/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js \
+                ${views.context}
+            '';
+          };
+        in pkgs.runCommand "pi-context-tests" {
+          nativeBuildInputs = [ pkgs.nodejs_24 ];
+          passthru = { inherit tui; };
+        } ''
+          node ${./modules/agents/providers/pi/tests/pi-context.mjs} \
+            ${views.context} ${patchedPi}/lib/pi/node_modules
+          touch "$out"
+        '';
+
+      mkEnvyPiDiffCheck = system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          piPackage = inputs.pi.packages.${system}.default;
+          patchedPi = import ./modules/agents/providers/pi/package.nix {
+            inherit lib piPackage;
+            moreThinking = true;
+          };
+          views = import ./modules/agents/providers/pi/views.nix { inherit lib pkgs; };
+          tui = pkgs.writeShellApplication {
+            name = "pi-diff-tui-tests";
+            runtimeInputs = [ pkgs.python3 ];
+            text = ''
+              exec python3 ${./modules/agents/providers/pi/tests/pi-context-tui.py} \
+                ${pkgs.nodejs_24}/bin/node \
+                ${patchedPi}/lib/pi/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js \
+                ${views.context} ${views.diff} ${pkgs.git}/bin/git
+            '';
+          };
+        in pkgs.runCommand "pi-diff-tests" {
+          nativeBuildInputs = [ pkgs.nodejs_24 pkgs.git ];
+          passthru = { inherit tui; };
+        } ''
+          node ${./modules/agents/providers/pi/tests/pi-diff.mjs} \
+            ${views.diff} ${patchedPi}/lib/pi/node_modules
+          touch "$out"
+        '';
+
+      mkEnvyPiCoexistCheck = system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          piPackage = inputs.pi.packages.${system}.default;
+          patchedPi = import ./modules/agents/providers/pi/package.nix {
+            inherit lib piPackage;
+            moreThinking = true;
+          };
+          extensions = import ./modules/agents/providers/pi/extensions.nix {
+            inherit lib pkgs piPackage;
+            config.envy.software.nix.packages.exclude = [ ];
+            piSource = inputs.pi.outPath;
+          };
+          subagents = import ./modules/agents/providers/pi/subagents.nix { inherit lib pkgs; };
+          files = extensions.home.file // subagents.home.file;
+          sources = lib.mapAttrsToList (_: file: toString file.source)
+            (lib.filterAttrs (target: _: lib.hasPrefix ".pi/agent/extensions/" target) files);
+          sourceJson = lib.escapeShellArg (builtins.toJSON sources);
+          views = import ./modules/agents/providers/pi/views.nix { inherit lib pkgs; };
+          lsp = import ./modules/agents/providers/pi/lsp.nix { inherit lib pkgs; };
+          tui = pkgs.writeShellApplication {
+            name = "pi-coexist-tui-tests";
+            runtimeInputs = [ pkgs.python3 ];
+            text = ''
+              exec python3 ${./modules/agents/providers/pi/tests/pi-context-tui.py} \
+                ${pkgs.nodejs_24}/bin/node \
+                ${patchedPi}/lib/pi/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js \
+                ${views.context} ${views.diff} ${pkgs.git}/bin/git ${sourceJson}
+            '';
+          };
+        in pkgs.runCommand "pi-coexist-tests" {
+          nativeBuildInputs = [ pkgs.nodejs_24 pkgs.git ];
+          passthru = { inherit tui; };
+        } ''
+          node ${./modules/agents/providers/pi/tests/pi-coexist.mjs} \
+            ${patchedPi}/lib/pi/node_modules ${sourceJson} \
+            ${builtins.head lsp.serverCommand} ${./files/agents/subagents}
+          touch "$out"
+        '';
+
       mkEnvyPiDoctorCheck = system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
@@ -635,6 +731,9 @@
       checks.aarch64-darwin.pi-subagent-tests = mkEnvyPiSubagentCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-doctor-tests = mkEnvyPiDoctorCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-lsp-tests = mkEnvyPiLspCheck "aarch64-darwin";
+      checks.aarch64-darwin.pi-context-tests = mkEnvyPiContextCheck "aarch64-darwin";
+      checks.aarch64-darwin.pi-diff-tests = mkEnvyPiDiffCheck "aarch64-darwin";
+      checks.aarch64-darwin.pi-coexist-tests = mkEnvyPiCoexistCheck "aarch64-darwin";
       checks.x86_64-linux.platform-option-boundaries = mkPlatformOptionCheck "x86_64-linux";
       checks.x86_64-linux.linux-policy-boundaries = linuxPolicyCheck;
       checks.x86_64-linux.envy-python-tests = mkEnvyPythonCheck "x86_64-linux";
@@ -649,5 +748,8 @@
       checks.x86_64-linux.pi-subagent-tests = mkEnvyPiSubagentCheck "x86_64-linux";
       checks.x86_64-linux.pi-doctor-tests = mkEnvyPiDoctorCheck "x86_64-linux";
       checks.x86_64-linux.pi-lsp-tests = mkEnvyPiLspCheck "x86_64-linux";
+      checks.x86_64-linux.pi-context-tests = mkEnvyPiContextCheck "x86_64-linux";
+      checks.x86_64-linux.pi-diff-tests = mkEnvyPiDiffCheck "x86_64-linux";
+      checks.x86_64-linux.pi-coexist-tests = mkEnvyPiCoexistCheck "x86_64-linux";
     };
 }

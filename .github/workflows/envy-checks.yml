@@ -67,6 +67,18 @@ jobs:
         run: nix build --no-link "path:.#checks.${{ matrix.system }}.pi-doctor-tests"
       - name: Run Pi Python LSP regressions
         run: nix build --no-link "path:.#checks.${{ matrix.system }}.pi-lsp-tests"
+      - name: Run Pi context view regressions
+        run: nix build --no-link "path:.#checks.${{ matrix.system }}.pi-context-tests"
+      - name: Run Pi context view TUI smoke
+        run: nix run "path:.#checks.${{ matrix.system }}.pi-context-tests.tui"
+      - name: Run Pi diff regressions
+        run: nix build --no-link "path:.#checks.${{ matrix.system }}.pi-diff-tests"
+      - name: Run Pi diff TUI smoke
+        run: nix run "path:.#checks.${{ matrix.system }}.pi-diff-tests.tui"
+      - name: Run Pi extension coexistence regressions
+        run: nix build --no-link "path:.#checks.${{ matrix.system }}.pi-coexist-tests"
+      - name: Run Pi extension coexistence TUI smoke
+        run: nix run "path:.#checks.${{ matrix.system }}.pi-coexist-tests.tui"
       - name: Guard encrypted secrets
         run: nix build "path:.#checks.${{ matrix.system }}.secret-safety"
       - name: Check platform option boundaries

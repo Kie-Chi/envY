@@ -7,6 +7,8 @@ envy doctor
 envy doctor config
 envy doctor system
 envy doctor apps --only chrome,codex
+envy doctor agents
+envy doctor agents --json
 envy doctor network
 envy doctor --json
 ```
@@ -15,6 +17,14 @@ envy doctor --json
 app schema 位于 resources/scripts/envy/schemas/{common,darwin,linux}/apps.py；generic checker 检查 bundle、command、process、state 和 login hint，可靠的应用特有状态才使用 custom checker。doctor 先求值 manifest：被 machine policy exclude 的软件跳过安装/runtime/auth 检查；求值失败才使用保守 fallback。
 
 结果只能显示状态、计数和下一步，不能显示账户名、邮箱、token、API key、cookie 或 secret 原文。
+
+## Agent 检查
+
+`envy doctor agents` 只读检查 envY 部署的 Pi 运行契约、扩展/角色/skill 链接与 MCP 命令。命令会显示即时运行覆盖是否存在；存在覆盖是正常信息，`envy apply` 会清除它。
+
+扩展探针使用隔离的临时目录和真实 Pi 宿主，不读取真实 auth、models、sessions，不发起模型请求或启动 MCP。只检查 envY 管理的固定来源；发现声明的最低 Pi 版本时进行比较，未知声明不等于兼容。cron 工厂因 daemon 副作用而跳过并单独报告。加载通过只证明工厂与注册成功，不能代替工具调用、语言服务或 TUI 的集成验证。
+
+尚未部署此版本运行契约时，会提示先 apply；检查本身不 apply、不修复配置，也不输出凭据内容或扩展原始日志。
 
 ## 扩展
 

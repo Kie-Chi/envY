@@ -14,6 +14,7 @@ DoctorSection = Literal[
     "sync",
     "perm",
     "host",
+    "agents",
 ]
 
 SECTION_DOCTOR: DoctorSection = "self"
@@ -26,8 +27,10 @@ SECTION_AUTH: DoctorSection = "auth"
 SECTION_SYNC: DoctorSection = "sync"
 SECTION_PRIVACY: DoctorSection = "perm"
 SECTION_SYSTEM: DoctorSection = "host"
+SECTION_AGENTS: DoctorSection = "agents"
 
 SECTION_ALIASES: dict[str, DoctorSection] = {
+    "agents": SECTION_AGENTS,
     "doctor": SECTION_DOCTOR,
     "doc": SECTION_DOCTOR,
     "self": SECTION_DOCTOR,
@@ -71,6 +74,7 @@ ALL_SECTIONS: tuple[DoctorSection, ...] = (
     SECTION_SYNC,
     SECTION_PRIVACY,
     SECTION_SYSTEM,
+    SECTION_AGENTS,
 )
 
 Status = Literal["ok", "warn", "error", "info"]

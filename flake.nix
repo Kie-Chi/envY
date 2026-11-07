@@ -378,6 +378,38 @@
           piPackage = inputs.pi.packages.${system}.default;
         };
 
+      mkEnvyPiSubagentCheck = system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          piPackage = inputs.pi.packages.${system}.default;
+          subagents = import ./modules/agents/providers/pi/subagents.nix { inherit lib pkgs; };
+          package = subagents.home.file.".pi/agent/extensions/envy-subagents".source;
+        in pkgs.runCommand "pi-subagent-tests" {
+          nativeBuildInputs = [ pkgs.nodejs_24 ];
+        } ''
+          export HOME="$TMPDIR/home"
+          mkdir -p "$HOME"
+          node ${./modules/agents/providers/pi/tests/pi-subagents.mjs} \
+            ${package} ${piPackage}/lib/pi/node_modules ${./files/agents/subagents}
+          touch "$out"
+        '';
+
+      mkEnvyPiDoctorCheck = system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          piPackage = inputs.pi.packages.${system}.default;
+          patchedPi = import ./modules/agents/providers/pi/package.nix {
+            inherit lib piPackage;
+            moreThinking = true;
+          };
+        in pkgs.runCommand "pi-doctor-tests" {
+          nativeBuildInputs = [ pkgs.nodejs_24 ];
+        } ''
+          node ${./modules/agents/providers/pi/tests/pi-doctor.mjs} \
+            ${./files/agents/pi/doctor.mjs} ${patchedPi}/lib/pi/node_modules
+          touch "$out"
+        '';
+
       # Agent tools also run these tests while building their packages, but
       # CI evaluates with --no-build, so expose them as standalone checks.
       mkEnvyAgentCheck = system:
@@ -579,6 +611,8 @@
       checks.aarch64-darwin.pi-queue-tests = mkEnvyPiQueueCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-goal-tests = mkEnvyPiGoalCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-model-tests = mkEnvyPiModelCheck "aarch64-darwin";
+      checks.aarch64-darwin.pi-subagent-tests = mkEnvyPiSubagentCheck "aarch64-darwin";
+      checks.aarch64-darwin.pi-doctor-tests = mkEnvyPiDoctorCheck "aarch64-darwin";
       checks.x86_64-linux.platform-option-boundaries = mkPlatformOptionCheck "x86_64-linux";
       checks.x86_64-linux.linux-policy-boundaries = linuxPolicyCheck;
       checks.x86_64-linux.envy-python-tests = mkEnvyPythonCheck "x86_64-linux";
@@ -590,5 +624,7 @@
       checks.x86_64-linux.pi-queue-tests = mkEnvyPiQueueCheck "x86_64-linux";
       checks.x86_64-linux.pi-goal-tests = mkEnvyPiGoalCheck "x86_64-linux";
       checks.x86_64-linux.pi-model-tests = mkEnvyPiModelCheck "x86_64-linux";
+      checks.x86_64-linux.pi-subagent-tests = mkEnvyPiSubagentCheck "x86_64-linux";
+      checks.x86_64-linux.pi-doctor-tests = mkEnvyPiDoctorCheck "x86_64-linux";
     };
 }

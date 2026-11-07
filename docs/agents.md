@@ -9,7 +9,7 @@ envY 的 modules/agents 管理 agent 安装、provider wrapper、skill catalog �
 - options.nix：`envy.agents`、`envy.agentProfiles` 与 amux 选项。
 - runtime-files.nix：把 additionalSettings 与 adapter 声明的 runtime 文件合并进应用自有配置。
 - wrapper.nix、prompts.nix：provider 共用的 wrapper 生成、endpoint/credential 解析、别名和 system prompt 拼接；`tests/wrappers.nix` 用假 agent 验证 env 文件加载次数、覆盖顺序和参数顺序。
-- providers/：claude.nix、codex.nix、generic.nix 与 pi/。pi/default.nix 生成 wrapper 和 models.json；pi/package.nix 给 Pi 打补丁；pi/extensions.nix 链接 Pi 扩展；pi/subagents.nix 管理 pi-subagents 与内置 agent 覆盖。官方示例来自锁定的 Pi source；第三方 npm 包（goal-x、btw、pi-subagents、pi-queue-steer-factory）由 pi/npm-extension.nix 按固定版本和 registry sha512 解包，链接为 `~/.pi/agent/extensions/envy-<name>`。
+- providers/：claude.nix、codex.nix、generic.nix 与 pi/。pi/default.nix 生成 wrapper 和 models.json；pi/package.nix 给 Pi 打补丁；pi/extensions.nix 链接 Pi 扩展；pi/subagents.nix 管理 pi-subagents 与角色；pi/diagnostics.nix 生成只含非敏感资源来源的运行契约，供 Agent Doctor 比对实际部署。官方示例来自锁定的 Pi source；第三方 npm 包（goal-x、btw、pi-subagents、pi-queue-steer-factory）由 pi/npm-extension.nix 按固定版本和 registry sha512 解包，链接为 `~/.pi/agent/extensions/envy-<name>`。
 - skills/：default.nix 按 adapter 解析 active skill 并建立 Home Manager discovery links；catalog.nix 是 skill 名称到上游目录的映射；read/、browser/ 是本仓库自带的 skill。
 - tools/：default.nix 管理 registry 安装的 agent 工具（codegraph、headroom）；obelisk.nix 从固定 npm tarball 打包会话历史检索 CLI `obelisk`，索引 `~/.obelisk/` 与项目内 `.obelisk/memories/` 归应用和用户所有；web.nix 管理 envy-read、受审查的 MCP 工具、mcp-nixos 与 deepseek-search。deepseek-search 只接入 Pi，复用 `llm-credential-deepseek`，启动时从 sops 文件读取 key，按成功调用计费。
 - amux/：容器化 agent 客户端、镜像和测试。
@@ -80,7 +80,17 @@ envy.agents.pi.models = [
 - 普通 goal 与 Sisyphus 都保留完整阶段、顺序、约束和完成条件；不再要求正文只写一句。`create_goal` 支持与正文一起保存经过校验的父子任务树；未显式提供任务树时，从编号、清单及中英文阶段标记中派生任务，单步骤工作不强制拆分。直接创建时仍尊重关闭任务跟踪的设置。引导草拟还校验用户原始阶段数，拒绝阶段更少的摘要提案。
 - 界面短标题和 `get_goal` 默认摘要不是完整需求；正文用 `get_goal section=objective`、任务用 `section=tasks` 分页读取。补丁不反向重建以前已被模型压缩的目标，也不能仅凭阶段数判断每个阶段的语义是否完整，仍需核对确认提案。
 
-skill 的 source 来自锁定 flake input；catalog 校验每个选中 source 都有 SKILL.md，并检查 target 兼容性。claude-code 与 claude 共用发现目录。
+### 子 Agent 角色与工具
+
+`pi/subagents.nix` 链接 Explore、Plan、Researcher、NixReviewer 和 Reviewer。角色默认继承调用者模型，调用时可显式覆盖；Researcher 与 NixReviewer 的默认轮数为 12，Reviewer 为 10。Researcher 只声明文件读取、codemode 和 DeepSeek search/fetch；NixReviewer 只声明文件读取、codemode 和 mcp-nixos；Reviewer 不包含 shell、编辑、写入或 MCP 工具。父会话的工具不能视为子会话已有的能力。
+
+`pi-subagent-tests` 使用真实 Pi 宿主和隔离子会话验证角色发现、模型选择、轮数和可调用工具边界，不调用外部模型。修改角色或升级 pi-subagents 时运行这一检查。
+
+### Agent 运行检查与维护 skills
+
+`envy doctor agents` 比对 `.pi/agent/envy-runtime.json` 中 envY 管理的扩展、角色、skills 和 MCP 启动命令。契约不包含密钥或应用状态；即时配置覆盖只显示是否存在及 apply 的清除行为。扩展探针在临时目录调用真实 Pi 的发现流程，禁止网络和子进程，不读取用户认证或会话；cron 工厂会启动 daemon，因此仅报告跳过，不把它记作加载通过。没有明确静态最低版本声明时报告未知兼容性。
+
+`envy-maintain` 按 Nix、Python、Rust 和 JSON 契约改动选择已有检查；`pi-maintain` 指导锁定版本、运行依赖、父子工具和补丁回归。两个 skills 不自动 apply、创建目标或提交。skill 的 source 来自锁定 flake input 或仓库内目录；catalog 校验每个选中 source 都有 SKILL.md，并检查 target 兼容性。claude-code 与 claude 共用发现目录。
 
 ## 配置边界
 

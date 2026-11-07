@@ -8,8 +8,9 @@ from unittest.mock import patch
 import typer
 from typer.testing import CliRunner
 
-from envy import agent
+from envy import agent, error as envy_error
 from envy.config import cli as config_cli
+from envy.errno import ErrorCode
 from envy.config import machine_nix, refine, updates
 from envy.agent import (
     _read_values, _render, _runtime_change_kind, _runtime_env, _runtime_pi_models, _set, _write_values, refine_managed,
@@ -191,11 +192,12 @@ class AgentConfigTests(unittest.TestCase):
             for write in (False, True):
                 with patch.object(machine_nix, "machine_config_file", return_value=path), patch.object(
                     agent, "log"
-                ) as logger:
+                ), patch.object(envy_error, "log") as logger:
                     report = refine.refine_agents(write=write, strict=False)
                     self.assertFalse(report.ok)
                     diagnostic = str(logger.error.call_args_list)
                     self.assertIn("envy.agents.pi.additionalSettings", diagnostic)
+                    self.assertIn("managed-block-syntax", diagnostic)
                     self.assertIn("line", diagnostic)
                     self.assertNotIn("unsupported-secret-marker", diagnostic)
                     self.assertEqual(path.read_bytes(), before)
@@ -527,6 +529,143 @@ class AgentConfigTests(unittest.TestCase):
             report = refine.refine_all(write=True, include_secrets=False)
             self.assertFalse(report.ok)
             self.assertEqual(path.read_text(), before)
+
+    def test_nested_profile_assignment_reports_the_supported_shape(self):
+        values = {
+            "envy.agentProfiles.nisl": {
+                "api": "openai-responses",
+                "endpoint": "nisl-openai",
+                "model": "deepseek-v4.1-flash",
+            },
+            "envy.llm.endpoints.nisl-openai.baseUrl": "https://example.test/v1",
+            "envy.llm.endpoints.nisl-openai.protocol": "openai-compatible",
+        }
+        issues = {item.path: item for item in agent._validate_issues(values)}
+        self.assertEqual(set(issues), {"envy.agentProfiles.nisl"})
+        nested = issues["envy.agentProfiles.nisl"]
+        self.assertEqual(nested.code, ErrorCode.UNSUPPORTED_OBJECT)
+        self.assertIn("whole-attribute-set", nested.message)
+        self.assertIn("envy agent profile add nisl", nested.hint)
+
+    def test_validation_reasons_name_the_problem_and_the_fix(self):
+        values = {
+            "envy.agentProfiles.fast.endpoint": "stepfun-openai",
+            "envy.agents.pi.adapter": "pi",
+            "envy.agents.pi.contextWindow": "272000",
+            "envy.agents.pi.profile": "ghost",
+            "envy.agents.pi.typo": "x",
+            "envy.llm.endpoints.stepfun-openai.baseUrl": "ftp://example.test",
+            "envy.llm.endpoints.stepfun-openai.protocol": "openai-compatible",
+        }
+        issues = {(item.path, item.code): item for item in agent._validate_issues(values)}
+        self.assertEqual(
+            issues[("envy.agentProfiles.fast", ErrorCode.MISSING_REQUIRED)].message,
+            "missing required field: model",
+        )
+        self.assertEqual(
+            issues[("envy.agents.pi.contextWindow", ErrorCode.INVALID_TYPE)].message,
+            "expected a positive integer or null",
+        )
+        self.assertEqual(
+            issues[("envy.agents.pi.profile", ErrorCode.UNKNOWN_REFERENCE)].message,
+            "references an unknown agent profile",
+        )
+        self.assertEqual(
+            issues[("envy.agents.pi.typo", ErrorCode.UNKNOWN_FIELD)].hint,
+            "Allowed fields: " + ", ".join(agent._AGENT_FIELDS),
+        )
+        self.assertIn(
+            "http://",
+            issues[("envy.llm.endpoints.stepfun-openai.baseUrl", ErrorCode.INVALID_VALUE)].message,
+        )
+
+    def test_set_rejects_whole_object_paths_with_the_recipe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "machine.nix"
+            path.write_text("{ ... }: {\n}\n")
+            with patch("envy.agent.machine_config_file", return_value=path):
+                with self.assertRaises(typer.BadParameter) as caught:
+                    _set("envy.agentProfiles.nisl", "{}")
+                message = str(caught.exception)
+                self.assertIn("whole-attribute-set", message)
+                self.assertIn("envy agent profile add nisl", message)
+                with self.assertRaises(typer.BadParameter) as caught:
+                    _set("envy.agents.pi", "{}")
+                self.assertIn("envy agent add pi", str(caught.exception))
+            self.assertEqual(path.read_text(), "{ ... }: {\n}\n")
+
+    def test_set_usage_errors_come_from_the_shared_error_module(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "machine.nix"
+            path.write_text("{ ... }: {\n}\n")
+            with patch("envy.agent.machine_config_file", return_value=path):
+                _write_values({"envy.agents.pi.adapter": "pi"})
+                cases = (
+                    (
+                        "envy.agents.pi.skills",
+                        '"animate"',
+                        "envy.agents.pi.skills: expected a JSON array of strings",
+                    ),
+                    (
+                        "envy.agents.pi.models",
+                        "{}",
+                        "envy.agents.pi.models: expected a JSON array of model objects",
+                    ),
+                    (
+                        "envy.agents.pi.contextWindow",
+                        "0",
+                        "envy.agents.pi.contextWindow: expected a positive integer or null",
+                    ),
+                    (
+                        "envy.agents.pi.api",
+                        "responses",
+                        "api must be one of: openai-completions, openai-responses, anthropic-messages",
+                    ),
+                    (
+                        "envy.agents.pi.moreThinking",
+                        "yes",
+                        "envy.agents.pi.moreThinking: expected true or false",
+                    ),
+                )
+                for target, value, message in cases:
+                    with self.subTest(target=target), self.assertRaises(typer.BadParameter) as caught:
+                        _set(target, value)
+                    self.assertEqual(str(caught.exception), message)
+                with self.assertRaises(typer.BadParameter) as caught:
+                    agent.cmd_profile_use("pi", "ghost", json_output=False, yes=True)
+                self.assertEqual(
+                    str(caught.exception),
+                    "unknown agent profile: ghost (Run: envy agent profile list)",
+                )
+                from envy.main import cli
+
+                result = CliRunner().invoke(cli, ["agent", "add", "bad/name", "--adapter", "pi"])
+                self.assertNotEqual(result.exit_code, 0)
+                self.assertIn("invalid agent name: bad/name", result.output)
+
+    def test_set_reports_malformed_block_reason_without_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "machine.nix"
+            path.write_text(
+                "{ ... }: {\n" + agent.MANAGED_START + "\n"
+                "  envy.agents.pi.additionalSettings = { x = unsupported-secret-marker; };\n"
+                + agent.MANAGED_END + "\n}\n"
+            )
+            with patch("envy.agent.machine_config_file", return_value=path):
+                with self.assertRaises(typer.BadParameter) as caught:
+                    _set("envy.agents.pi.model", "demo")
+            message = str(caught.exception)
+            self.assertIn("cannot edit malformed agent managed block", message)
+            self.assertIn("cannot parse the assignment", message)
+            self.assertNotIn("unsupported-secret-marker", message)
+
+    def test_config_set_routes_agent_profiles_through_agent_validation(self):
+        with self.machine_fixture(managed_config=True):
+            with self.assertRaises(typer.BadParameter) as caught:
+                updates.set_config_value("envy.agentProfiles.fast.model", "demo-model", quiet=True)
+            message = str(caught.exception)
+            self.assertIn("missing required field: endpoint", message)
+            self.assertNotIn("unknown managed machine field", message)
 
 
 if __name__ == "__main__":

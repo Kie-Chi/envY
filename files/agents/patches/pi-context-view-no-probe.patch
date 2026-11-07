@@ -1,0 +1,18 @@
+--- a/src/command.ts
++++ b/src/command.ts
+@@ -77,1 +77,1 @@
+-	trigger: ProbeTrigger,
++	_trigger: ProbeTrigger,
+@@ -85,6 +85,6 @@
+-
+-	const result = await trigger.request(context);
+-	const probed = snapshots.latest();
+-	if (probed !== undefined) return { type: "snapshot", snapshot: probed };
+-	const reason = result.status === "failed" ? result.reason : "Silent probe did not capture a request.";
+-	return { type: "missing", degradedReason: `${reason} Extension additions were not observed.` };
++	// envY disables upstream's silent request probe: opening a view must never
++	// start a model turn. A natural request still publishes a snapshot.
++	return {
++		type: "missing",
++		degradedReason: "Automatic model probing is disabled by envY; extension additions were not captured for the current request.",
++	};

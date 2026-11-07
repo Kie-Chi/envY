@@ -1,4 +1,4 @@
-{ lib, pkgs, piSource, piPackage, ... }:
+{ config, lib, pkgs, piSource, piPackage, ... }:
 
 let
   # Use the same locked source as the Pi executable, so extension APIs and
@@ -18,10 +18,21 @@ let
       'pi.on("agent_settled", async (_event, ctx) => { if (!process.stdout.isTTY || !ctx.hasUI) return;'
   '';
   fetchPiExtension = import ./npm-extension.nix { inherit pkgs; };
+  piSelected = !(builtins.elem "pi" config.envy.software.nix.packages.exclude);
+  pythonLspSelected = piSelected
+    && !(builtins.elem "ruff" config.envy.software.nix.packages.exclude);
   # Reviewed npm packages pinned to registry integrity hashes. Check their Pi
   # peer range against the locked Pi before changing a version.
+  views = import ./views.nix { inherit lib pkgs; };
   packages = {
+    "context-view" = views.context;
+    diff = views.diff;
     goal-x = import ./goal.nix { inherit lib pkgs piPackage; };
+    queue-steer = import ./queue.nix { inherit lib pkgs piPackage; };
+    lsp = import ./lsp.nix {
+      inherit lib pkgs piPackage;
+      pythonEnabled = pythonLspSelected;
+    };
     btw = fetchPiExtension {
       pname = "rpiv-btw";
       version = "2.15.0";
@@ -40,19 +51,44 @@ in
     ++ [ (link ".pi/agent/extensions/envy-notify.ts" "${examples}/notify.ts") ]
   );
 
-  # Merge only these shared defaults; goal records and project overrides stay
-  # extension-owned. Unfocused sessions may create their own goals without
-  # adopting goals that belong to other sessions.
-  envy.agents.pi.runtimeFiles = [ {
-    name = "goal-settings";
-    target = ".pi/agent/pi-goal-x-settings.json";
-    format = "json";
-    data = {
-      hideUnfocusedBanner = true;
-      hideUnfocusedPrompt = true;
-      autoSelectSingleGoal = false;
+  # Each queued prompt gets its own delivery boundary rather than merging
+  # several pending prompts into one turn. Machine settings may override this.
+  envy.agents.pi.additionalSettings = {
+    steeringMode = lib.mkDefault "one-at-a-time";
+    followUpMode = lib.mkDefault "one-at-a-time";
+  };
+
+  # Merge only owned fields into writable files; Pi keeps session and queue
+  # state. The queue editor derives next-row navigation from the dequeue key.
+  envy.agents.pi.runtimeFiles = [
+    {
+      name = "queue-keybindings";
+      target = ".pi/agent/keybindings.json";
+      format = "json";
+      data = {
+        "tui.input.submit" = "enter";
+        "app.message.followUp" = "alt+enter";
+        "app.message.dequeue" = "alt+up";
+      };
+    }
+    {
+      name = "goal-settings";
+      target = ".pi/agent/pi-goal-x-settings.json";
+      format = "json";
+      data = {
+        hideUnfocusedBanner = true;
+        hideUnfocusedPrompt = true;
+        autoSelectSingleGoal = false;
+      };
+    }
+  ];
+
+  envy.software.nix.packages = {
+    include = lib.optional pythonLspSelected packages.lsp.serverPackage;
+    references = lib.optionalAttrs pythonLspSelected {
+      ${lib.getName packages.lsp.serverPackage} = packages.lsp.serverReference;
     };
-  } ];
+  };
 
   # pi-goal-x keeps per-project goal state beside the working tree.
   programs.git.ignores = [ ".pi/goals/" ".pi/.goals-pool-snapshot.json" ];

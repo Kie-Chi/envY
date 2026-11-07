@@ -1,0 +1,11 @@
+--- a/dist/index.ts
++++ b/dist/index.ts
+@@ -233,7 +233,7 @@
+ function loadConfig(cwd = process.cwd(), options = {}) {
+   const configured = loadConfiguredConfig(cwd, options.projectTrusted === true);
+   return configured ?? {
+-    servers: DEFAULT_SERVER_CONFIGS.map((server) => ({ ...server, isDefault: true }))
++    servers: []
+   };
+ }
+ var pendingConfigNotice;

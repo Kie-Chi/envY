@@ -1,6 +1,16 @@
 { academicResearchSkills, academicResearchSkillsCodex, antiDefensiveWriting, emilSkills, gptImage2PptSkills, obeliskSkill, pptMaster, promptMaster, vercelAgentSkills, wazaSource }:
 
 {
+  envy-maintain = {
+    source = ./envy-maintain;
+    targets = [ "codex" "claude" "claude-code" "pi" ];
+  };
+
+  pi-maintain = {
+    source = ./pi-maintain;
+    targets = [ "codex" "claude" "claude-code" "pi" ];
+  };
+
   read = {
     source = ./read;
     targets = [ "pi" ];

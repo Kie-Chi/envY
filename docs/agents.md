@@ -9,7 +9,7 @@ envY 的 modules/agents 管理 agent 安装、provider wrapper、skill catalog �
 - options.nix：`envy.agents`、`envy.agentProfiles` 与 amux 选项。
 - runtime-files.nix：把 additionalSettings 与 adapter 声明的 runtime 文件合并进应用自有配置。
 - wrapper.nix、prompts.nix：provider 共用的 wrapper 生成、endpoint/credential 解析、别名和 system prompt 拼接；`tests/wrappers.nix` 用假 agent 验证 env 文件加载次数、覆盖顺序和参数顺序。
-- providers/：claude.nix、codex.nix、generic.nix 与 pi/。pi/default.nix 生成 wrapper 和 models.json；pi/package.nix 给 Pi 打补丁；pi/extensions.nix 链接 Pi 扩展；pi/subagents.nix 管理 pi-subagents 与内置 agent 覆盖。官方示例来自锁定的 Pi source；第三方 npm 包（goal-x、btw、pi-subagents）由 pi/npm-extension.nix 按固定版本和 registry sha512 解包，链接为 `~/.pi/agent/extensions/envy-<name>`。
+- providers/：claude.nix、codex.nix、generic.nix 与 pi/。pi/default.nix 生成 wrapper 和 models.json；pi/package.nix 给 Pi 打补丁；pi/extensions.nix 链接 Pi 扩展；pi/subagents.nix 管理 pi-subagents 与角色；pi/diagnostics.nix 生成只含非敏感资源来源的运行契约，供 Agent Doctor 比对实际部署。官方示例来自锁定的 Pi source；第三方 npm 包（goal-x、btw、pi-subagents、pi-queue-steer-factory）由 pi/npm-extension.nix 按固定版本和 registry sha512 解包，链接为 `~/.pi/agent/extensions/envy-<name>`。
 - skills/：default.nix 按 adapter 解析 active skill 并建立 Home Manager discovery links；catalog.nix 是 skill 名称到上游目录的映射；read/、browser/ 是本仓库自带的 skill。
 - tools/：default.nix 管理 registry 安装的 agent 工具（codegraph、headroom）；obelisk.nix 从固定 npm tarball 打包会话历史检索 CLI `obelisk`，索引 `~/.obelisk/` 与项目内 `.obelisk/memories/` 归应用和用户所有；web.nix 管理 envy-read、受审查的 MCP 工具、mcp-nixos 与 deepseek-search。deepseek-search 只接入 Pi，复用 `llm-credential-deepseek`，启动时从 sops 文件读取 key，按成功调用计费。
 - amux/：容器化 agent 客户端、镜像和测试。
@@ -63,6 +63,40 @@ envy.agents.pi.models = [
 
 部署和即时刷新只替换 `models.json` 中的 `envy-pi` / `envy-pi-*` 命名空间，清理退出列表的托管 provider，保留其他 provider 和用户字段。apply 会清除 envY 自己的 Pi 即时覆盖文件，使机器配置重新成为生效来源，不修改 Pi 的 auth、会话或历史。
 
+### Python LSP 诊断与修复预览
+
+`pi/lsp.nix` 固定 `@narumitw/pi-lsp` 0.49.12，并逐个固定 `cross-spawn` 及其传递依赖的 npm SHA-512；通用 npm 解包器不会执行 `npm install`。默认 Python 服务为锁定 nixpkgs 的 `ruff server`，使用绝对 store 路径，覆盖 `.py` 与 `.pyi`。排除 `ruff` 或 `pi` 时，envY 的默认服务列表为空，同时移除这项 Ruff 软件贡献和引用。
+
+`lsp_diagnostics` 返回诊断位置、严重程度和代码；`lsp_fix` 的 `source.fixAll` 默认只预览，返回实际 edits 和修改后的文本，写入需要显式 `write: true`。envY 不创建或合并 `pi-lsp.json`，用户和可信项目的自定义配置仍按上游优先级生效。没有加入 Nix/Rust 服务或额外语言功能。
+
+`pi-lsp-tests` 通过真实 Pi SDK 包装工具启动 Ruff，验证 F401、非空修复预览且源文件不变、正常完成后退出、初始化后取消，以及错误启动参数的负例。测试使用私有 HOME 与配置目录、清空凭据环境并阻断网络，不调用外部模型。两平台都有对应 flake check 与 CI 入口。
+
+### 上下文视图
+
+`pi/views.nix` 固定 `pi-context-view` 0.7.0；实际发布包声明的最低 Pi 版本为 1.1.0，没有额外 npm 运行时依赖。`/context usage` 显示上下文分类，`/context injections` 显示系统提示、工具和注入内容。
+
+打开视图不会自动发起模型探测。已有请求快照时使用捕获的数据；还没有快照时显示估算及明确提示，扩展增量尚未捕获，之后的正常请求会更新快照。配置、快照和会话仍归扩展及 Pi 管理，envY 只拥有扩展链接和禁止自动探测的固定补丁。
+
+`pi-context-tests` 使用真实 SDK 和离线 provider 验证请求计数、捕获与渲染；`nix run path:.#checks.aarch64-darwin.pi-context-tests.tui` 使用私有 HOME 在真实 CLI/PTY 验证视图与编辑器切换。TUI 入口在本机执行，两平台 CI 使用对应 system 的入口，不依赖构建沙箱提供终端。
+
+### 差异视图与共存检查
+
+`pi/views.nix` 固定 `@lyrumu/pi-diff` 0.1.0 和唯一运行时依赖 `diff` 8.0.2，将依赖实体复制到扩展旁，不执行 npm 安装。作者 README 的开发基线是 Pi 1.2；本仓库使用真实 Pi 1.1 SDK 与 CLI/PTY 验证，无需升级宿主或添加 diff 兼容补丁。
+
+`/diff` 查看 Git 差异，`v` 切换布局，Tab 切换范围，Esc 或 q 返回编辑器。检查使用临时 index 基线及实际 before/after 内容，并断言查看前后文件和 index 不变。扩展的历史与缓存仍由应用管理。
+
+`pi-diff-tests` 运行 SDK 检查，`.tui` 入口复用 context 的真实终端驱动，同时打开两个扩展。`pi-coexist-tests` 使用 Nix 生成的全部非 cron 扩展来源，验证注册无冲突和真实 codemode → LSP → Ruff F401；其 `.tui` 入口在同一 CLI 加载这些扩展，核对视图、快捷键和编辑器恢复。cron 的 daemon 不在此共存测试中启动；Doctor 明确报告该跳过项。
+
+切换委派模型时使用具体的 `<provider>/<model>` 并核对实际运行报告；本轮改用独立的 Sol 低推理任务，避免模型名称命中默认供应方及重复携带长上下文。
+
+### Pi 消息队列
+
+`pi/queue.nix` 固定 pi-queue-steer-factory 0.17.8，通过 registry SHA-512 校验解包，链接为 `~/.pi/agent/extensions/envy-queue-steer`。这个版本已有 Pi 1.0 的上游宿主验证，envY 的构建检查使用锁定的 Pi 1.1。普通队列功能不依赖 Pi Fabric。
+
+`pi/extensions.nix` 将 `steeringMode`、`followUpMode` 默认设为 `one-at-a-time`，并通过 writable merge 管理 `keybindings.json` 的三个动作：`Enter` 提交 steer、`Alt+Enter` 添加 follow-up、`Alt+Up` 进入队列编辑。选中行后直接编辑文本，`Alt+Up/Down` 切换行，`Alt+Shift+Up/Down` 重排，`Alt+X` 标记删除，`Alt+Left/Right` 或 `Alt+T` 切换 follow-up/steer，`Enter` 保存、`Escape` 撤销。输入框为空时按 `Enter` 可将队首 follow-up 提升为 steer。macOS 的 Alt 对应 Option。重排、删除和类型切换沿用插件固定按键。
+
+队列、草稿、恢复快照与会话数据归 Pi 和扩展所有。`tests/pi-queue.mjs` 通过真实 Pi 扩展发现流程、宿主模块和编辑器执行离线检查，覆盖逐条发送、编辑、重排、删除、转为 steer、取消与暂停恢复；不调用模型。两平台的 `pi-queue-tests` flake check 和 CI 运行这些检查。配置通过 `envy apply` 部署后，新启动 Pi 或执行 `/reload` 生效。
+
 ### goal-x 扩展
 
 `pi/goal.nix` 固定 goal-x 0.33.0（兼容当前 Pi 1.1），在 npm 包解包后应用 `pi-goal-state-and-stages.patch`，不修改已安装的 store 路径或用户目标。`tests/pi-goal.mjs` 在构建时运行，并通过两平台的 `pi-goal-tests` flake check 暴露；测试只使用临时目录、假会话/UI 和真实扩展读写代码，不调用模型。
@@ -72,7 +106,17 @@ envy.agents.pi.models = [
 - 普通 goal 与 Sisyphus 都保留完整阶段、顺序、约束和完成条件；不再要求正文只写一句。`create_goal` 支持与正文一起保存经过校验的父子任务树；未显式提供任务树时，从编号、清单及中英文阶段标记中派生任务，单步骤工作不强制拆分。直接创建时仍尊重关闭任务跟踪的设置。引导草拟还校验用户原始阶段数，拒绝阶段更少的摘要提案。
 - 界面短标题和 `get_goal` 默认摘要不是完整需求；正文用 `get_goal section=objective`、任务用 `section=tasks` 分页读取。补丁不反向重建以前已被模型压缩的目标，也不能仅凭阶段数判断每个阶段的语义是否完整，仍需核对确认提案。
 
-skill 的 source 来自锁定 flake input；catalog 校验每个选中 source 都有 SKILL.md，并检查 target 兼容性。claude-code 与 claude 共用发现目录。
+### 子 Agent 角色与工具
+
+`pi/subagents.nix` 链接 Explore、Plan、Researcher、NixReviewer 和 Reviewer。角色默认继承调用者模型，调用时可显式覆盖；Researcher 与 NixReviewer 的默认轮数为 12，Reviewer 为 10。Researcher 只声明文件读取、codemode 和 DeepSeek search/fetch；NixReviewer 只声明文件读取、codemode 和 mcp-nixos；Reviewer 不包含 shell、编辑、写入或 MCP 工具。父会话的工具不能视为子会话已有的能力。
+
+`pi-subagent-tests` 使用真实 Pi 宿主和隔离子会话验证角色发现、模型选择、轮数和可调用工具边界，不调用外部模型。修改角色或升级 pi-subagents 时运行这一检查。
+
+### Agent 运行检查与维护 skills
+
+`envy doctor agents` 比对 `.pi/agent/envy-runtime.json` 中 envY 管理的扩展、角色、skills 和 MCP 启动命令。契约不包含密钥或应用状态；即时配置覆盖只显示是否存在及 apply 的清除行为。扩展探针在临时目录调用真实 Pi 的发现流程，禁止网络和子进程，不读取用户认证或会话；cron 工厂会启动 daemon，因此仅报告跳过，不把它记作加载通过。没有明确静态最低版本声明时报告未知兼容性。
+
+`envy-maintain` 按 Nix、Python、Rust 和 JSON 契约改动选择已有检查；`pi-maintain` 指导锁定版本、运行依赖、父子工具和补丁回归。两个 skills 不自动 apply、创建目标或提交。skill 的 source 来自锁定 flake input 或仓库内目录；catalog 校验每个选中 source 都有 SKILL.md，并检查 target 兼容性。claude-code 与 claude 共用发现目录。
 
 ## 配置边界
 

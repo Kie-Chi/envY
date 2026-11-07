@@ -128,7 +128,7 @@
   envy.agentProfiles.mpo.maxTokens = 128000;
   envy.agentProfiles.mpo.model = "<redacted>";
   envy.agentProfiles.mpa.api = "anthropic-messages";
-  envy.agentProfiles.mpa.endpoint = "stepfun-openai";
+  envy.agentProfiles.mpa.endpoint = "stepfun-anthropic";
   envy.agentProfiles.mpa.model = "<redacted>";
   envy.agentProfiles.mpa.contextWindow = 272000;
   envy.agentProfiles.mpa.maxTokens = 128000;
@@ -158,17 +158,12 @@
     {
       profile = "mpo";
       credential = "mp-go";
-      model = "gpt-6-astra";
-    }
-    {
-      profile = "mpo";
-      credential = "mp-go";
       model = "stepcode-gpt-6.1-sol-eastus2";
     }
     {
       profile = "mpa";
       credential = "mp-go";
-      model = "claude-opus-5-5";
+      model = "claude-opus-5.5";
     }
     {
       profile = "stepfun-openai-new";
@@ -181,6 +176,10 @@
     }
     {
       profile = "xikai-magpie";
+    }
+    {
+      profile = "xikai-magpie";
+      model = "gpt-6-astra";
     }
   ];
   envy.agents.pi.additionalSettings = builtins.fromJSON "{\"compaction\": {\"keepRecentTokens\": 27200, \"reserveTokens\": 40960}, \"defaultTools\": [\"+codemode\"]}";

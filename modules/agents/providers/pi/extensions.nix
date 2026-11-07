@@ -1,4 +1,4 @@
-{ lib, pkgs, piSource, piPackage, ... }:
+{ config, lib, pkgs, piSource, piPackage, ... }:
 
 let
   # Use the same locked source as the Pi executable, so extension APIs and
@@ -18,11 +18,18 @@ let
       'pi.on("agent_settled", async (_event, ctx) => { if (!process.stdout.isTTY || !ctx.hasUI) return;'
   '';
   fetchPiExtension = import ./npm-extension.nix { inherit pkgs; };
+  piSelected = !(builtins.elem "pi" config.envy.software.nix.packages.exclude);
+  pythonLspSelected = piSelected
+    && !(builtins.elem "ruff" config.envy.software.nix.packages.exclude);
   # Reviewed npm packages pinned to registry integrity hashes. Check their Pi
   # peer range against the locked Pi before changing a version.
   packages = {
     goal-x = import ./goal.nix { inherit lib pkgs piPackage; };
     queue-steer = import ./queue.nix { inherit lib pkgs piPackage; };
+    lsp = import ./lsp.nix {
+      inherit lib pkgs piPackage;
+      pythonEnabled = pythonLspSelected;
+    };
     btw = fetchPiExtension {
       pname = "rpiv-btw";
       version = "2.15.0";
@@ -72,6 +79,13 @@ in
       };
     }
   ];
+
+  envy.software.nix.packages = {
+    include = lib.optional pythonLspSelected packages.lsp.serverPackage;
+    references = lib.optionalAttrs pythonLspSelected {
+      ${lib.getName packages.lsp.serverPackage} = packages.lsp.serverReference;
+    };
+  };
 
   # pi-goal-x keeps per-project goal state beside the working tree.
   programs.git.ignores = [ ".pi/goals/" ".pi/.goals-pool-snapshot.json" ];

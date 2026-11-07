@@ -65,6 +65,8 @@ jobs:
         run: nix build --no-link "path:.#checks.${{ matrix.system }}.pi-subagent-tests"
       - name: Run Pi Agent Doctor regressions
         run: nix build --no-link "path:.#checks.${{ matrix.system }}.pi-doctor-tests"
+      - name: Run Pi Python LSP regressions
+        run: nix build --no-link "path:.#checks.${{ matrix.system }}.pi-lsp-tests"
       - name: Guard encrypted secrets
         run: nix build "path:.#checks.${{ matrix.system }}.secret-safety"
       - name: Check platform option boundaries

@@ -53,6 +53,7 @@ CLI 默认加载内置 codemode；SDK 的 `createAgentSession` 不自动添加�
 |---|---|
 | SSE、重试、thinking 补丁或 Pi 升级 | `package.nix` 的 install checks：`tests/pi-sse-crlf.mjs`、`pi-retry.mjs`，开启 `moreThinking` 时的 `pi-thinking.mjs`；验证库与 CLI bundle |
 | 模型列表、思考档位、provider 或 btw | `pi-model-tests`：`tests/models.nix`、`model-lists.nix`、`pi-models.py`、`pi-models.mjs`，覆盖 Nix/运行时配置及真实请求编码器，发送前截获请求 |
+| Python LSP、默认服务或运行时依赖 | `pi-lsp-tests`：`tests/pi-lsp.mjs`，真实 Pi SDK 与 Ruff 的诊断、非空修复预览、进程退出、初始化后取消和失败启动；另核对软件排除策略与包闭包 |
 | 消息队列扩展 | `pi-queue-tests`：`tests/pi-queue.mjs`，真实宿主发现流程与编辑器的离线回归 |
 | goal-x 扩展与补丁 | `pi-goal-tests`：`tests/pi-goal.mjs`，临时目录中的目标读写、任务树、锁与故障回归 |
 | 父子 agent、角色或 codemode 能力 | `pi-subagent-tests`：`tests/pi-subagents.mjs`，使用真实宿主与子会话、离线模型及 MCP 替身核对角色、继承、可调用工具和预算边界 |

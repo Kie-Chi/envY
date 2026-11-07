@@ -348,6 +348,7 @@
             (import ./modules/agents/providers/pi/tests/models.nix { inherit lib pkgs piPackage; }));
           extensions = import ./modules/agents/providers/pi/extensions.nix {
             inherit lib pkgs piPackage;
+            config.envy.software.nix.packages.exclude = [ ];
             piSource = inputs.pi.outPath;
           };
           btwPackage = extensions.home.file.".pi/agent/extensions/envy-btw".source;
@@ -391,6 +392,26 @@
           mkdir -p "$HOME"
           node ${./modules/agents/providers/pi/tests/pi-subagents.mjs} \
             ${package} ${piPackage}/lib/pi/node_modules ${./files/agents/subagents}
+          touch "$out"
+        '';
+
+      mkEnvyPiLspCheck = system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          piPackage = inputs.pi.packages.${system}.default;
+          patchedPi = import ./modules/agents/providers/pi/package.nix {
+            inherit lib piPackage;
+            moreThinking = true;
+          };
+          lsp = import ./modules/agents/providers/pi/lsp.nix {
+            inherit lib pkgs piPackage;
+          };
+        in pkgs.runCommand "pi-lsp-tests" {
+          nativeBuildInputs = [ pkgs.nodejs_24 ];
+        } ''
+          node ${./modules/agents/providers/pi/tests/pi-lsp.mjs} \
+            ${lsp} ${patchedPi}/lib/pi/node_modules \
+            ${lib.escapeShellArg (builtins.toJSON lsp.serverCommand)}
           touch "$out"
         '';
 
@@ -613,6 +634,7 @@
       checks.aarch64-darwin.pi-model-tests = mkEnvyPiModelCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-subagent-tests = mkEnvyPiSubagentCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-doctor-tests = mkEnvyPiDoctorCheck "aarch64-darwin";
+      checks.aarch64-darwin.pi-lsp-tests = mkEnvyPiLspCheck "aarch64-darwin";
       checks.x86_64-linux.platform-option-boundaries = mkPlatformOptionCheck "x86_64-linux";
       checks.x86_64-linux.linux-policy-boundaries = linuxPolicyCheck;
       checks.x86_64-linux.envy-python-tests = mkEnvyPythonCheck "x86_64-linux";
@@ -626,5 +648,6 @@
       checks.x86_64-linux.pi-model-tests = mkEnvyPiModelCheck "x86_64-linux";
       checks.x86_64-linux.pi-subagent-tests = mkEnvyPiSubagentCheck "x86_64-linux";
       checks.x86_64-linux.pi-doctor-tests = mkEnvyPiDoctorCheck "x86_64-linux";
+      checks.x86_64-linux.pi-lsp-tests = mkEnvyPiLspCheck "x86_64-linux";
     };
 }

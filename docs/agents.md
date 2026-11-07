@@ -63,6 +63,14 @@ envy.agents.pi.models = [
 
 部署和即时刷新只替换 `models.json` 中的 `envy-pi` / `envy-pi-*` 命名空间，清理退出列表的托管 provider，保留其他 provider 和用户字段。apply 会清除 envY 自己的 Pi 即时覆盖文件，使机器配置重新成为生效来源，不修改 Pi 的 auth、会话或历史。
 
+### Python LSP 诊断与修复预览
+
+`pi/lsp.nix` 固定 `@narumitw/pi-lsp` 0.49.12，并逐个固定 `cross-spawn` 及其传递依赖的 npm SHA-512；通用 npm 解包器不会执行 `npm install`。默认 Python 服务为锁定 nixpkgs 的 `ruff server`，使用绝对 store 路径，覆盖 `.py` 与 `.pyi`。排除 `ruff` 或 `pi` 时，envY 的默认服务列表为空，同时移除这项 Ruff 软件贡献和引用。
+
+`lsp_diagnostics` 返回诊断位置、严重程度和代码；`lsp_fix` 的 `source.fixAll` 默认只预览，返回实际 edits 和修改后的文本，写入需要显式 `write: true`。envY 不创建或合并 `pi-lsp.json`，用户和可信项目的自定义配置仍按上游优先级生效。没有加入 Nix/Rust 服务或额外语言功能。
+
+`pi-lsp-tests` 通过真实 Pi SDK 包装工具启动 Ruff，验证 F401、非空修复预览且源文件不变、正常完成后退出、初始化后取消，以及错误启动参数的负例。测试使用私有 HOME 与配置目录、清空凭据环境并阻断网络，不调用外部模型。两平台都有对应 flake check 与 CI 入口。
+
 ### Pi 消息队列
 
 `pi/queue.nix` 固定 pi-queue-steer-factory 0.17.8，通过 registry SHA-512 校验解包，链接为 `~/.pi/agent/extensions/envy-queue-steer`。这个版本已有 Pi 1.0 的上游宿主验证，envY 的构建检查使用锁定的 Pi 1.1。普通队列功能不依赖 Pi Fabric。

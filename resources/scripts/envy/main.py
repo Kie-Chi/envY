@@ -415,6 +415,7 @@ cli.add_typer(remote_agent_app, name="ra", rich_help_panel="Aliases")
 # Machine-owned agent instances and their non-sensitive endpoint metadata.
 cli.add_typer(agent_app, name="agent")
 cli.add_typer(agent_app, name="agents", rich_help_panel="Aliases")
+cli.add_typer(agent_app, name="ag", rich_help_panel="Aliases")
 
 # Register key subgroup — "k" alias registered separately
 cli.add_typer(key_app, name="key")

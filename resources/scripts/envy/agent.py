@@ -978,8 +978,15 @@ def cmd_list(json_output: bool = typer.Option(False, "--json")):
 
 
 @app.command(name="show")
-def cmd_show(name: str = typer.Argument(..., autocompletion=complete_agent_names), json_output: bool = typer.Option(False, "--json")):
-    """Show one evaluated agent and its non-sensitive selections."""
+@app.command(name="sh", rich_help_panel="Aliases")
+def cmd_show(
+    name: str = typer.Argument(..., autocompletion=complete_agent_names),
+    detail: bool = typer.Option(
+        False, "--detail", "--details", "-d", help="Include runtime files, settings, and adapter metadata",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit the complete agent as machine-readable JSON"),
+):
+    """Show common agent selections; use --detail for all non-sensitive fields."""
     agents = _manifest_agents()
     if name not in agents:
         message = error.summary([error.not_found("agent", name, hint="Run: envy agent list")])
@@ -990,7 +997,19 @@ def cmd_show(name: str = typer.Argument(..., autocompletion=complete_agent_names
     if json_output:
         emit("agent.show", data={"name": name, "agent": agents[name]})
     else:
-        log.console.print_json(json.dumps({"name": name, "agent": agents[name]}, ensure_ascii=False))
+        selected = agents[name]
+        if not detail:
+            fields = (
+                "adapter", "command", "aliases", "profile", "model", "models", "api",
+                "contextWindow", "maxTokens", "moreThinking", "endpoint", "credential",
+                "endpointConfigured", "credentialSet",
+            )
+            selected = {
+                field: selected[field]
+                for field in fields
+                if field in selected and selected[field] is not None and selected[field] != []
+            }
+        log.console.print_json(json.dumps({"name": name, "agent": selected}, ensure_ascii=False))
 
 
 @app.command(name="set")

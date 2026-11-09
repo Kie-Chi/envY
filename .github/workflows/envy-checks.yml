@@ -61,6 +61,8 @@ jobs:
         run: nix build --no-link "path:.#checks.${{ matrix.system }}.envy-github-actions"
       - name: Run agent tool tests
         run: nix build "path:.#checks.${{ matrix.system }}.envy-agent-tests"
+      - name: Run Pi delegated approval regressions
+        run: nix build --no-link "path:.#checks.${{ matrix.system }}.pi-auto-assigned-tests"
       - name: Run Pi queue regressions
         run: nix build --no-link "path:.#checks.${{ matrix.system }}.pi-queue-tests"
       - name: Run Pi goal regressions

@@ -55,7 +55,15 @@ in
         "envy.linux.desktop" = policy.desktop;
         "envy.linux.option" = policy.option;
         "envy.mirrors.mode" = config.envy.mirrors.mode;
+        "envy.storage.mode" = config.envy.storage.mode;
+        "envy.storage.archive.repository" = config.envy.storage.archive.repository;
         "envy.amux.skipPermissions" = config.envy.amux.skipPermissions;
+      };
+      storage = config.envy.storage // {
+        archive = config.envy.storage.archive // {
+          passwordFile = if config.envy.storage.archive.repository == "" then ""
+            else config.sops.secrets.storage-archive-password.path;
+        };
       };
       llm = {
         credentials = lib.mapAttrs (_: credential: {

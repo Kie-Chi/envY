@@ -36,6 +36,8 @@ let
     (name: !(builtins.elem name [ "homebrew/core" "homebrew/cask" ]))
     taps;
   homePolicy = config.home-manager.users.${config.envy.user.name}.envy.software;
+  homeStorage = config.home-manager.users.${config.envy.user.name}.envy.storage;
+  homeStorageSecrets = config.home-manager.users.${config.envy.user.name}.sops.secrets;
   homeLlm = config.home-manager.users.${config.envy.user.name}.envy.llm;
   homeAgents = config.home-manager.users.${config.envy.user.name}.envy.agents;
   homeSkills = config.home-manager.users.${config.envy.user.name}.agents.skills.effective;
@@ -93,7 +95,15 @@ in
         "envy.darwin.services.openssh.mode" = policy.services.openssh.mode;
         "envy.vscode.mode" = config.envy.vscode.mode;
         "envy.mirrors.mode" = config.envy.mirrors.mode;
+        "envy.storage.mode" = homeStorage.mode;
+        "envy.storage.archive.repository" = homeStorage.archive.repository;
         "envy.amux.skipPermissions" = config.envy.amux.skipPermissions;
+      };
+      storage = homeStorage // {
+        archive = homeStorage.archive // {
+          passwordFile = if homeStorage.archive.repository == "" then ""
+            else homeStorageSecrets.storage-archive-password.path;
+        };
       };
       llm = {
         credentials = lib.mapAttrs (_: credential: {

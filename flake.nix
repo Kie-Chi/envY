@@ -292,6 +292,21 @@
           touch "$out"
         '';
 
+      mkEnvyStorageCheck = system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          python = mkEnvyPython system;
+          organize = pkgs.callPackage ./modules/storage/organize.nix { };
+        in pkgs.runCommand "envy-storage-tests" {
+          nativeBuildInputs = [ python organize pkgs.restic pkgs.lsof ];
+        } ''
+          export PYTHONPYCACHEPREFIX="$TMPDIR/pycache"
+          export PYTHONPATH="${./resources/scripts}"
+          export ENVY_ROOT="${./.}"
+          python -m unittest discover -s ${./resources/scripts/tests} -p 'test_storage.py'
+          touch "$out"
+        '';
+
       mkEnvyTuiCheck = system:
         let pkgs = nixpkgs.legacyPackages.${system};
         in pkgs.callPackage ./modules/cores/packages/envy-tui.nix {};
@@ -731,6 +746,7 @@
       devShells.x86_64-linux.default = mkDevShell "x86_64-linux";
       checks.aarch64-darwin.platform-option-boundaries = mkPlatformOptionCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-python-tests = mkEnvyPythonCheck "aarch64-darwin";
+      checks.aarch64-darwin.envy-storage-tests = mkEnvyStorageCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-tui-tests = mkEnvyTuiCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-shell-checks = mkEnvyShellCheck "aarch64-darwin";
       checks.aarch64-darwin.secret-safety = mkSecretSafetyCheck "aarch64-darwin";
@@ -749,6 +765,7 @@
       checks.x86_64-linux.platform-option-boundaries = mkPlatformOptionCheck "x86_64-linux";
       checks.x86_64-linux.linux-policy-boundaries = linuxPolicyCheck;
       checks.x86_64-linux.envy-python-tests = mkEnvyPythonCheck "x86_64-linux";
+      checks.x86_64-linux.envy-storage-tests = mkEnvyStorageCheck "x86_64-linux";
       checks.x86_64-linux.envy-tui-tests = mkEnvyTuiCheck "x86_64-linux";
       checks.x86_64-linux.envy-shell-checks = mkEnvyShellCheck "x86_64-linux";
       checks.x86_64-linux.secret-safety = mkSecretSafetyCheck "x86_64-linux";

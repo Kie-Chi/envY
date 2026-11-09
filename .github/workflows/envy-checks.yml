@@ -49,6 +49,8 @@ jobs:
         run: nix flake check path:. --no-build
       - name: Run Envy Python tests
         run: nix build "path:.#checks.${{ matrix.system }}.envy-python-tests"
+      - name: Run storage lifecycle integration tests
+        run: nix build --no-link "path:.#checks.${{ matrix.system }}.envy-storage-tests"
       - name: Run Rust TUI tests
         run: nix build "path:.#checks.${{ matrix.system }}.envy-tui-tests"
       - name: Run shell checks

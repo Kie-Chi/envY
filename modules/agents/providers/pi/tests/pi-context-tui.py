@@ -25,6 +25,7 @@ assert isinstance(SOURCE_PATHS, list) and all(
     isinstance(source, str) and os.path.isabs(source) and "cron" not in source.lower()
     for source in SOURCE_PATHS
 ), "sourcePaths must be an array of absolute non-cron extension paths"
+HAS_FOOTER = any("pi-powerline" in os.path.basename(source) for source in SOURCE_PATHS)
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07")
 
 def plain(data: bytes) -> str:
@@ -52,6 +53,10 @@ def run_test(root: str) -> int:
 import fs from "node:fs";
 import {{ createAssistantMessageEventStream }} from "@earendil-works/pi-ai";
 export default function(pi) {{
+  pi.registerCommand("footer-theme", {{ handler: async (args, ctx) => {{
+    ctx.ui.setTheme(args.trim() === "light" ? "light" : "dark");
+    ctx.ui.notify("Footer theme switched: " + args.trim(), "info");
+  }} }});
   pi.registerProvider("envy-offline", {{
     baseUrl: "http://invalid.test", apiKey: "offline-test-only", api: "envy-offline-api",
     streamSimple: (model) => {{
@@ -61,7 +66,7 @@ export default function(pi) {{
         role: "assistant", api: model.api, provider: model.provider, model: model.id,
         timestamp: Date.now(), stopReason: "stop",
         usage: {{ input: 12, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 15,
-          cost: {{ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }} }},
+          cost: {{ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.125 }} }},
         content: [{{ type: "text", text: "Offline context reply" }}],
       }};
       stream.push({{ type: "start", partial: message }});
@@ -109,11 +114,21 @@ export default function(pi) {{
         for source in [CONTEXT_PACKAGE, fixture, *([DIFF_PACKAGE] if DIFF_PACKAGE else []), *SOURCE_PATHS]
     ))
     extension_args = [argument for source in extension_paths for argument in ("--extension", source)]
+    if HAS_FOOTER:
+        printed = subprocess.run(
+            [NODE, CLI, "--offline", "--print", "--no-tools", "--no-session",
+             "--provider", "envy-offline", "--model", "inherited", *extension_args, "plain footer check"],
+            cwd=project, env=env, capture_output=True, timeout=30, check=True,
+        )
+        assert b"Offline context reply" in printed.stdout
+        assert b"\x1b[" not in printed.stdout and b"\x1b]" not in printed.stdout, "footer polluted print output"
+        os.unlink(request_log)
+    session_args = ["--session", os.path.join(root, "footer-session.jsonl")] if HAS_FOOTER else ["--no-session"]
     master, slave = pty.openpty()
     try:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 120, 0, 0))
         process = subprocess.Popen(
-            [NODE, CLI, "--offline", "--no-tools", "--no-session",
+            [NODE, CLI, "--offline", "--no-tools", *session_args,
              "--provider", "envy-offline", "--model", "inherited",
              *extension_args],
             cwd=project, env=env, stdin=slave, stdout=slave, stderr=slave,
@@ -183,7 +198,8 @@ export default function(pi) {{
         mark = len(output)
         fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 51, 120, 0, 0))
         process.send_signal(signal.SIGWINCH)
-        read_until(r"0\.0%/200k \(auto\).*inherited", 45, mark)
+        initial_footer = r"inherited.*0\.0%/200k \(auto\)" if HAS_FOOTER else r"0\.0%/200k \(auto\).*inherited"
+        read_until(initial_footer, 45, mark)
         # No request yet: opening Usage must show the explicit degraded estimate.
         mark = len(output)
         send("/context usage\r")
@@ -235,10 +251,53 @@ export default function(pi) {{
                 assert handle.read() == b"after-envy-diff\n"
             with open(os.path.join(project, ".git", "index"), "rb") as handle:
                 assert handle.read() == index_before, "diff changed the Git index"
+        if HAS_FOOTER:
+            read_until(r"\$0\.125")
+            for columns in (24, 40, 120):
+                mark = len(output)
+                fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 51, columns, 0, 0))
+                process.send_signal(signal.SIGWINCH)
+                read_until(r"inherited", since=mark)
+                if process.poll() is not None:
+                    raise AssertionError("footer crashed during terminal resize")
+            mark = len(output)
+            send("中文编辑器检查")
+            read_until("中文编辑器检查", since=mark)
+            send("\x15")
+            for theme in ("light", "dark"):
+                mark = len(output)
+                send("/footer-theme " + theme + "\r")
+                read_until("Footer theme switched: " + theme, since=mark)
+            if request_count() != 1:
+                raise AssertionError("footer interactions made a model request")
         send("/quit\r")
         wait_for_exit()
         if process.returncode != 0:
             raise AssertionError(f"Pi exited with {process.returncode}; tail:\n{plain(bytes(output))[-4000:]}")
+        if HAS_FOOTER:
+            if b"\x1b[?25h" not in output:
+                raise AssertionError("terminal cursor was not restored on exit")
+            output.clear()
+            master2, slave2 = pty.openpty()
+            os.close(master)
+            master = master2
+            fcntl.ioctl(slave2, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 120, 0, 0))
+            try:
+                process = subprocess.Popen(
+                    [NODE, CLI, "--offline", "--no-tools", *session_args,
+                     "--provider", "envy-offline", "--model", "inherited", *extension_args],
+                    cwd=project, env=env, stdin=slave2, stdout=slave2, stderr=slave2,
+                    close_fds=True, start_new_session=True,
+                )
+            finally:
+                os.close(slave2)
+            read_until(r"\[Extensions\]", 45)
+            read_until(r"master inherited.*\$0\.125", 45)
+            if request_count() != 1:
+                raise AssertionError("restoring footer state made a model request")
+            send("/quit\r")
+            wait_for_exit()
+            assert process.returncode == 0, "restored Pi did not exit cleanly"
         print("PTY context" + (" + diff" if DIFF_PACKAGE else "") + " TUI smoke passed; offline requests:", request_count())
         return 0
     finally:

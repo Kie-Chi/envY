@@ -10,7 +10,7 @@ envY 的 modules/agents 管理 agent 安装、provider wrapper、skill catalog �
 - runtime-files.nix：把 additionalSettings 与 adapter 声明的 runtime 文件合并进应用自有配置。
 - diagnostics.nix：从已选 skills 和最终 Home Manager source 生成 Claude/Codex 的只读链接契约，共享 Claude 目录按目标去重。
 - wrapper.nix、prompts.nix：provider 共用的 wrapper 生成、endpoint/credential 解析、别名和 system prompt 拼接；`tests/wrappers.nix` 用假 agent 验证 env 文件加载次数、覆盖顺序和参数顺序。
-- providers/：claude.nix、codex.nix、generic.nix 与 pi/。pi/default.nix 生成 wrapper 和 models.json；pi/package.nix 给 Pi 打补丁；pi/extensions.nix 链接 Pi 扩展；pi/subagents.nix 管理 pi-subagents 与角色；pi/diagnostics.nix 生成只含非敏感资源来源的运行契约，供 Agent Doctor 比对实际部署。官方示例来自锁定的 Pi source；第三方 npm 包（goal-x、btw、pi-subagents、pi-queue-steer-factory）由 pi/npm-extension.nix 按固定版本和 registry sha512 解包，链接为 `~/.pi/agent/extensions/envy-<name>`。
+- providers/：claude.nix、codex.nix、generic.nix 与 pi/。pi/default.nix 生成 wrapper 和 models.json；pi/package.nix 给 Pi 打补丁；pi/extensions.nix 链接 Pi 扩展；pi/subagents.nix 管理 pi-subagents 与角色；pi/diagnostics.nix 生成只含非敏感资源来源的运行契约，供 Agent Doctor 比对实际部署。官方示例来自锁定的 Pi source；第三方 npm 包（goal-x、btw、pi-subagents、pi-queue-steer-factory、pi-powerline）由 pi/npm-extension.nix 按固定版本和 registry sha512 解包，链接为 `~/.pi/agent/extensions/envy-<name>`。
 - skills/：default.nix 按 adapter 解析 active skill 并建立 Home Manager discovery links；catalog.nix 是 skill 名称到上游目录的映射；read/、browser/ 是本仓库自带的 skill。
 - tools/：default.nix 管理 registry 安装的 agent 工具（codegraph、headroom）；obelisk.nix 从固定 npm tarball 打包会话历史检索 CLI `obelisk`，索引 `~/.obelisk/` 与项目内 `.obelisk/memories/` 归应用和用户所有；web.nix 管理 envy-read、受审查的 MCP 工具、mcp-nixos 与 deepseek-search。deepseek-search 只接入 Pi，复用 `llm-credential-deepseek`，启动时从 sops 文件读取 key，按成功调用计费。
 - amux/：容器化 agent 客户端、镜像和测试。
@@ -99,6 +99,14 @@ envy.agents.pi.models = [
 `pi/auto-assigned.nix` 打包仓库内扩展，并复用锁定 Pi 的 questionnaire UI 作为人工回退，工具只注册一次。独立审核请求复用当前模型与认证，但不提供工具；普通回复通过 `agent_before_settle` 注入标明来源的代审结果并请求继续，questionnaire 通过同一审核处理四种决定：批准时返回已存在的选项；要求修改时将意见作为代审工具结果交给执行助手，保留委托并继续；已完成时关闭委托，只要求最终报告；交给用户时关闭委托并回退原问卷界面。修改和完成均不伪造选项或打开人工问卷；问卷结果的实际渲染也显示审批模型、决定和理由，不被上游选项渲染器隐藏。需要用户信息、审核失败、超时或取消时停止自动继续。相同提案不重复审批；最多 12 次审核，连续 3 次没有成功 edit/write 时停止。审核只携带开启时所在任务之后的用户、助手、工具结果和代审记录；超过 120,000 字符的审核证据不截断放行，直接交给用户。审核依据、模型和用量保存在会话记录中；questionnaire 的审核用量同时计入工具结果，结束事件中的审核用量单独记录。
 
 `pi-before-settle-abort.patch` 为结束前事件提供独立的取消信号；原宿主低层循环此时已经结束，原来的工具信号无法取消嵌套审核。补丁使 TUI/RPC/SDK 的取消能及时中断审核，并在退出边界时清理。`pi-auto-assigned-tests` 使用真实 SDK、隔离目录和离线模型验证普通计划后继续、问卷四种决定、意见实际进入助手上下文、完成、人工回退、重复、codemode only 嵌套写入计入进展、无进展、无效输出、超时、取消及重新加载；网络请求被拒绝，不使用真实凭据或收费模型。
+
+### Pi footer
+
+`pi/powerline.nix` 固定 pi-powerline 0.11.2 和 registry SHA-512，无额外运行时依赖。打包时将 manifest 入口替换为仓库内的 footer 适配入口，仅导入 `registerFooter`；上游 editor、header、widget 和相应配置命令均不加载，保留 queue 的编辑器。关闭时可在 Pi 设置中将 `powerline` 或 `footer` 设为 false 后重新加载。
+
+适配器补上模型 ID，分支和其余颜色跟随当前 Pi 主题；`system` 是 envY 的默认主题，可跟随终端配色。保留分支、上下文、费用、MCP 和其他扩展状态，读取全局与项目的压缩设置，并把独立委托审核记录中的用量计入累计费用。session start 清理流式状态，退出时释放 footer 订阅和定时器；每处上游源码适配都检查唯一匹配，升级发生漂移即构建失败。
+
+`pi-powerline-tests` 用真实锁定 SDK 和离线模型验证显示、1–200 列宽度、中文、主题切换、会话落盘与恢复、退出清理及 print 模式。`pi-coexist-tests.tui` 使用实际 CLI/PTY，连同 queue、context、diff 等全部部署扩展验证 24/40/120 列、中文输入、dark/light、退出后恢复费用、终端光标恢复，以及非交互输出无 ANSI 污染；模型请求只进入离线替身，不读取真实认证。Linux 检查入口已接入 CI；当前交互证据来自 Darwin。
 
 ### Pi 消息队列
 

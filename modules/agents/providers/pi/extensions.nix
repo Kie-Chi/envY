@@ -26,6 +26,7 @@ let
   views = import ./views.nix { inherit lib pkgs; };
   packages = {
     auto-assigned = import ./auto-assigned.nix { inherit pkgs piSource; };
+    powerline = import ./powerline.nix { inherit lib pkgs; };
     "context-view" = views.context;
     diff = views.diff;
     goal-x = import ./goal.nix { inherit lib pkgs piPackage; };
@@ -55,6 +56,7 @@ in
   # Each queued prompt gets its own delivery boundary rather than merging
   # several pending prompts into one turn. Machine settings may override this.
   envy.agents.pi.additionalSettings = {
+    theme = lib.mkDefault "system";
     steeringMode = lib.mkDefault "one-at-a-time";
     followUpMode = lib.mkDefault "one-at-a-time";
   };

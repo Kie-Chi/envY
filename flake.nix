@@ -380,6 +380,23 @@
           touch "$out"
         '';
 
+      mkEnvyPiPowerlineCheck = system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          piPackage = inputs.pi.packages.${system}.default;
+          patchedPi = import ./modules/agents/providers/pi/package.nix {
+            inherit lib piPackage;
+            moreThinking = true;
+          };
+          extension = import ./modules/agents/providers/pi/powerline.nix { inherit lib pkgs; };
+        in pkgs.runCommand "pi-powerline-tests" {
+          nativeBuildInputs = [ pkgs.nodejs_24 ];
+        } ''
+          node ${./modules/agents/providers/pi/tests/pi-powerline.mjs} \
+            ${extension} ${patchedPi}/lib/pi/node_modules
+          touch "$out"
+        '';
+
       mkEnvyPiAutoAssignedCheck = system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
@@ -773,6 +790,7 @@
       checks.aarch64-darwin.envy-lint = mkEnvyLintCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-github-actions = mkGithubActionsCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-agent-tests = mkEnvyAgentCheck "aarch64-darwin";
+      checks.aarch64-darwin.pi-powerline-tests = mkEnvyPiPowerlineCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-auto-assigned-tests = mkEnvyPiAutoAssignedCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-queue-tests = mkEnvyPiQueueCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-goal-tests = mkEnvyPiGoalCheck "aarch64-darwin";
@@ -793,6 +811,7 @@
       checks.x86_64-linux.envy-lint = mkEnvyLintCheck "x86_64-linux";
       checks.x86_64-linux.envy-github-actions = mkGithubActionsCheck "x86_64-linux";
       checks.x86_64-linux.envy-agent-tests = mkEnvyAgentCheck "x86_64-linux";
+      checks.x86_64-linux.pi-powerline-tests = mkEnvyPiPowerlineCheck "x86_64-linux";
       checks.x86_64-linux.pi-auto-assigned-tests = mkEnvyPiAutoAssignedCheck "x86_64-linux";
       checks.x86_64-linux.pi-queue-tests = mkEnvyPiQueueCheck "x86_64-linux";
       checks.x86_64-linux.pi-goal-tests = mkEnvyPiGoalCheck "x86_64-linux";

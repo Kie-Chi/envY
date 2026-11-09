@@ -461,10 +461,14 @@
             name = "pi-diff-tui-tests";
             runtimeInputs = [ pkgs.python3 ];
             text = ''
-              exec python3 ${./modules/agents/providers/pi/tests/pi-context-tui.py} \
+              python3 ${./modules/agents/providers/pi/tests/pi-context-tui.py} \
                 ${pkgs.nodejs_24}/bin/node \
                 ${patchedPi}/lib/pi/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js \
                 ${views.context} ${views.diff} ${pkgs.git}/bin/git
+              exec python3 ${./modules/agents/providers/pi/tests/pi-diff-latency.py} \
+                ${pkgs.nodejs_24}/bin/node \
+                ${patchedPi}/lib/pi/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js \
+                ${views.diff} ${pkgs.git}/bin/git
             '';
           };
         in pkgs.runCommand "pi-diff-tests" {
@@ -472,6 +476,8 @@
           passthru = { inherit tui; };
         } ''
           node ${./modules/agents/providers/pi/tests/pi-diff.mjs} \
+            ${views.diff} ${patchedPi}/lib/pi/node_modules
+          node ${./modules/agents/providers/pi/tests/pi-diff-scans.mjs} \
             ${views.diff} ${patchedPi}/lib/pi/node_modules
           touch "$out"
         '';

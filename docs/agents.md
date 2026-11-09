@@ -82,11 +82,13 @@ envy.agents.pi.models = [
 
 ### 差异视图与共存检查
 
-`pi/views.nix` 固定 `@lyrumu/pi-diff` 0.1.0 和唯一运行时依赖 `diff` 8.0.2，将依赖实体复制到扩展旁，不执行 npm 安装。作者 README 的开发基线是 Pi 1.2；本仓库使用真实 Pi 1.1 SDK 与 CLI/PTY 验证，无需升级宿主或添加 diff 兼容补丁。
+`pi/views.nix` 固定 `@lyrumu/pi-diff` 0.1.0 和唯一运行时依赖 `diff` 8.0.2，将依赖实体复制到扩展旁，不执行 npm 安装。作者 README 的开发基线是 Pi 1.2；本仓库使用真实 Pi 1.1 SDK 与 CLI/PTY 验证，宿主版本不变。`pi-diff-bounded-scans.patch` 限制自动扫描开销。
 
 `/diff` 查看 Git 差异，`v` 切换布局，Tab 切换范围，Esc 或 q 返回编辑器。检查使用临时 index 基线及实际 before/after 内容，并断言查看前后文件和 index 不变。扩展的历史与缓存仍由应用管理。
 
-`pi-diff-tests` 运行 SDK 检查，`.tui` 入口复用 context 的真实终端驱动，同时打开两个扩展。`pi-coexist-tests` 使用 Nix 生成的全部非 cron 扩展来源，验证注册无冲突和真实 codemode → LSP → Ruff F401；其 `.tui` 入口在同一 CLI 加载这些扩展，核对视图、快捷键和编辑器恢复。cron 的 daemon 不在此共存测试中启动；Doctor 明确报告该跳过项。
+消息提交只重置 diff 状态，不读取目录基线；第一次可能修改文件的工具调用前才采集基线。家目录和文件系统根目录不自动全树扫描；其他目录的每次自动扫描以 500 毫秒、10,000 个目录条目和 8 MiB 累计内容为预算，单文件最多 2 MiB。shell 前后、收尾扫描和补丁生成都受预算约束；超限后本轮停止全量扫描，保留明确 `edit/write` 目标的首次已知旧侧，持久记录并在轮次/会话视图提示覆盖不完整。未扫描部分不能视为没有变化，也不能推断为文件删除。手动 Git 范围仍按需使用原生 Git 查询。
+
+`pi-diff-tests` 运行 SDK 及真实 Tracker 回归，覆盖空提交、受保护目录、数量/时间/内容预算、显式文件追踪和 Git 暂存/提交后的旧侧。`.tui` 先复用 context 的真实终端驱动打开两个扩展，再在家目录、非 Git 和 Git 目录验证提交事件与新画面；受控挂起扫描证明用户消息出现前没有扫描，不依靠构造庞大目录来测量。`pi-coexist-tests` 使用 Nix 生成的全部非 cron 扩展来源，验证注册无冲突和真实 codemode → LSP → Ruff F401；其 `.tui` 入口在同一 CLI 加载这些扩展，核对视图、快捷键和编辑器恢复。cron 的 daemon 不在此共存测试中启动；Doctor 明确报告该跳过项。
 
 切换委派模型时使用具体的 `<provider>/<model>` 并核对实际运行报告；本轮改用独立的 Sol 低推理任务，避免模型名称命中默认供应方及重复携带长上下文。
 

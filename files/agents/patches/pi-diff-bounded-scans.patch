@@ -1,0 +1,771 @@
+--- a/index.ts
++++ b/index.ts
+@@ -45 +45 @@
+-    // Turn start: bump the turn counter and take the workspace baseline.
++    // Submission resets state without scanning the workspace.
+@@ -58,0 +59,3 @@
++    } else if (pi.getAllTools().find((tool) => tool.name === e.toolName)?.annotations?.readOnlyHint !== true) {
++      // Custom mutating tools still participate in the final catch-up scan.
++      await tracker.prepareBaseline();
+@@ -111 +114,6 @@
+-          return { title: scopeTitle(source), files, emptyMessage, notice: source.kind !== "git" && unavailableHistory ? (language: Language) => messages[language].incompleteHistory : undefined };
++          const limited = source.kind === "turn" ? turns.find((turn) => turn.turn === source.turn)?.coverageLimited
++            : source.kind === "session" && turns.some((turn) => turn.coverageLimited);
++          if (limited) emptyMessage = (language) => messages[language].scanLimited;
++          const notice = limited ? (language: Language) => messages[language].scanLimited
++            : source.kind !== "git" && unavailableHistory ? (language: Language) => messages[language].incompleteHistory : undefined;
++          return { title: scopeTitle(source), files, emptyMessage, notice };
+--- /dev/null
++++ b/src/scan-budget.ts
+@@ -0,0 +1,49 @@
++export const SCAN_LIMITS = {
++  milliseconds: 500,
++  entries: 10_000,
++  fileBytes: 2 * 1024 * 1024,
++  bytes: 8 * 1024 * 1024,
++} as const;
++
++export class ScanLimitError extends Error {
++  constructor() { super("Automatic diff scan budget exceeded"); }
++}
++
++/** Shared bounds for one automatic baseline or comparison, including Git IO. */
++export class ScanBudget {
++  readonly controller = new AbortController();
++  readonly deadline = performance.now() + SCAN_LIMITS.milliseconds;
++  private entries = 0;
++  private bytes = 0;
++
++  get signal(): AbortSignal { return this.controller.signal; }
++
++  check(entries = 0, bytes = 0): void {
++    this.signal.throwIfAborted();
++    this.entries += entries;
++    this.bytes += bytes;
++    if (performance.now() >= this.deadline || this.entries > SCAN_LIMITS.entries || this.bytes > SCAN_LIMITS.bytes) {
++      throw new ScanLimitError();
++    }
++  }
++}
++
++/** Abort outstanding IO and stop scheduling work when a scan loses its budget. */
++export async function withinScanBudget<T>(work: (budget: ScanBudget) => Promise<T>): Promise<T> {
++  const budget = new ScanBudget();
++  let timer: ReturnType<typeof setTimeout> | undefined;
++  try {
++    return await Promise.race([
++      Promise.resolve().then(() => work(budget)).then((result) => { budget.check(); return result; }),
++      new Promise<never>((_resolve, reject) => {
++        timer = setTimeout(() => {
++          budget.controller.abort();
++          reject(new ScanLimitError());
++        }, SCAN_LIMITS.milliseconds);
++      }),
++    ]);
++  } finally {
++    clearTimeout(timer);
++    budget.controller.abort();
++  }
++}
+--- a/src/tracker.ts
++++ b/src/tracker.ts
+@@ -1,3 +1,5 @@
+-import { readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+-import { tmpdir } from "node:os";
+-import { join, relative, resolve, sep } from "node:path";
++import { readFile, open, opendir, rm, stat, writeFile } from "node:fs/promises";
++import { realpathSync } from "node:fs";
++import { homedir, tmpdir } from "node:os";
++import { join, parse, relative, resolve, sep } from "node:path";
++import { SCAN_LIMITS, ScanBudget, ScanLimitError, withinScanBudget } from "./scan-budget.ts";
+@@ -17,0 +20,5 @@
++function canonicalPath(path: string): string {
++  try { return realpathSync(path); }
++  catch { return resolve(path); }
++}
++
+@@ -20 +27 @@
+-  /** sha256 of turn-start content; null = file did not exist at turn start. */
++  /** sha256 of the first known pre-execution contents; null = known absence. */
+@@ -37,2 +44,2 @@
+- * There is exactly one writer of `turnFiles`; nothing can be "changed by bash
+- * but missing from the turn diff".
++ * There is exactly one writer of `turnFiles`. Incomplete scans never publish
++ * inventories; omitted changes are disclosed through `coverageLimited`.
+@@ -44 +51,2 @@
+- * Old-side recovery (git): files already dirty at turn start are snapshotted
++ * The baseline is taken before the first potentially mutating tool, not submit.
++ * Old-side recovery (git): files already dirty at that point are snapshotted
+@@ -54,0 +63,4 @@
++  private readonly broadDirectory = this.cwd === parse(this.cwd).root || this.cwd === canonicalPath(homedir());
++  private limited = this.broadDirectory;
++  private epoch = 0;
++  private baselinePromise: Promise<void> | undefined;
+@@ -91,2 +103,3 @@
+-  async scanWorkspace(marker: string): Promise<string[]> {
+-    if (await this.isGit()) {
++  async scanWorkspace(marker: string, budget = new ScanBudget()): Promise<string[]> {
++    budget.check();
++    if (await this.isGit(budget)) {
+@@ -94 +107 @@
+-      const currentMarker = await this.gitWorkspaceSignature();
++      const currentMarker = await this.gitWorkspaceSignature(budget);
+@@ -97,0 +111 @@
++        budget.check();
+@@ -106 +120,3 @@
+-      for (const file of await Git.changedCommitFiles(this.cwd, previousHead, currentHead)) {
++      const committed = await Git.changedCommitFiles(this.cwd, previousHead, currentHead, budget.signal);
++      budget.check(committed.length);
++      for (const file of committed) {
+@@ -111,8 +127,6 @@
+-    let previous: Map<string, string>;
+-    try {
+-      const value: unknown = JSON.parse(await readFile(marker, "utf8"));
+-      if (!Array.isArray(value) || !value.every((entry) => Array.isArray(entry) && entry.length === 2 && entry.every((item) => typeof item === "string"))) return [];
+-      previous = new Map(value as [string, string][]);
+-    } catch {
+-      return [];
+-    }
++    const value: unknown = JSON.parse(await readFile(marker, { encoding: "utf8", signal: budget.signal }));
++    budget.check();
++    if (!Array.isArray(value) || !value.every((entry) => Array.isArray(entry) && entry.length === 2 && entry.every((item) => typeof item === "string"))) {
++      throw new Error("Invalid automatic diff marker");
++    }
++    const previous = new Map(value as [string, string][]);
+@@ -120 +134,2 @@
+-    await this.walk(this.cwd, current);
++    await this.walk(this.cwd, current, budget);
++    budget.check();
+@@ -126,12 +141,9 @@
+-  private async walk(dir: string, out: Map<string, string>): Promise<void> {
+-    let entries: import("node:fs").Dirent[];
+-    try {
+-      entries = await readdir(dir, { withFileTypes: true });
+-    } catch (error) {
+-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+-      throw error;
+-    }
+-    const files = entries.filter((entry) => entry.isFile());
+-    for (let offset = 0; offset < files.length; offset += 32) {
+-      await Promise.all(files.slice(offset, offset + 32).map(async (entry) => {
+-        const full = join(dir, entry.name);
++  private async walk(dir: string, out: Map<string, string>, budget = new ScanBudget()): Promise<void> {
++    budget.check(1);
++    const directories: string[] = [];
++    let batch: string[] = [];
++    const flush = async () => {
++      const files = batch;
++      batch = [];
++      await Promise.all(files.map(async (full) => {
++        budget.check();
+@@ -140 +152,2 @@
+-          out.set(relative(this.cwd, full).split(sep).join("/"), `${s.mtimeNs}:${s.ctimeNs}:${s.size}:${s.dev}:${s.ino}`);
++          budget.check();
++          out.set(relative(this.cwd, full).split(sep).join("/"), [s.mtimeNs, s.ctimeNs, s.size, s.dev, s.ino].join(":"));
+@@ -145,10 +158,21 @@
+-    }
+-    for (const entry of entries) {
+-      if (entry.isDirectory() && !IGNORED_DIRS.has(entry.name)) {
+-        await this.walk(join(dir, entry.name), out);
+-      }
+-    }
+-  }
+-
+-  /** Make a metadata marker for the no-git backend of scanWorkspace(). */
+-  async makeMarker(): Promise<string> {
++    };
++    try {
++      // Stream directory entries rather than allocating an unbounded readdir result.
++      const handle = await opendir(dir);
++      for await (const entry of handle) {
++        budget.check(1);
++        const full = join(dir, entry.name);
++        if (entry.isFile()) batch.push(full);
++        else if (entry.isDirectory() && !IGNORED_DIRS.has(entry.name)) directories.push(full);
++        if (batch.length >= 32) await flush();
++      }
++    } catch (error) {
++      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
++      throw error;
++    }
++    await flush();
++    for (const directory of directories) await this.walk(directory, out, budget);
++  }
++
++  /** Complete markers only: an interrupted inventory must never imply deletions. */
++  async makeMarker(budget = new ScanBudget()): Promise<string> {
+@@ -156,4 +180,11 @@
+-    await this.walk(this.cwd, files);
+-    const file = join(tmpdir(), `pi-diff-marker-${Date.now()}-${randomBytes(4).toString("hex")}`);
+-    await writeFile(file, JSON.stringify([...files]));
+-    return file;
++    await this.walk(this.cwd, files, budget);
++    budget.check();
++    const file = join(tmpdir(), "pi-diff-marker-" + Date.now() + "-" + randomBytes(4).toString("hex"));
++    try {
++      await writeFile(file, JSON.stringify([...files]), { mode: 0o600, signal: budget.signal });
++      budget.check();
++      return file;
++    } catch (error) {
++      await this.releaseMarker(file);
++      throw error;
++    }
+@@ -181 +212 @@
+-  async recordFileChange(path: string, opts: { fromToolEvent?: boolean } = {}): Promise<void> {
++  async recordFileChange(path: string, opts: { fromToolEvent?: boolean; budget?: ScanBudget } = {}): Promise<void> {
+@@ -184 +215,3 @@
+-
++    const epoch = this.epoch;
++    if (opts.fromToolEvent) await this.prepareBaseline();
++    if (epoch !== this.epoch) return;
+@@ -187,7 +220,5 @@
+-      if (await this.isGit()) {
+-        if (this.unavailableBaseline.has(file)) {
+-          registered = { oldHash: null, baselineUnknown: true, unavailable: true };
+-        } else if (this.turnBaseline.has(file)) {
+-          registered = { oldHash: this.turnBaseline.get(file)!, baselineUnknown: false };
+-        } else {
+-          // Pin the clean old side so staging or committing mid-turn cannot replace it.
++      const capture = async (budget: ScanBudget): Promise<RegisteredFile> => {
++        if (this.git === true && !this.limited) {
++          if (this.unavailableBaseline.has(file)) return { oldHash: null, baselineUnknown: true, unavailable: true };
++          if (this.turnBaseline.has(file)) return { oldHash: this.turnBaseline.get(file)!, baselineUnknown: false };
++          // Recover the pinned old side even if a shell tool staged or committed it.
+@@ -195,3 +226,3 @@
+-            ? await Git.showRevision(this.cwd, this.turnStartHead, this.gitPrefix + file) : null;
+-          // Ignored explicit targets are absent from both porcelain and HEAD.
+-          if (content === null && opts.fromToolEvent) content = await this.readFileOrNull(file);
++            ? await Git.showRevision(this.cwd, this.turnStartHead, this.gitPrefix + file, budget.signal) : null;
++          budget.check(0, content?.byteLength ?? 0);
++          if (content === null && opts.fromToolEvent) content = await this.readFileOrNull(file, budget);
+@@ -199 +230,2 @@
+-          registered = { oldHash, baselineUnknown: false };
++          budget.check();
++          return { oldHash, baselineUnknown: false };
+@@ -201,8 +233,10 @@
+-      } else if (opts.fromToolEvent) {
+-        // No git: only a pre-execution tool event can capture the old side.
+-        const content = await this.readFileOrNull(file);
+-        const oldHash = content !== null ? await this.snapshotStore.put(content) : null;
+-        registered = { oldHash, baselineUnknown: false };
+-      } else {
+-        registered = { oldHash: null, baselineUnknown: true };
+-      }
++        if (opts.fromToolEvent) {
++          // With limited coverage, retain the first known pre-execution file contents.
++          const content = await this.readFileOrNull(file, budget);
++          const oldHash = content !== null ? await this.snapshotStore.put(content) : null;
++          budget.check();
++          return { oldHash, baselineUnknown: false };
++        }
++        return { oldHash: null, baselineUnknown: true };
++      };
++      registered = opts.budget ? await capture(opts.budget) : await withinScanBudget(capture);
+@@ -210 +243,0 @@
+-      // A rejected directory target is not a changed file; other capture failures are explicit.
+@@ -211,0 +245,3 @@
++      if (opts.budget && (opts.budget.signal.aborted || error instanceof ScanLimitError)) throw error;
++      if (epoch !== this.epoch) return;
++      this.limited = true;
+@@ -214,5 +250,6 @@
+-    // Parallel hooks may have registered the file while this capture awaited IO.
+-    if (!this.turnFiles.has(file)) this.turnFiles.set(file, registered);
+-  }
+-
+-  private async readFileOrNull(file: string): Promise<Buffer | null> {
++    opts.budget?.check();
++    if (epoch === this.epoch && !this.turnFiles.has(file)) this.turnFiles.set(file, registered);
++  }
++
++  private async readFileOrNull(file: string, budget?: ScanBudget): Promise<Buffer | null> {
++    let handle: Awaited<ReturnType<typeof open>> | undefined;
+@@ -220 +257,18 @@
+-      return await readFile(join(this.cwd, file));
++      const full = join(this.cwd, file);
++      const metadata = await stat(full);
++      budget?.check();
++      if (!metadata.isFile()) throw Object.assign(new Error("Not a regular file"), { code: metadata.isDirectory() ? "EISDIR" : "ENOTSUP" });
++      if (metadata.size > SCAN_LIMITS.fileBytes) throw new ScanLimitError();
++      handle = await open(full, "r");
++      const chunks: Buffer[] = [];
++      let total = 0;
++      while (true) {
++        budget?.check();
++        const chunk = Buffer.alloc(Math.min(64 * 1024, SCAN_LIMITS.fileBytes + 1 - total));
++        const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
++        budget?.check(0, bytesRead);
++        if (bytesRead === 0) return Buffer.concat(chunks, total);
++        total += bytesRead;
++        if (total > SCAN_LIMITS.fileBytes) throw new ScanLimitError();
++        chunks.push(chunk.subarray(0, bytesRead));
++      }
+@@ -224,9 +278,6 @@
+-    }
+-  }
+-
+-  /**
+-   * Git workspace signature: porcelain entries with a sha256 of each dirty
+-   * file's disk content ("missing" when deleted). Two signatures differ for
+-   * any file whose status code or content changed between captures.
+-   */
+-  private async gitWorkspaceSignature(): Promise<string> {
++    } finally {
++      await handle?.close();
++    }
++  }
++
++  private async gitWorkspaceSignature(budget: ScanBudget): Promise<string> {
+@@ -234 +285 @@
+-    const [head, status] = await Promise.all([Git.headCommit(this.cwd), this.workspaceStatus()]);
++    const [head, status] = await Promise.all([Git.headCommit(this.cwd, budget.signal), this.workspaceStatus(budget)]);
+@@ -235,0 +287 @@
++      budget.check();
+@@ -238 +290 @@
+-        const content = await this.readFileOrNull(item.file);
++        const content = await this.readFileOrNull(item.file, budget);
+@@ -240 +292,4 @@
+-      } catch { /* Keep the path in the signature even when unreadable. */ }
++      } catch (error) {
++        budget.check();
++        if (error instanceof ScanLimitError) throw error;
++      }
+@@ -242,0 +298 @@
++    budget.check();
+@@ -246,4 +302,7 @@
+-  private async workspaceStatus() {
+-    return Git.parseStatus(await Git.statusPorcelain(this.cwd)).flatMap((item) =>
+-      item.file.startsWith(this.gitPrefix) ? [{ ...item, file: item.file.slice(this.gitPrefix.length) }] : [],
+-    );
++  private async workspaceStatus(budget: ScanBudget) {
++    const raw = await Git.statusPorcelain(this.cwd, budget.signal);
++    budget.check();
++    const items = Git.parseStatus(raw);
++    budget.check(items.length);
++    return items.flatMap((item) => item.file.startsWith(this.gitPrefix)
++      ? [{ ...item, file: item.file.slice(this.gitPrefix.length) }] : []);
+@@ -254,5 +313 @@
+-  /**
+-   * Called from before_agent_start: bump turn counter and take the turn
+-   * baseline — git: workspace signature + content snapshot of already-dirty
+-   * files + pinned HEAD; no-git: a metadata marker file.
+-   */
++  /** Submission only resets state; baseline IO starts immediately before a tool. */
+@@ -259,0 +315 @@
++    this.epoch += 1;
+@@ -266,17 +322,24 @@
+-
+-    if (await this.isGit()) {
+-      const [head, status] = await Promise.all([Git.headCommit(this.cwd), this.workspaceStatus()]);
+-      this.turnStartHead = head;
+-      const signature: [string, string, string][] = [];
+-      for (const item of status) {
+-        // Snapshot the turn-start content of dirty files so bash-modified
+-        // pre-dirty files keep a correct old side. Files already deleted on
+-        // disk have no turn-start content (a later recreation is "added").
+-        try {
+-          const content = await this.readFileOrNull(item.file);
+-          const hash = content !== null ? SnapshotStore.hash(content) : "missing";
+-          this.turnBaseline.set(item.file, content !== null ? await this.snapshotStore.put(content) : null);
+-          signature.push([item.file, item.code, hash]);
+-        } catch {
+-          signature.push([item.file, item.code, "unreadable"]);
+-          this.unavailableBaseline.add(item.file);
++    this.turnStartHead = null;
++    this.baselinePromise = undefined;
++    this.limited = this.broadDirectory;
++  }
++
++  coverageLimited(): boolean { return this.limited; }
++
++  private async automaticScan<T>(work: (budget: ScanBudget) => Promise<T>): Promise<T | undefined> {
++    if (this.limited) return undefined;
++    const epoch = this.epoch;
++    try { return await withinScanBudget(work); }
++    catch { if (epoch === this.epoch) this.limited = true; return undefined; }
++  }
++
++  /** Shared lazy initialization for explicit file, shell, and custom tool events. */
++  async prepareBaseline(): Promise<void> {
++    if (this.limited) return;
++    const epoch = this.epoch;
++    this.baselinePromise ??= (async () => {
++      const baseline = await this.automaticScan(async (budget) => {
++        const baseline = new Map<string, string | null>();
++        const unavailable = new Set<string>();
++        if (!(await this.isGit(budget))) {
++          return { marker: await this.makeMarker(budget), head: null, baseline, unavailable };
+@@ -284,8 +347,32 @@
+-      }
+-      this.turnMarker = JSON.stringify({ head: this.turnStartHead, files: signature });
+-    } else {
+-      this.turnMarker = await this.makeMarker();
+-    }
+-  }
+-
+-  /** Called before every shell tool execution (tool_call of bash/powershell). */
++        const [head, status] = await Promise.all([Git.headCommit(this.cwd, budget.signal), this.workspaceStatus(budget)]);
++        const signature: [string, string, string][] = [];
++        for (const item of status) {
++          budget.check();
++          try {
++            const content = await this.readFileOrNull(item.file, budget);
++            const hash = content !== null ? SnapshotStore.hash(content) : "missing";
++            baseline.set(item.file, content !== null ? await this.snapshotStore.put(content) : null);
++            budget.check();
++            signature.push([item.file, item.code, hash]);
++          } catch (error) {
++            budget.check();
++            if (error instanceof ScanLimitError) throw error;
++            signature.push([item.file, item.code, "unreadable"]);
++            unavailable.add(item.file);
++          }
++        }
++        return { marker: JSON.stringify({ head, files: signature }), head, baseline, unavailable };
++      });
++      // Only complete scans can publish shared baseline state.
++      if (baseline && !this.limited && epoch === this.epoch) {
++        this.turnMarker = baseline.marker;
++        this.turnStartHead = baseline.head;
++        this.turnBaseline = baseline.baseline;
++        this.unavailableBaseline = baseline.unavailable;
++      } else if (baseline && this.git !== true) {
++        await this.releaseMarker(baseline.marker);
++      }
++    })();
++    await this.baselinePromise;
++  }
++
+@@ -293,11 +380,11 @@
+-    if (await this.isGit()) {
+-      this.bashMarkers.set(toolCallId, await this.gitWorkspaceSignature());
+-    } else {
+-      this.bashMarkers.set(toolCallId, await this.makeMarker());
+-    }
+-  }
+-
+-  /**
+-   * Called after every shell tool execution (tool_result): scan vs the bash
+-   * marker and register newly changed files through the single entry point.
+-   */
++    const epoch = this.epoch;
++    const first = this.baselinePromise === undefined;
++    await this.prepareBaseline();
++    if (this.limited || epoch !== this.epoch) return;
++    // The first shell tool already has an immediately preceding baseline.
++    const marker = first ? this.turnMarker : await this.automaticScan(async (budget) =>
++      await this.isGit(budget) ? this.gitWorkspaceSignature(budget) : this.makeMarker(budget));
++    if (marker && epoch === this.epoch) this.bashMarkers.set(toolCallId, marker);
++    else if (marker && this.git !== true) await this.releaseMarker(marker);
++  }
++
+@@ -304,0 +392 @@
++    const epoch = this.epoch;
+@@ -308,4 +396,13 @@
+-    let changed: string[];
+-    try { changed = await this.scanWorkspace(marker); }
+-    finally { if (!(await this.isGit())) await this.releaseMarker(marker); }
+-    for (const file of changed) await this.recordFileChange(file);
++    try {
++      await this.automaticScan(async (budget) => {
++        const changed = await this.scanWorkspace(marker, budget);
++        for (const file of changed) {
++          budget.check();
++          if (epoch !== this.epoch) return false;
++          await this.recordFileChange(file, { budget });
++        }
++        return true;
++      });
++    } finally {
++      if (this.git !== true && marker !== this.turnMarker) await this.releaseMarker(marker);
++    }
+@@ -320,0 +418 @@
++    const epoch = this.epoch;
+@@ -321,0 +420 @@
++    const bashMarkers = [...this.bashMarkers.values()];
+@@ -324,2 +423,9 @@
+-        const missed = await this.scanWorkspace(turnMarker);
+-        for (const file of missed) await this.recordFileChange(file);
++        await this.automaticScan(async (budget) => {
++          const missed = await this.scanWorkspace(turnMarker, budget);
++          for (const file of missed) {
++            budget.check();
++            if (epoch !== this.epoch) return false;
++            await this.recordFileChange(file, { budget });
++          }
++          return true;
++        });
+@@ -328 +434 @@
+-      if (!(await this.isGit())) {
++      if (this.git !== true) {
+@@ -330,5 +436,8 @@
+-        for (const marker of this.bashMarkers.values()) await this.releaseMarker(marker);
+-      }
+-      this.turnMarker = null;
+-      this.bashMarkers.clear();
+-    }
++        for (const marker of bashMarkers) await this.releaseMarker(marker);
++      }
++      if (epoch === this.epoch) {
++        this.turnMarker = null;
++        this.bashMarkers.clear();
++      }
++    }
++    if (epoch !== this.epoch) return;
+@@ -339,42 +448,69 @@
+-    for (const file of [...this.turnFiles.keys()].sort()) {
+-      const registered = this.turnFiles.get(file)!;
+-      let newContent: Buffer | null = null;
+-      let unavailable = registered.unavailable ?? false;
+-      try { newContent = await this.readFileOrNull(file); }
+-      catch { unavailable = true; }
+-      const newHash = newContent !== null ? SnapshotStore.hash(newContent) : null;
+-      // No-op registration (failed edit, touch without change): drop.
+-      if (!unavailable && registered.oldHash === newHash && !registered.baselineUnknown) continue;
+-
+-      let patch: FilePatch;
+-      const status = registered.unavailable ? "modified"
+-        : registered.oldHash === null && !registered.baselineUnknown ? "added"
+-        : !unavailable && newContent === null ? "deleted" : "modified";
+-      if (unavailable || capped || (registered.baselineUnknown && newContent === null)) {
+-        // Once the total cap is hit, remaining files degrade (opencode totalPatch).
+-        patch = {
+-          file,
+-          status,
+-          patch: emptyPatch(file),
+-          additions: 0,
+-          deletions: 0,
+-          ...(capped ? { tooLarge: true } : {}),
+-          ...(unavailable ? { unavailable: true } : {}),
+-          ...(registered.baselineUnknown ? { baselineUnknown: true } : {}),
+-          oldHash: registered.oldHash,
+-          ...(unavailable ? {} : { newHash }),
+-        };
+-      } else {
+-        const oldContent =
+-          registered.oldHash !== null ? await this.snapshotStore.get(registered.oldHash) : null;
+-        patch = registered.oldHash !== null && oldContent === null ? {
+-          file, status, patch: emptyPatch(file), additions: 0, deletions: 0,
+-          unavailable: true, oldHash: registered.oldHash, newHash,
+-        } : makeFilePatch(file, oldContent, newContent, {
+-          oldHash: registered.oldHash,
+-          newHash,
+-          baselineUnknown: registered.baselineUnknown,
+-        });
+-        // Cache the new side for the session-cumulative recompute.
+-        if (newContent !== null && !patch.binary && !patch.tooLarge) {
+-          await this.snapshotStore.put(newContent).catch(() => {});
++    const files = [...this.turnFiles.keys()].sort();
++    let completed = 0;
++    try {
++      await withinScanBudget(async (budget) => {
++        for (; completed < files.length; completed++) {
++          budget.check();
++          const file = files[completed]!;
++          const registered = this.turnFiles.get(file)!;
++          let newContent: Buffer | null = null;
++          let unavailable = registered.unavailable ?? false;
++          try {
++            if (capped) unavailable = true;
++            else newContent = await this.readFileOrNull(file, budget);
++          } catch {
++            unavailable = true;
++            if (epoch === this.epoch) this.limited = true;
++          }
++          budget.check();
++          const newHash = newContent !== null ? SnapshotStore.hash(newContent) : null;
++          // No-op registration (failed edit, touch without change): drop.
++          if (!unavailable && registered.oldHash === newHash && !registered.baselineUnknown) continue;
++
++          let patch: FilePatch;
++          const status = registered.unavailable ? "modified"
++            : registered.oldHash === null && !registered.baselineUnknown ? "added"
++            : !unavailable && newContent === null ? "deleted" : "modified";
++          if (unavailable || capped || (registered.baselineUnknown && newContent === null)) {
++            // Once the total cap is hit, remaining files degrade (opencode totalPatch).
++            patch = {
++              file,
++              status,
++              patch: emptyPatch(file),
++              additions: 0,
++              deletions: 0,
++              ...(capped ? { tooLarge: true } : {}),
++              ...(unavailable ? { unavailable: true } : {}),
++              ...(registered.baselineUnknown ? { baselineUnknown: true } : {}),
++              oldHash: registered.oldHash,
++              ...(unavailable ? {} : { newHash }),
++            };
++          } else {
++            const oldContent =
++              registered.oldHash !== null ? await this.snapshotStore.get(registered.oldHash) : null;
++            budget.check(0, oldContent?.byteLength ?? 0);
++            if (oldContent && oldContent.byteLength > SCAN_LIMITS.fileBytes) throw new ScanLimitError();
++            patch = registered.oldHash !== null && oldContent === null ? {
++              file, status, patch: emptyPatch(file), additions: 0, deletions: 0,
++              unavailable: true, oldHash: registered.oldHash, newHash,
++            } : makeFilePatch(file, oldContent, newContent, {
++              oldHash: registered.oldHash,
++              newHash,
++              baselineUnknown: registered.baselineUnknown,
++            });
++            // Cache the new side for the session-cumulative recompute.
++            if (newContent !== null && !patch.binary && !patch.tooLarge) {
++              await this.snapshotStore.put(newContent).catch(() => {});
++            }
++          }
++
++          budget.check();
++          if (patch.unavailable && epoch === this.epoch) this.limited = true;
++          const bytes = Buffer.byteLength(patch.patch, "utf8");
++          if (total + bytes > MAX_TOTAL_PATCH_BYTES) {
++            capped = true;
++            patch = { ...patch, patch: emptyPatch(file), additions: 0, deletions: 0, tooLarge: true };
++          } else {
++            total += bytes;
++          }
++          patches.push(patch);
+@@ -382,12 +518,12 @@
+-      }
+-
+-      const bytes = Buffer.byteLength(patch.patch, "utf8");
+-      if (total + bytes > MAX_TOTAL_PATCH_BYTES) {
+-        capped = true;
+-        patch = { ...patch, patch: emptyPatch(file), additions: 0, deletions: 0, tooLarge: true };
+-      } else {
+-        total += bytes;
+-      }
+-      patches.push(patch);
+-    }
+-
++      });
++    } catch {
++      if (epoch !== this.epoch) return;
++      this.limited = true;
++      for (const file of files.slice(completed)) {
++        const registered = this.turnFiles.get(file)!;
++        patches.push({ file, status: "modified", patch: emptyPatch(file), additions: 0, deletions: 0,
++          unavailable: true, oldHash: registered.oldHash, baselineUnknown: registered.baselineUnknown });
++      }
++    }
++
++    if (epoch !== this.epoch) return;
+@@ -405,0 +542 @@
++      ...(this.limited ? { coverageLimited: true } : {}),
+@@ -487,0 +625 @@
++    this.epoch += 1;
+@@ -489,0 +628,2 @@
++    this.limited = this.broadDirectory || (this.turnDiffs.at(-1)?.coverageLimited ?? false);
++    this.baselinePromise = undefined;
+@@ -501 +641 @@
+-  private async isGit(): Promise<boolean> {
++  private async isGit(budget: ScanBudget): Promise<boolean> {
+@@ -503,2 +643,6 @@
+-      this.git = await Git.isAvailable(this.cwd);
+-      if (this.git) this.gitPrefix = await Git.prefix(this.cwd);
++      const available = await Git.isAvailable(this.cwd, budget.signal);
++      budget.check();
++      const prefix = available ? await Git.prefix(this.cwd, budget.signal) : "";
++      budget.check();
++      this.git = available;
++      this.gitPrefix = prefix;
+--- a/src/git.ts
++++ b/src/git.ts
+@@ -51 +51,2 @@
+-function run(cwd: string, args: readonly string[], maxOutputBytes = 64 * 1024 * 1024) {
++function run(cwd: string, args: readonly string[], maxOutputBytes = 64 * 1024 * 1024, signal?: AbortSignal) {
++  if (signal) maxOutputBytes = Math.min(maxOutputBytes, 4 * 1024 * 1024);
+@@ -53 +54 @@
+-    const child = spawn("git", [...BASE_ARGS, ...args], { cwd, stdio: ["ignore", "pipe", "pipe"] });
++    const child = spawn("git", [...BASE_ARGS, ...args], { cwd, signal, stdio: ["ignore", "pipe", "pipe"] });
+@@ -260,3 +261,2 @@
+-  async isAvailable(cwd: string): Promise<boolean> {
+-    // `git rev-parse --is-inside-work-tree`
+-    return exec("git", [...BASE_ARGS, "rev-parse", "--is-inside-work-tree"], { cwd })
++  async isAvailable(cwd: string, signal?: AbortSignal): Promise<boolean> {
++    return exec("git", [...BASE_ARGS, "rev-parse", "--is-inside-work-tree"], { cwd, signal })
+@@ -268 +268 @@
+-  async headCommit(cwd: string): Promise<string | null> {
++  async headCommit(cwd: string, signal?: AbortSignal): Promise<string | null> {
+@@ -270 +270 @@
+-      const r = await exec("git", [...BASE_ARGS, "rev-parse", "HEAD"], { cwd });
++      const r = await exec("git", [...BASE_ARGS, "rev-parse", "HEAD"], { cwd, signal });
+@@ -272 +272,2 @@
+-    } catch {
++    } catch (error) {
++      if (signal?.aborted) throw error;
+@@ -278,2 +279,2 @@
+-  async prefix(cwd: string): Promise<string> {
+-    const result = await run(cwd, ["rev-parse", "--show-prefix"]);
++  async prefix(cwd: string, signal?: AbortSignal): Promise<string> {
++    const result = await run(cwd, ["rev-parse", "--show-prefix"], undefined, signal);
+@@ -285 +286 @@
+-  async changedCommitFiles(cwd: string, from: string | null, to: string | null): Promise<string[]> {
++  async changedCommitFiles(cwd: string, from: string | null, to: string | null, signal?: AbortSignal): Promise<string[]> {
+@@ -291 +292 @@
+-    const result = await run(cwd, args);
++    const result = await run(cwd, args, undefined, signal);
+@@ -296,6 +297,2 @@
+-  /**
+-   * Raw `git status --porcelain=v1 -z` output, used as an opaque workspace
+-   * marker by Tracker.scanWorkspace (two markers are compared via
+-   * parseStatus). Arguments align with opencode `VcsGit.statusNames`.
+-   */
+-  async statusPorcelain(cwd: string): Promise<string> {
++  /** Automatic callers use an abort signal and a smaller output bound. */
++  async statusPorcelain(cwd: string, signal?: AbortSignal): Promise<string> {
+@@ -303,14 +300,3 @@
+-      const r = await exec(
+-        "git",
+-        [
+-          ...BASE_ARGS,
+-          "status",
+-          "--porcelain=v1",
+-          "--untracked-files=all",
+-          "--no-renames",
+-          "-z",
+-          "--",
+-          ".",
+-        ],
+-        { cwd, maxBuffer: 64 * 1024 * 1024 },
+-      );
++      const r = await exec("git", [...BASE_ARGS, "status", "--porcelain=v1", "--untracked-files=all", "--no-renames", "-z", "--", "."], {
++        cwd, signal, maxBuffer: signal ? 4 * 1024 * 1024 : 64 * 1024 * 1024,
++      });
+@@ -318 +304,2 @@
+-    } catch {
++    } catch (error) {
++      if (signal) throw error;
+@@ -366 +353 @@
+-  async showRevision(cwd: string, rev: string, path: string): Promise<Buffer | null> {
++  async showRevision(cwd: string, rev: string, path: string, signal?: AbortSignal): Promise<Buffer | null> {
+@@ -371 +358,2 @@
+-        maxBuffer: 64 * 1024 * 1024,
++        signal,
++        maxBuffer: signal ? 2 * 1024 * 1024 : 64 * 1024 * 1024,
+@@ -374 +362,2 @@
+-    } catch {
++    } catch (error) {
++      if (signal && (error as { code?: string | number }).code !== 128) throw error;
+--- a/src/store.ts
++++ b/src/store.ts
+@@ -13,0 +14,2 @@
++  /** Automatic workspace coverage was disabled or interrupted. */
++  coverageLimited?: boolean;
+@@ -36,0 +39 @@
++    (v.coverageLimited === undefined || typeof v.coverageLimited === "boolean") &&
+--- a/src/language.ts
++++ b/src/language.ts
+@@ -41,0 +42 @@
++  scanLimited: "Automatic scan coverage is limited; other file changes may be missing",
+@@ -84,0 +86 @@
++    scanLimited: "自动扫描覆盖受限，可能遗漏其他文件变更",
+--- a/src/diff-engine.ts
++++ b/src/diff-engine.ts
+@@ -206,3 +206,5 @@
+-  const text = formatPatch(structuredPatch(file, file, oldStr, newStr, "", "", {
+-    context: PATCH_CONTEXT_LINES,
+-  }));
++  const structured = structuredPatch(file, file, oldStr, newStr, "", "", {
++    context: PATCH_CONTEXT_LINES, timeout: 100,
++  });
++  if (!structured) return { ...base, unavailable: true };
++  const text = formatPatch(structured);

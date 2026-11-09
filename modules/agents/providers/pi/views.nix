@@ -29,6 +29,7 @@ in
     hash = "sha512-osgrVgzAjKnWHExAayH++cxhzNNnCZyBB1JQNUCinGbTnBgWaCSbJRA2S4W9lhF7j6R8ACLuavE04/F3ga5gMA==";
     # Copy the sole runtime dependency into the package; never use npm install.
     postUnpack = ''
+      ${pkgs.patch}/bin/patch --batch --fuzz=0 -p1 < ${../../../../files/agents/patches/pi-diff-bounded-scans.patch}
       mkdir -p node_modules/diff
       cp -R ${diffRuntime}/. node_modules/diff/
     '';

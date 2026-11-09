@@ -35,6 +35,43 @@ def _payload(software):
     }
 
 
+class OverviewGitRecommendationTests(unittest.TestCase):
+    def recommendations(self, *, ahead=None, behind=None, dirty=False, upstream="origin/master"):
+        payload = _payload({"available": True})
+        payload["git"].update(
+            upstream=upstream, ahead=ahead, behind=behind, dirty=dirty,
+            changes=1 if dirty else 0,
+        )
+        return overview._recommendations(payload)
+
+    def test_behind_only_recommends_sync_without_apply(self):
+        recommendations = self.recommendations(ahead=0, behind=2)
+        self.assertEqual([item["command"] for item in recommendations], ["envy sync --no-apply"])
+        self.assertIn("2 commit(s) are behind origin/master", recommendations[0]["reason"])
+
+    def test_diverged_recommends_sync_before_push(self):
+        recommendations = self.recommendations(ahead=3, behind=2)
+        self.assertEqual([item["command"] for item in recommendations], ["envy sync --no-apply"])
+
+    def test_ahead_only_preserves_push_recommendation(self):
+        recommendations = self.recommendations(ahead=3, behind=0)
+        self.assertEqual([item["command"] for item in recommendations], ["envy push"])
+
+    def test_dirty_behind_preserves_configuration_recommendations(self):
+        recommendations = self.recommendations(ahead=0, behind=2, dirty=True)
+        self.assertEqual(
+            [item["command"] for item in recommendations],
+            ["envy plan", "envy apply", "envy sync --no-apply"],
+        )
+
+    def test_unknown_counts_preserve_no_action_recommendation(self):
+        for upstream in (None, "origin/master"):
+            with self.subTest(upstream=upstream):
+                recommendations = self.recommendations(upstream=upstream)
+                self.assertEqual(recommendations[0]["label"], "No action required")
+                self.assertEqual(recommendations[0]["command"], "")
+
+
 class OverviewSoftwareTests(unittest.TestCase):
     def test_evaluated_manifest_reports_counts(self):
         software = overview._software_snapshot(_manifest())

@@ -2,7 +2,6 @@
 if index(g:rerun_layer, expand('<sfile>')) == -1
     call add(g:rerun_layer, expand('<sfile>'))
     Plug 'vim-airline/vim-airline'
-    Plug 'folke/tokyonight.nvim'
 else
 " always show current position
 let g:airline#extensions#default#section_truncate_width = {

@@ -1,6 +1,19 @@
 { config, pkgs, lib, ... }:
 
 let
+  palette = import ../../cores/tokyo-night.nix;
+  itermColor = hex: lib.listToAttrs (lib.imap0 (index: name: {
+    name = "${name} Component";
+    value = (lib.fromHexString (builtins.substring (1 + index * 2) 2 hex)) / 255.0;
+  }) [ "Red" "Green" "Blue" ]);
+  terminalColors = {
+    "Background Color" = itermColor palette.background;
+    "Foreground Color" = itermColor palette.foreground;
+    "Cursor Color" = itermColor palette.foreground;
+  } // lib.listToAttrs (lib.imap0 (index: hex: {
+    name = "Ansi ${toString index} Color";
+    value = itermColor hex;
+  }) palette.ansi);
   terminalScratchpadGesture = config.envy.habits.terminalScratchpad.gesture;
   quakeHotkeys = {
     F2 = { keyCode = 120; character = 63237; };
@@ -65,12 +78,12 @@ in
   home-manager.users."${config.envy.user.name}" = lib.mkIf (
     builtins.elem "iterm2" config.envy.darwin.software.homebrew.casks.effective
   ) {
-    home.file."iterm2-dracula-profile" = {
-      target = "Library/Application Support/iTerm2/DynamicProfiles/Dracula.json";
+    home.file."iterm2-tokyo-night-profile" = {
+      target = "Library/Application Support/iTerm2/DynamicProfiles/TokyoNight.json";
       text = builtins.toJSON {
         Profiles = [
-          {
-            Name = "Dracula";
+          ({
+            Name = "Tokyo Night";
             Guid = "D2AC4B52-E7A4-4A4D-B9B2-9654271A9144";
             # Use the same dark profile for ordinary iTerm2 launches as for
             # the F12 Quake window. Without this flag iTerm2 keeps its
@@ -87,19 +100,8 @@ in
             "Blur" = true;
             "Blur Radius" = 20;
 
-            "Background Color" = { "Red Component" = 0.1568; "Green Component" = 0.1647; "Blue Component" = 0.2117; };
-            "Foreground Color" = { "Red Component" = 0.9725; "Green Component" = 0.9725; "Blue Component" = 0.9490; };
-            "Cursor Color" = { "Red Component" = 0.9725; "Green Component" = 0.9725; "Blue Component" = 0.9490; };
-            "Ansi 0 Color" = { "Red Component" = 0.1568; "Green Component" = 0.1647; "Blue Component" = 0.2117; }; # Black
-            "Ansi 1 Color" = { "Red Component" = 1.0; "Green Component" = 0.3333; "Blue Component" = 0.3333; }; # Red
-            "Ansi 2 Color" = { "Red Component" = 0.3137; "Green Component" = 0.9804; "Blue Component" = 0.4823; }; # Green
-            "Ansi 3 Color" = { "Red Component" = 0.9451; "Green Component" = 0.9804; "Blue Component" = 0.5490; }; # Yellow
-            "Ansi 4 Color" = { "Red Component" = 0.7412; "Green Component" = 0.5765; "Blue Component" = 0.9765; }; # Blue
-            "Ansi 5 Color" = { "Red Component" = 1.0; "Green Component" = 0.4745; "Blue Component" = 0.7765; }; # Magenta
-            "Ansi 6 Color" = { "Red Component" = 0.5451; "Green Component" = 0.9137; "Blue Component" = 0.9921; }; # Cyan
-            "Ansi 7 Color" = { "Red Component" = 0.9725; "Green Component" = 0.9725; "Blue Component" = 0.9490; }; # White
-          }
-          {
+          } // terminalColors)
+          ({
             Name = "Quake";
             Guid = "E5926B63-798B-4B6B-B6B1-D181D39D377B";
             "Custom Command" = "No";
@@ -118,24 +120,13 @@ in
             "Horizontal Canvas Fraction" = 1.0;
             "Rows" = 25;
 
-            "Background Color" = { "Red Component" = 0.1568; "Green Component" = 0.1647; "Blue Component" = 0.2117; };
-            "Foreground Color" = { "Red Component" = 0.9725; "Green Component" = 0.9725; "Blue Component" = 0.9490; };
-            "Cursor Color" = { "Red Component" = 0.9725; "Green Component" = 0.9725; "Blue Component" = 0.9490; };
-            "Ansi 0 Color" = { "Red Component" = 0.1568; "Green Component" = 0.1647; "Blue Component" = 0.2117; }; # Black
-            "Ansi 1 Color" = { "Red Component" = 1.0; "Green Component" = 0.3333; "Blue Component" = 0.3333; }; # Red
-            "Ansi 2 Color" = { "Red Component" = 0.3137; "Green Component" = 0.9804; "Blue Component" = 0.4823; }; # Green
-            "Ansi 3 Color" = { "Red Component" = 0.9451; "Green Component" = 0.9804; "Blue Component" = 0.5490; }; # Yellow
-            "Ansi 4 Color" = { "Red Component" = 0.7412; "Green Component" = 0.5765; "Blue Component" = 0.9765; }; # Blue
-            "Ansi 5 Color" = { "Red Component" = 1.0; "Green Component" = 0.4745; "Blue Component" = 0.7765; }; # Magenta
-            "Ansi 6 Color" = { "Red Component" = 0.5451; "Green Component" = 0.9137; "Blue Component" = 0.9921; }; # Cyan
-            "Ansi 7 Color" = { "Red Component" = 0.9725; "Green Component" = 0.9725; "Blue Component" = 0.9490; }; # White
             "Has Hotkey" = true;
             "HotKey Activated By Modifier" = false;
             "HotKey Key Code" = quakeHotkey.keyCode;            # F12 的硬件码
             "HotKey Character" = quakeHotkey.character;         # F12 的 Unicode 字符码
             "HotKey Character (Native)" = quakeHotkey.character;
             "HotKey Modifier" = quakeHotkey.modifier;           # Function 键掩码
-          }
+          } // terminalColors)
           {
             Name = "BtopDashboard";
             Guid = "F6A1C2D3-E4B5-4C6D-A7B8-D9E0F1A2B3C4";

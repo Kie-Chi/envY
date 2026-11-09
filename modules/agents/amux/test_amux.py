@@ -8,6 +8,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -249,6 +250,22 @@ class CommandTests(unittest.TestCase):
             second.write_text("unset C\nexport A=override\n")
             env = amux.load_env([str(first), str(second), str(Path(tmp, "missing"))], ["A", "B", "C"])
         self.assertEqual(env, {"A": "override", "B": "two words"})
+
+    def test_load_env_uses_path_without_inheriting_credentials(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tools = Path(tmp, "bin")
+            tools.mkdir()
+            for name in ("bash", "env"):
+                Path(tools, name).symlink_to(os.path.realpath(shutil.which(name)))
+            source = Path(tmp, "agent.env")
+            source.write_text('export TOOL_PATH="$PATH"\nexport INHERITED="${INHERITED-unset}"\n')
+            startup = Path(tmp, "startup.sh")
+            startup.write_text("export INHERITED=startup\n")
+            with mock.patch.dict(os.environ, {
+                "PATH": str(tools), "INHERITED": "parent", "BASH_ENV": str(startup),
+            }):
+                env = amux.load_env([str(source)], ["TOOL_PATH", "INHERITED"])
+        self.assertEqual(env, {"TOOL_PATH": str(tools), "INHERITED": "unset"})
 
     def test_default_names(self):
         self.assertEqual(amux.default_name("/x/.envy", []), "envy")

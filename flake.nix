@@ -378,7 +378,7 @@
           pkgs = nixpkgs.legacyPackages.${system};
           python = pkgs.python3.withPackages (ps: [ ps.readability-lxml ps.html2text ]);
         in pkgs.runCommand "envy-agent-tests" {
-          nativeBuildInputs = [ python pkgs.git pkgs.zsh ];
+          nativeBuildInputs = [ python pkgs.bash pkgs.coreutils pkgs.git pkgs.zsh ];
         } ''
           export HOME="$TMPDIR/home"
           mkdir -p "$HOME"

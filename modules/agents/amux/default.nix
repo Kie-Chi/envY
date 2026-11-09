@@ -7,6 +7,7 @@ let
   prompts = import ../prompts.nix { inherit lib pkgs; };
   home = config.envy.user.home;
   python = "${pkgs.python3}/bin/python3";
+  runtimeTools = [ pkgs.bash pkgs.coreutils ];
 
   # Containers run Linux on the host CPU (OrbStack or Docker Desktop on Darwin).
   linuxSystem = "${pkgs.stdenv.hostPlatform.parsed.cpu.name}-linux";
@@ -137,10 +138,11 @@ let
 
   launcher = pkgs.writeShellScript "amux" ''
     export AMUX_CONFIG=${settings}
+    export PATH=${lib.makeBinPath runtimeTools}:"$PATH"
     exec ${python} -I ${./amux.py} "$@"
   '';
   amux = pkgs.runCommand "amux" {
-    nativeBuildInputs = [ pkgs.git pkgs.zsh ];
+    nativeBuildInputs = runtimeTools ++ [ pkgs.git pkgs.zsh ];
     meta.mainProgram = "amux";
   } ''
     AMUX_PATH=${./amux.py} AMUX_COMPLETION=${./_amux} FETCH_AGENTS_PATH=${./image/fetch-agents.py} \

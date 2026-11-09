@@ -535,8 +535,9 @@ def load_env(files: list[str], names: list[str]) -> dict[str, str]:
     """Source the agent's credential files in a clean shell; keep only names."""
     script = 'for f in "$@"; do if [ -f "$f" ]; then . "$f"; fi; done; env -0'
     result = subprocess.run(
-        ["/bin/bash", "-c", script, "amux-env", *files],
-        capture_output=True, env={"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/")},
+        ["bash", "-c", script, "amux-env", *files],
+        capture_output=True,
+        env={"PATH": os.environ.get("PATH", os.defpath), "HOME": os.environ.get("HOME", "/")},
     )
     if result.returncode != 0:
         raise AmuxError("could not read agent credentials: " + result.stderr.decode(errors="replace").strip())

@@ -119,6 +119,14 @@ envy.agents.pi.models = [
 
 `envy-maintain` 按 Nix、Python、Rust 和 JSON 契约改动选择已有检查；`pi-maintain` 指导锁定版本、运行依赖、父子工具和补丁回归。两个 skills 不自动 apply、创建目标或提交。skill 的 source 来自锁定 flake input 或仓库内目录；catalog 校验每个选中 source 都有 SKILL.md，并检查 target 兼容性。claude-code 与 claude 共用发现目录。
 
+### Skill 行为案例
+
+`pi/tests/skill-cases.json` 固定四项只读案例：envY Python 验证选路、Pi 扩展维护、diff 审查，以及不应加载 skill 的普通问答。每项记录 prompt、应读取与不应读取的 skill，以及禁止动作。`checks/agent-skills.nix` 复用 catalog 校验引用及 Pi 可发现性；离线角色测试继续验证工具边界。这些静态与模拟检查不证明真实模型遵循指令。
+
+需要真实行为评估时，通过现有 subagent 工具分别派发各项 prompt，使用独立上下文、明确的 `<provider>/<model>`、low、`max_turns = 4`；保持题目中的只读限制，不给 agent 期望答案。核对实际工具调用、`SKILL.md` 读取结果及最终答复，记录未命中、禁止调用、实际模型、耗时与 usage。普通问答应无工具调用。不能只凭模型自报已使用 skill 判定通过。
+
+真实模型评估使用供应方额度，不在默认 CI 中调用；案例和离线加载测试分开报告。本轮评估的会话收据放在临时证据目录，不把用户会话或模型输出纳入声明式配置。
+
 ## 配置边界
 
 machine 文件只提供非敏感 endpoint、model、adapter 和 skill selection。API key 通过 sops credential 引用，不能进入 Nix 字符串或 agent 配置明文。provider wrapper 可以生成稳定命令，但不管理应用-owned 数据。

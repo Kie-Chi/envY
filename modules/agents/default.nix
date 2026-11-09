@@ -7,6 +7,7 @@
     ./options.nix
     ./defaults.nix
     ./runtime-files.nix
+    ./diagnostics.nix
     ./amux
     ./providers
     ./skills

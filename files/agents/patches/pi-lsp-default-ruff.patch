@@ -1,0 +1,17 @@
+--- a/dist/index.ts
++++ b/dist/index.ts
+@@ -233,7 +233,13 @@
+ function loadConfig(cwd = process.cwd(), options = {}) {
+   const configured = loadConfiguredConfig(cwd, options.projectTrusted === true);
+   return configured ?? {
+-    servers: DEFAULT_SERVER_CONFIGS.map((server) => ({ ...server, isDefault: true }))
++    servers: [
++      {
++        name: "envy-ruff",
++        command: ["__ENVY_RUFF_SERVER__", "server"],
++        extensions: [".py", ".pyi"]
++      }
++    ]
+   };
+ }
+ var pendingConfigNotice;

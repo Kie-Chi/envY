@@ -7,8 +7,9 @@ from rich.table import Table
 from rich.text import Text
 
 from envy import log
-from envy.doctor.checks import apps, config, network, system
+from envy.doctor.checks import agents, apps, config, network, system
 from envy.doctor.model import (
+    SECTION_AGENTS,
     SECTION_AUTH,
     SECTION_CONFIG,
     SECTION_DOCTOR,
@@ -31,9 +32,10 @@ CHECKS: dict[str, CheckFn] = {
     "system": system.run_checks,
     "apps": apps.run_checks,
     "network": network.run_checks,
+    "agents": agents.run_checks,
 }
 
-DEFAULT_CHECKS = ["config", "system", "apps"]
+DEFAULT_CHECKS = ["config", "system", "apps", "agents"]
 
 
 CONFIG_RESULT_SECTIONS: set[DoctorSection] = {
@@ -84,6 +86,8 @@ def _scope_needed(section: str, selection: DoctorSelection) -> bool:
         return False
     if not selection.sections:
         return True
+    if section == "agents":
+        return SECTION_AGENTS in selection.sections
     if section == "config":
         return bool(selection.sections & CONFIG_RESULT_SECTIONS)
     if section == "apps":

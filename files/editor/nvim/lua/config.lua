@@ -1,5 +1,5 @@
 return {
-  theme = 'nightfox',
+  theme = 'tokyonight',
   disable = {
     copilot = true,
   },

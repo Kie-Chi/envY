@@ -15,6 +15,8 @@
         inherit academicResearchSkills academicResearchSkillsCodex antiDefensiveWriting emilSkills gptImage2PptSkills obeliskSkill pptMaster promptMaster vercelAgentSkills wazaSource;
       };
       active = [
+        "envy-maintain"
+        "pi-maintain"
         "anti-defensive-writing"
         "academic-research-suite"
         "academic-paper"

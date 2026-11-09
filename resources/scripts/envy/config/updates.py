@@ -17,7 +17,7 @@ from envy.config import machine_nix, refine, secret_store
 
 
 def set_config_value(path: str, value: str, *, quiet: bool = False) -> None:
-    if path.startswith(("envy.agents.", "envy.llm.endpoints.", "envy.llm.credentials.")):
+    if path.startswith(("envy.agents.", "envy.agentProfiles.", "envy.llm.endpoints.", "envy.llm.credentials.")):
         from envy.agent import _set
         try:
             _set(path, value)

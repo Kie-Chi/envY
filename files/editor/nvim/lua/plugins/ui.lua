@@ -1,5 +1,21 @@
 return {
   {
+    "folke/which-key.nvim",
+    commit = "3aab2147e74890957785941f0c1ad87d0a44c15a",
+    event = "VeryLazy",
+    opts = {
+      preset = "modern",
+      delay = 300,
+      spec = {
+        { "<leader>f", group = "Find" },
+        { "<leader>t", group = "Terminal" },
+        { "<leader>c", group = "Code" },
+        { "<leader>u", group = "UI" },
+      },
+    },
+  },
+
+  {
     "nvim-neo-tree/neo-tree.nvim",
     branch = "v3.x",
     dependencies = {

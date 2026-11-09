@@ -216,7 +216,13 @@ def _recommendations(payload: dict[str, Any]) -> list[dict[str, str]]:
             "command": "envy doctor",
             "reason": f"{doctor['warn']} warning(s) are available",
         })
-    if git.get("ahead"):
+    if git.get("behind"):
+        recommendations.append({
+            "label": "Synchronize repository",
+            "command": "envy sync --no-apply",
+            "reason": f"{git['behind']} commit(s) are behind {git.get('upstream')}",
+        })
+    elif git.get("ahead"):
         recommendations.append({
             "label": "Push reviewed changes",
             "command": "envy push",

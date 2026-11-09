@@ -382,3 +382,231 @@ test("unfocused sessions neither inject a focus demand nor display its banner", 
   }
   assert.equal(b.widgets.some(widget => widget.value !== undefined), false);
 });
+
+// Capture the real provider payload before any HTTP request can run.
+const { convertToLlm } = await jiti.import(path.join(nodeModules, "@earendil-works/pi-coding-agent/dist/core/messages.js"));
+const { goalPromptParts, goalPrompt } = await jiti.import(path.join(extensionRoot, "extensions/prompts/goal-prompts.ts"));
+const { LiveTailRetention, MAX_RETAINED_LIVE_TAILS, MAX_RETAINED_COUNTER_BYTES } = await jiti.import(path.join(extensionRoot, "extensions/goal-live-retention.ts"));
+const providerApis = Object.fromEntries(await Promise.all(["openai-responses", "openai-codex-responses"].map(async api => [
+  api, await jiti.import(path.join(nodeModules, "@earendil-works/pi-ai/dist/api/" + api + ".js")),
+])));
+const fixtureModel = {
+  id: "fixture-model", provider: "openai", api: "openai-responses", baseUrl: "https://fixture.invalid/v1",
+  name: "Fixture", reasoning: false, input: ["text"], contextWindow: 200000, maxTokens: 1024,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+};
+const fixtureUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+const initialHistory = () => [{ role: "user", content: "Continue the approved work.", timestamp: 1 }];
+function appendToolTurn(base, n, name = "read", args = {}, result = [{ type: "text", text: "Fixture result " + n }]) {
+  base.push({ ...fixtureModel, role: "assistant", model: fixtureModel.id, content: [{ type: "toolCall", id: "call-" + n, name, arguments: args }],
+    usage: fixtureUsage, stopReason: "toolUse", timestamp: 2 * n + 2 });
+  base.push({ role: "toolResult", toolCallId: "call-" + n, toolName: name, content: result, isError: false, timestamp: 2 * n + 3 });
+}
+async function goalContext(h, base) {
+  let messages = base;
+  for (const handler of h.handlers.get("context") ?? []) messages = (await handler({ messages }, h.ctx))?.messages ?? messages;
+  return messages;
+}
+async function wirePayload(messages, api = "openai-responses", h) {
+  let payload; let fetches = 0;
+  const model = { ...fixtureModel, api, provider: api === "openai-codex-responses" ? "openai-codex" : "openai" };
+  const claims = Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "fixture-account" } })).toString("base64url");
+  const output = await providerApis[api].stream(model, { messages: convertToLlm(messages) }, {
+    apiKey: api === "openai-codex-responses" ? "fixture." + claims + ".fixture" : "sk-fixture",
+    sessionId: "fixture-session", transport: "sse", maxRetries: 0,
+    fetch: async () => { fetches++; throw new Error("Network requests are forbidden in goal tests"); },
+    onPayload: async value => {
+      for (const handler of h?.handlers.get("before_provider_request") ?? []) value = (await handler({ payload: value }, h.ctx)) ?? value;
+      payload = structuredClone(value);
+      throw new Error("Captured goal fixture payload");
+    },
+  }).result();
+  assert.equal(fetches, 0, "Payload capture must run before HTTP");
+  assert.ok(payload, output.errorMessage);
+  return payload;
+}
+function assertWirePrefix(previous, next) {
+  assert.deepEqual(next.input.slice(0, previous.input.length), previous.input, "The full previous provider input must remain a prefix");
+  assert.deepEqual({ ...next, input: [] }, { ...previous, input: [] }, "Other request fields must remain stable");
+}
+const liveText = messages => messages.filter(message => message.role === "custom").map(message => message.content).join("\n");
+
+test("task progress changes independently of standing goal requirements", () => {
+  const goal = { ...createGoal({ objective: "Keep every acceptance requirement.", autoContinue: false }),
+    verificationContract: "Acceptance tests pass.", taskList: { tasks: [{ id: "build", title: "Build", status: "pending" }], blockCompletion: true } };
+  const first = goalPromptParts(goal);
+  const started = goalPromptParts({ ...goal, currentTaskId: "build" });
+  const done = goalPromptParts({ ...goal, taskList: { ...goal.taskList, tasks: [{ ...goal.taskList.tasks[0], status: "complete" }] } });
+  assert.equal(started.state, first.state);
+  assert.equal(done.state, first.state);
+  assert.match(started.progress, /Current: build/);
+  assert.match(done.progress, new RegExp("1/1 tasks complete"));
+  assert.match(first.state, /Acceptance tests pass/);
+  assert.match(goalPrompt(goal), /TASK LIST/);
+});
+
+for (const api of Object.keys(providerApis)) {
+  test(api + " keeps the request prefix across start, completion, and batch task updates", async () => {
+    const h = await harness(); await h.call("create_goal", { objective });
+    const base = initialHistory();
+    let previous = await wirePayload(await goalContext(h, base), api, h);
+    const updates = [
+      { task_id: "step-1", status: "start" },
+      { task_id: "step-1", status: "complete" },
+      { updates: [{ task_id: "step-2", status: "start" }, { task_id: "step-2", status: "complete" }, { task_id: "step-3", status: "start" }] },
+    ];
+    for (const [i, args] of updates.entries()) {
+      const result = await h.call("update_goal_task", args);
+      appendToolTurn(base, i, "update_goal_task", args, result.content);
+      const next = await wirePayload(await goalContext(h, base), api, h);
+      assertWirePrefix(previous, next); previous = next;
+    }
+    const current = await goalContext(h, base);
+    assert.match(current.filter(message => message.role === "custom" && message.content.startsWith("[GOAL TASK SNAPSHOT")).at(-1).content, new RegExp("2/3 tasks complete"));
+    assert.equal(h.core.state.goal.currentTaskId, "step-3");
+  });
+}
+
+test("long work loops retain the wire prefix without accumulating per-turn counters", async () => {
+  const h = await harness(); await h.call("create_goal", { objective: "Inspect the approved artifact." });
+  h.core.beginAccounting();
+  const base = initialHistory();
+  const first = await goalContext(h, base);
+  let previous = await wirePayload(first);
+  for (let i = 0; i < 80; i++) {
+    h.core.accountProgress(h.ctx, { completedTurnTokens: 1 });
+    h.ctx.getContextUsage = () => ({ tokens: 1000 + i, contextWindow: 200000 });
+    appendToolTurn(base, i);
+    const current = await goalContext(h, base);
+    const next = await wirePayload(current);
+    assertWirePrefix(previous, next); previous = next;
+    assert.equal(current.filter(message => message.role === "custom").length, first.filter(message => message.role === "custom").length);
+  }
+  const result = await h.call("get_goal");
+  assert.equal(result.details.goal.usage.tokensUsed, 80, "Inspection must expose exact current usage");
+});
+
+for (const bytes of [16, 600]) {
+  test("counter retention stays bounded without resetting history (snapshot bytes=" + bytes + ")", async () => {
+    const retention = new LiveTailRetention(); const base = initialHistory();
+    let previous;
+    for (let i = 0; i < 80; i++) {
+      const result = retention.apply("bounded", base, { state: "Standing requirements", progress: "Current tasks",
+        counters: "Goal snapshot: " + i + " ".repeat(bytes), counterKey: String(i) });
+      const next = await wirePayload(result.messages);
+      if (previous) assertWirePrefix(previous, next);
+      previous = next;
+      appendToolTurn(base, i);
+    }
+    const counters = retention.contents("bounded").filter(text => text.startsWith("Goal snapshot:"));
+    assert.ok(counters.length <= MAX_RETAINED_LIVE_TAILS);
+    assert.ok(counters.reduce((sum, text) => sum + Buffer.byteLength(text), 0) <= MAX_RETAINED_COUNTER_BYTES);
+  });
+}
+
+test("budget milestones refresh snapshots while accounting still enforces the exact cap", async () => {
+  const h = await harness(); await h.call("create_goal", { objective: "Perform the approved work.", token_budget: 1000 });
+  h.core.beginAccounting(); const base = initialHistory();
+  let previous = await wirePayload(await goalContext(h, base));
+  for (const [i, charge] of [500, 250, 150].entries()) {
+    h.core.accountProgress(h.ctx, { completedTurnTokens: charge }); appendToolTurn(base, i);
+    const messages = await goalContext(h, base);
+    const current = await wirePayload(messages); assertWirePrefix(previous, current); previous = current;
+    assert.match(messages.at(-1).content, new RegExp(h.core.state.goal.usage.tokensUsed + " tokens"));
+  }
+  h.core.accountProgress(h.ctx, { completedTurnTokens: 100 });
+  assert.equal(h.core.state.goal.status, "budget_limited");
+  const current = liveText(await goalContext(h, base));
+  assert.match(current, /BUDGET LIMITED/); assert.doesNotMatch(current, /PI GOAL ACTIVE|TASK LIST/);
+});
+
+for (const change of ["pause", "clear", "switch", "objective", "contract"]) {
+  test("lifecycle change replaces stale goal requirements: " + change, async () => {
+    const h = await harness(); const goal = h.seed(); const base = initialHistory();
+    await goalContext(h, base); appendToolTurn(base, 1);
+    if (change === "pause") h.core.pauseActiveGoal(h.ctx);
+    if (change === "clear") await h.clear();
+    if (change === "switch") await h.call("create_goal", { objective: "A newly approved independent objective." });
+    if (change === "objective" || change === "contract") {
+      h.core.goalService.apply(h.ctx, { mutate: g => ({ ...g,
+        ...(change === "objective" ? { objective: "Updated approved objective." } : { verificationContract: "New mandatory acceptance criterion." }),
+      }) });
+    }
+    const text = liveText(await goalContext(h, base));
+    if (change === "pause") { assert.match(text, /PI GOAL PAUSED/); assert.doesNotMatch(text, /PI GOAL ACTIVE/); }
+    if (change === "clear") assert.equal(text, "");
+    if (change === "switch") { assert.doesNotMatch(text, new RegExp(goal.id)); assert.match(text, /newly approved independent/); }
+    if (change === "objective") { assert.doesNotMatch(text, /Fixture objective/); assert.match(text, /Updated approved objective/); }
+    if (change === "contract") assert.match(text, /New mandatory acceptance criterion/);
+  });
+}
+
+test("new task snapshots explicitly replace removed focus, contracts, and completion gates", () => {
+  const goal = { ...createGoal({ objective: "Complete the approved work.", autoContinue: false }), currentTaskId: "build",
+    taskList: { tasks: [{ id: "build", title: "Build", status: "pending", verificationContract: "Old task contract" }], blockCompletion: true } };
+  const next = goalPromptParts({ ...goal, currentTaskId: undefined, taskList: undefined });
+  assert.match(next.progress, /supersedes/i);
+  assert.match(next.progress, /no task list/i);
+  assert.doesNotMatch(next.progress, /Old task contract|Current:|TASK GATE/);
+});
+
+test("compaction and middle-history edits rebuild tails against the new history", () => {
+  for (const compact of [false, true]) {
+    const retention = new LiveTailRetention(); const base = initialHistory();
+    retention.apply("rewrite", base, { state: "Standing requirements", progress: "Old progress" });
+    appendToolTurn(base, 0);
+    retention.apply("rewrite", base, { state: "Standing requirements", progress: "Prior progress" });
+    const changed = compact ? [{ role: "user", content: "Compacted artifact summary.", timestamp: 9 }] : [{ ...base[0], content: "Edited history." }, ...base.slice(1)];
+    const result = retention.apply("rewrite", changed, { state: "Standing requirements", progress: "Current progress" });
+    assert.deepEqual(result.messages.slice(0, changed.length), changed);
+    assert.doesNotMatch(liveText(result.messages), /Old progress|Prior progress/);
+    assert.match(liveText(result.messages), /Current progress/);
+  }
+});
+
+test("a newly arrived tool result keeps its call adjacent when old anchors become unsafe", () => {
+  const retention = new LiveTailRetention(); const base = initialHistory(); appendToolTurn(base, 1);
+  const result = base.pop(); retention.apply("tool-pair", base, { state: "Standing requirements", progress: "Old progress" });
+  base.push(result);
+  const current = retention.apply("tool-pair", base, { state: "Standing requirements", progress: "Current progress" });
+  assert.deepEqual(current.messages.slice(0, base.length), base);
+  assert.equal(current.messages[base.length - 1].role, "toolResult");
+  assert.doesNotMatch(liveText(current.messages), /Old progress/);
+});
+
+
+test("a task checkpoint reports the latest observed usage even after quiet requests", () => {
+  const retention = new LiveTailRetention(); const base = initialHistory();
+  const first = { state: "Standing requirements", progress: "First task", counters: "Goal snapshot: 1 tokens", counterKey: "0" };
+  retention.apply("checkpoint", base, first); appendToolTurn(base, 0);
+  retention.apply("checkpoint", base, { ...first, counters: "Goal snapshot: 2 tokens" }); appendToolTurn(base, 1);
+  const current = retention.apply("checkpoint", base, { ...first, progress: "Second task", counters: "Goal snapshot: 2 tokens" });
+  assert.equal(current.messages.at(-1).content, "Goal snapshot: 2 tokens");
+  assert.deepEqual(retention.apply("checkpoint", base, { ...first, progress: "Second task", counters: "Goal snapshot: 2 tokens" }).messages, current.messages);
+});
+
+test("removing a wait instruction replaces it instead of replaying a cancelled order", () => {
+  const retention = new LiveTailRetention(); const base = initialHistory();
+  const goal = { ...createGoal({ objective: "Perform the approved work.", autoContinue: false }), scheduler: {
+    version: 1, owner: "fixture", generation: "fixture", phase: "waiting", used: 1, repairUsed: false,
+    decision: { kind: "wait" }, wait: { id: "wait-1", token: "fixture", reason: "Wait for the external fixture", deadline: 2000000000000 },
+  } };
+  const previous = goalPromptParts(goal);
+  assert.match(previous.state, /Waiting: Wait for the external fixture/);
+  retention.apply("wait", base, previous); appendToolTurn(base, 0);
+  const current = retention.apply("wait", base, goalPromptParts({ ...goal, scheduler: { ...goal.scheduler, phase: "idle", decision: undefined, wait: undefined } }));
+  assert.doesNotMatch(liveText(current.messages), /Waiting:|wait-1|Wait for the external fixture/);
+});
+
+test("task snapshot overflow rebuilds bounded history with the current authoritative state", () => {
+  const retention = new LiveTailRetention(); const base = initialHistory();
+  let current;
+  for (let i = 0; i < 2 * MAX_RETAINED_LIVE_TAILS; i++) {
+    current = retention.apply("task-bound", base, { state: "Standing requirements", progress: "Task checkpoint " + i });
+    assert.ok(current.messages.length - base.length <= MAX_RETAINED_LIVE_TAILS);
+    assert.equal(current.messages.at(-1).content, "Task checkpoint " + i);
+    appendToolTurn(base, i);
+  }
+  assert.ok(retention.contents("task-bound").length <= MAX_RETAINED_LIVE_TAILS);
+});

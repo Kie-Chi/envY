@@ -133,3 +133,15 @@ def cmd_network(
 ):
     """Probe evaluated mirror endpoints without changing network configuration."""
     _run(["network"], None, strict=strict, json_output=json_output)
+
+
+@app.command(name="agents")
+def cmd_agents(
+    only: list[str] = typer.Option(
+        None, "--only", "-o", help=ONLY_HELP, autocompletion=complete_doctor_selection,
+    ),
+    strict: bool = typer.Option(False, "--strict", help="Exit non-zero when warnings are present."),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+):
+    """Check managed Pi links, MCP executables, and offline extension loading."""
+    _run(["agents"], only, strict=strict, json_output=json_output)

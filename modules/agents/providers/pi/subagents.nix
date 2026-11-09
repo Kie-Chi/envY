@@ -15,11 +15,17 @@ let
       substituteInPlace src/session/model-resolver.ts --replace-fail \
         'const bestMatch = findBestFuzzyMatch(all, input.toLowerCase());' \
         'const bestMatch = slashIdx === -1 ? findBestFuzzyMatch(all, input.toLowerCase()) : undefined;'
+      # Pi exempts MCP tools from its allowlist unless it contains an mcp__
+      # entry. This impossible tool name makes a child with no MCP capability
+      # reject all MCP tools, including extension registrations after binding.
+      substituteInPlace src/lifecycle/create-subagent-session.ts --replace-fail \
+        'tools: [...toolNames, ...childTools.map((tool) => tool.name)],' \
+        'tools: [...toolNames, "mcp__", ...childTools.map((tool) => tool.name)],'
     '';
   };
-  # Built-in Explore pins an Anthropic model and both read-only defaults
-  # expect bash; these overrides inherit the caller's model and use codemode.
-  agents = [ "Explore" "Plan" ];
+  # Explore and Plan retain their read-only roles without pinned models or bash.
+  # Research and review roles inherit the caller's model and narrow MCP access.
+  agents = [ "Explore" "Plan" "Researcher" "NixReviewer" "Reviewer" ];
   link = target: source: lib.nameValuePair target { inherit source; };
 in
 {

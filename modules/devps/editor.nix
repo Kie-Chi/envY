@@ -47,6 +47,7 @@
   # Vim config files (for server deployment / fallback via plain Vim)
   home.file = {
     ".vim/vimrc".source = ../../files/editor/vim/vimrc;
+    ".vim/colors/tokyonight.vim".source = pkgs.vimPlugins.tokyonight-nvim.src + "/extras/vim/colors/tokyonight-night.vim";
     ".vim/layers/edit-essential.vim".source = ../../files/editor/vim/layers/edit-essential.vim;
     ".vim/layers/lang.vim".source = ../../files/editor/vim/layers/lang.vim;
     ".vim/layers/theme.vim".source = ../../files/editor/vim/layers/theme.vim;

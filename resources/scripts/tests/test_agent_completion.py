@@ -84,7 +84,9 @@ class AgentCompletionTests(unittest.TestCase):
                     self.assertEqual(self.complete(group, "set", "value", prefix, path=path), expected)
 
     def test_show_includes_inherited_but_remove_only_suggests_managed_agents(self):
-        self.assertEqual(self.complete("agent", "show", "name", ""), ["inherited", "local-pi", "other-pi"])
+        for group in ("agent", "agents", "ag"):
+            for command in ("show", "sh"):
+                self.assertEqual(self.complete(group, command, "name", ""), ["inherited", "local-pi", "other-pi"])
         for command in ("remove", "rm"):
             self.assertEqual(self.complete("agent", command, "name", ""), ["local-pi"])
 
@@ -125,6 +127,35 @@ class AgentCompletionTests(unittest.TestCase):
         self.assertEqual(self.complete("agent", "set", "path", "envy.mirrors."), [])
         with patch.object(agent, "_read_values", side_effect=OSError("missing machine")):
             self.assertEqual(self.complete("agent", "rm", "name", ""), [])
+
+    def test_short_command_names_are_offered_by_completion(self):
+        for args, expected in (("envy ag", "ag"), ("envy ag sh", "sh")):
+            result = CliRunner().invoke(cli, [], prog_name="envy", env={
+                "_ENVY_COMPLETE": "complete_zsh", "_TYPER_COMPLETE_ARGS": args,
+            })
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertIn(f'"{expected}":', result.output)
+
+    def test_show_options_and_aliases_complete_through_shell_protocols(self):
+        for shell in ("bash", "zsh"):
+            for group in ("agent", "agents", "ag"):
+                for command_name in ("show", "sh"):
+                    for suffix, expected in (
+                        ("local-pi --d", "--detail"), ("local-pi -d", "-d"), ("l", "local-pi"),
+                    ):
+                        args = f"envy {group} {command_name} {suffix}"
+                        environment = {"_ENVY_COMPLETE": f"complete_{shell}"}
+                        if shell == "bash":
+                            environment.update(COMP_WORDS=args, COMP_CWORD=str(len(args.split()) - 1))
+                        else:
+                            environment["_TYPER_COMPLETE_ARGS"] = args
+                        with self.subTest(shell=shell, group=group, command=command_name, suffix=suffix):
+                            result = CliRunner().invoke(cli, [], prog_name="envy", env=environment)
+                            self.assertEqual(result.exit_code, 0, result.output)
+                            self.assertIn(expected, result.output)
+                            if suffix.endswith("--d"):
+                                self.assertIn("--details", result.output)
+                            self.assertNotIn("private.example", result.output)
 
     def test_real_bash_and_zsh_protocols_complete_without_executing_set(self):
         for shell, args in (("bash", "envy agent set envy.agents.local-pi.moreThinking t"),

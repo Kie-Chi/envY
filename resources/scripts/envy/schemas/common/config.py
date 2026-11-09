@@ -32,6 +32,11 @@ class FieldDef:
 
 
 COMMON_MACHINE_FIELDS = [
+    FieldDef(group="STORAGE", dest="machine", path="envy.storage.mode",
+             prompt="Storage lifecycle mode", default_fn=lambda: "manual",
+             choices=["manual", "report", "auto"]),
+    FieldDef(group="STORAGE", dest="machine", path="envy.storage.archive.repository",
+             prompt="Restic SFTP or mounted repository", default_fn=lambda: ""),
     FieldDef(group="BASE", dest="machine", path="envy.user.name", prompt="System username",
              default_fn=lambda: os.getenv("USER", "chi"), validators=[non_empty], required=True),
     FieldDef(group="BASE", dest="machine", path="envy.user.home", prompt="Home directory",
@@ -60,6 +65,9 @@ COMMON_MACHINE_FIELDS = [
 ]
 
 COMMON_SECRET_FIELDS = [
+    FieldDef(group="SECRET", dest="secret", yaml_path="storage/archive/password",
+             path="storage_archive_password", prompt="Restic repository password",
+             default_fn=lambda: ""),
     FieldDef(group="SECRET", dest="secret", yaml_path="home/passwd", path="home_passwd",
              prompt="System password", default_fn=lambda: os.getenv("USER", ""),
              validators=[non_empty], required=True),

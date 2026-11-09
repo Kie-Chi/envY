@@ -117,7 +117,7 @@ let
   };
 in
 {
-  imports = [ ./extensions.nix ./subagents.nix ];
+  imports = [ ./extensions.nix ./subagents.nix ./diagnostics.nix ];
 
   config = {
     sops.templates.${templateNameFor "pi"}.content = templateFor defaultAgent

@@ -10,7 +10,7 @@ let
 
 in
 {
-  imports = [ ./source-options.nix ];
+  imports = [ ./source-options.nix ../storage/options.nix ];
   options.envy = {
     machine = {
       id = mkOption {

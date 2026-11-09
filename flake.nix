@@ -372,6 +372,11 @@
           piPackage = inputs.pi.packages.${system}.default;
         };
 
+      mkGithubActionsCheck = system:
+        import ./checks/github-actions.nix {
+          pkgs = nixpkgs.legacyPackages.${system};
+        };
+
       mkEnvyPiGoalCheck = system:
         import ./modules/agents/providers/pi/goal.nix {
           inherit lib;
@@ -724,6 +729,7 @@
       checks.aarch64-darwin.envy-shell-checks = mkEnvyShellCheck "aarch64-darwin";
       checks.aarch64-darwin.secret-safety = mkSecretSafetyCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-lint = mkEnvyLintCheck "aarch64-darwin";
+      checks.aarch64-darwin.envy-github-actions = mkGithubActionsCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-agent-tests = mkEnvyAgentCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-queue-tests = mkEnvyPiQueueCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-goal-tests = mkEnvyPiGoalCheck "aarch64-darwin";
@@ -741,6 +747,7 @@
       checks.x86_64-linux.envy-shell-checks = mkEnvyShellCheck "x86_64-linux";
       checks.x86_64-linux.secret-safety = mkSecretSafetyCheck "x86_64-linux";
       checks.x86_64-linux.envy-lint = mkEnvyLintCheck "x86_64-linux";
+      checks.x86_64-linux.envy-github-actions = mkGithubActionsCheck "x86_64-linux";
       checks.x86_64-linux.envy-agent-tests = mkEnvyAgentCheck "x86_64-linux";
       checks.x86_64-linux.pi-queue-tests = mkEnvyPiQueueCheck "x86_64-linux";
       checks.x86_64-linux.pi-goal-tests = mkEnvyPiGoalCheck "x86_64-linux";

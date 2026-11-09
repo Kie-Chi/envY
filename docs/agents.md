@@ -127,6 +127,8 @@ envy.agents.pi.models = [
 
 真实模型评估使用供应方额度，不在默认 CI 中调用；案例和离线加载测试分开报告。本轮评估的会话收据放在临时证据目录，不把用户会话或模型输出纳入声明式配置。
 
+`envy-github-actions` 使用锁定 nixpkgs 的 zizmor，隔离 HOME/缓存并以 `--offline --no-config --strict-collection` 审计 workflow；不使用凭据或 `--fix`。两平台有 flake check，CI 构建对应入口。Action 使用现有版本对应的完整 SHA，checkout 关闭凭据持久化。
+
 ## 配置边界
 
 machine 文件只提供非敏感 endpoint、model、adapter 和 skill selection。API key 通过 sops credential 引用，不能进入 Nix 字符串或 agent 配置明文。provider wrapper 可以生成稳定命令，但不管理应用-owned 数据。

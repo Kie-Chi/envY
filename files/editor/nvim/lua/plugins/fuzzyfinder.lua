@@ -14,10 +14,10 @@ return {
     vim.cmd.nnoremenu([[PopUp.Show\ References]], ":Telescope lsp_references<CR>")
 
     return {
-      { '<Leader>ff', builtin.find_files },
-      { '<Leader>fg', builtin.live_grep },
-      { '<Leader>fb', builtin.buffers },
-      { '<Leader>fs', builtin.lsp_workspace_symbols },
+      { '<Leader>ff', builtin.find_files, desc = 'Find files' },
+      { '<Leader>fg', builtin.live_grep, desc = 'Search text' },
+      { '<Leader>fb', builtin.buffers, desc = 'Find buffers' },
+      { '<Leader>fs', builtin.lsp_workspace_symbols, desc = 'Find workspace symbols' },
       { '<Leader>R',  builtin.resume },
       { 'gi',         builtin.lsp_implementations,  desc = 'Goto implementations' },
       { 'gr',         builtin.lsp_references,       desc = 'Find references' },

@@ -42,6 +42,7 @@ class AgentDoctorTests(unittest.TestCase):
         ]}
         (self.agent / "extensions").mkdir()
         (self.agent / "extensions/envy-test.ts").symlink_to(self.extension)
+        self.enterContext(patch.object(agents, "_skill_checks", return_value=[]))
         self.enterContext(patch.object(Path, "home", return_value=self.home))
         self.enterContext(patch.object(agents, "app_policy", return_value=(True, "")))
         self.enterContext(patch.object(agents, "_metadata", side_effect=lambda _: copy.deepcopy(self.data)))
@@ -149,6 +150,88 @@ class AgentDoctorTests(unittest.TestCase):
         with patch.dict(runner.CHECKS, {"agents": agents.run_checks}), patch.object(runner.config, "run_checks", side_effect=AssertionError):
             results = runner.run_sections(["agents"], ["agents"], log_progress=False)
         self.assertTrue(results)
+
+
+class ManagedSkillDoctorTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="envy-skill-doctor-test-")
+        self.addCleanup(temporary.cleanup)
+        self.home = Path(temporary.name).resolve()
+        self.source = self.home / "source"
+        self.source.mkdir()
+        (self.source / "SKILL.md").write_text("fixture")
+        self.metadata = self.home / ".config/envy/agent-skills.json"
+        self.metadata.parent.mkdir(parents=True)
+        self.metadata.write_text("{}")
+        self.data = {"schemaVersion": 1, "skills": [
+            {"name": "fixture", "adapter": adapter, "target": f".{adapter}/skills/fixture",
+             "source": str(self.source)} for adapter in ("claude", "codex")
+        ]}
+        for entry in self.data["skills"]:
+            link = self.home / entry["target"]
+            link.parent.mkdir(parents=True)
+            link.symlink_to(self.source)
+
+    def test_non_pi_checks_links_without_probe_or_configuration_reads(self):
+        with patch.object(Path, "home", return_value=self.home), patch.object(agents, "app_policy", return_value=(False, "excluded")), patch.object(agents, "_skill_metadata", return_value=self.data), patch.object(agents, "_probe", side_effect=AssertionError), patch.object(Path, "read_text", side_effect=AssertionError):
+            results = agents.run_checks()
+        self.assertEqual(runner.exit_code(results, strict=True), 0)
+        self.assertEqual(len([r for r in results if "skills:" in r.name]), 2)
+
+    def test_missing_and_wrong_sources(self):
+        with patch.object(agents, "_skill_metadata", return_value=self.data):
+            link = self.home / self.data["skills"][0]["target"]
+            link.unlink()
+            self.assertEqual(runner.exit_code(agents._skill_checks(self.home)), 1)
+            wrong = self.home / "wrong"
+            wrong.mkdir()
+            (wrong / "SKILL.md").write_text("fixture")
+            link.symlink_to(wrong)
+            self.assertEqual(runner.exit_code(agents._skill_checks(self.home)), 1)
+
+    def test_recursive_skill_marker_and_non_pi_json(self):
+        entry = self.data["skills"][0]
+        entry["recursive"] = True
+        link = self.home / entry["target"]
+        link.unlink()
+        link.mkdir()
+        (link / "SKILL.md").symlink_to(self.source / "SKILL.md")
+        with patch.object(Path, "home", return_value=self.home), patch.object(agents, "app_policy", return_value=(False, "excluded")), patch.object(agents, "_skill_metadata", return_value=self.data), patch.object(agents, "_probe", side_effect=AssertionError):
+            result = CliRunner().invoke(app, ["agents", "--json"])
+            self.assertEqual(result.exit_code, 0, result.output)
+            payload = json.loads(result.output)
+            self.assertEqual(payload["schemaVersion"], 1)
+            self.assertEqual(payload["summary"]["error"], 0)
+            (link / "SKILL.md").unlink()
+            (link / "SKILL.md").write_text("fixture")
+            result = CliRunner().invoke(app, ["agents", "--json"])
+            self.assertEqual(result.exit_code, 1)
+            self.assertEqual(json.loads(result.output)["summary"]["error"], 1)
+
+    def test_metadata_missing_and_invalid_are_safe(self):
+        self.metadata.unlink()
+        self.assertEqual(agents._skill_checks(self.home)[0].status, "warn")
+        self.metadata.symlink_to(self.metadata.name)
+        with patch.object(agents, "_skill_metadata", side_effect=RuntimeError("private-value")):
+            results = agents._skill_checks(self.home)
+        self.assertEqual(results[0].status, "error")
+        self.assertNotIn("private-value", json.dumps([r.to_dict() for r in results]))
+
+    def test_metadata_validation_rejects_escape_duplicate_and_mutable_source(self):
+        self.metadata.chmod(0o444)
+        def store(value, **kwargs):
+            return Path(value)
+        with patch.object(agents, "_store_path", side_effect=store), patch.object(agents, "_json", side_effect=lambda _: copy.deepcopy(self.data)):
+            self.assertEqual(len(agents._skill_metadata(self.metadata)["skills"]), 2)
+            self.data["skills"].append(copy.deepcopy(self.data["skills"][0]))
+            with self.assertRaisesRegex(ValueError, "target"):
+                agents._skill_metadata(self.metadata)
+            self.data["skills"].pop()
+            self.data["skills"][0]["target"] = ".claude/skills/../../auth.json"
+            with self.assertRaisesRegex(ValueError, "target"):
+                agents._skill_metadata(self.metadata)
+        with self.assertRaises(ValueError):
+            agents._skill_metadata(self.metadata)
 
 
 class AgentMetadataTests(unittest.TestCase):

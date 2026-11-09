@@ -8,6 +8,7 @@ envY 的 modules/agents 管理 agent 安装、provider wrapper、skill catalog �
 - defaults.nix：共享的 endpoint、credential、agent 实例默认值与 active skills。
 - options.nix：`envy.agents`、`envy.agentProfiles` 与 amux 选项。
 - runtime-files.nix：把 additionalSettings 与 adapter 声明的 runtime 文件合并进应用自有配置。
+- diagnostics.nix：从已选 skills 和最终 Home Manager source 生成 Claude/Codex 的只读链接契约，共享 Claude 目录按目标去重。
 - wrapper.nix、prompts.nix：provider 共用的 wrapper 生成、endpoint/credential 解析、别名和 system prompt 拼接；`tests/wrappers.nix` 用假 agent 验证 env 文件加载次数、覆盖顺序和参数顺序。
 - providers/：claude.nix、codex.nix、generic.nix 与 pi/。pi/default.nix 生成 wrapper 和 models.json；pi/package.nix 给 Pi 打补丁；pi/extensions.nix 链接 Pi 扩展；pi/subagents.nix 管理 pi-subagents 与角色；pi/diagnostics.nix 生成只含非敏感资源来源的运行契约，供 Agent Doctor 比对实际部署。官方示例来自锁定的 Pi source；第三方 npm 包（goal-x、btw、pi-subagents、pi-queue-steer-factory）由 pi/npm-extension.nix 按固定版本和 registry sha512 解包，链接为 `~/.pi/agent/extensions/envy-<name>`。
 - skills/：default.nix 按 adapter 解析 active skill 并建立 Home Manager discovery links；catalog.nix 是 skill 名称到上游目录的映射；read/、browser/ 是本仓库自带的 skill。
@@ -114,7 +115,7 @@ envy.agents.pi.models = [
 
 ### Agent 运行检查与维护 skills
 
-`envy doctor agents` 比对 `.pi/agent/envy-runtime.json` 中 envY 管理的扩展、角色、skills 和 MCP 启动命令。契约不包含密钥或应用状态；即时配置覆盖只显示是否存在及 apply 的清除行为。扩展探针在临时目录调用真实 Pi 的发现流程，禁止网络和子进程，不读取用户认证或会话；cron 工厂会启动 daemon，因此仅报告跳过，不把它记作加载通过。没有明确静态最低版本声明时报告未知兼容性。
+`envy doctor agents` 比对 `.config/envy/agent-skills.json` 中 Claude/Codex 的托管 skills，以及 `.pi/agent/envy-runtime.json` 中 Pi 的扩展、角色、skills 和 MCP 启动命令。两份契约均来自最终声明，不包含密钥或应用状态；排除 Pi 不跳过公共 skill 链接检查。插件配置声明不作为已安装证据，插件安装状态不在此检查范围。即时配置覆盖只显示是否存在及 apply 的清除行为。扩展探针在临时目录调用真实 Pi 的发现流程，禁止网络和子进程，不读取用户认证或会话；cron 工厂会启动 daemon，因此仅报告跳过，不把它记作加载通过。没有明确静态最低版本声明时报告未知兼容性。
 
 `envy-maintain` 按 Nix、Python、Rust 和 JSON 契约改动选择已有检查；`pi-maintain` 指导锁定版本、运行依赖、父子工具和补丁回归。两个 skills 不自动 apply、创建目标或提交。skill 的 source 来自锁定 flake input 或仓库内目录；catalog 校验每个选中 source 都有 SKILL.md，并检查 target 兼容性。claude-code 与 claude 共用发现目录。
 

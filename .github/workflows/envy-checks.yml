@@ -28,17 +28,19 @@ jobs:
             system: x86_64-linux
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       # The Determinate wrapper always attempts a FlakeHub login.  This
       # repository uses public GitHub inputs and does not need that service,
       # so install regular Nix explicitly and keep authentication out of CI.
-      - uses: DeterminateSystems/nix-installer-action@v17
+      - uses: DeterminateSystems/nix-installer-action@21a544727d0c62386e78b4befe52d19ad12692e3 # v17
         with:
           determinate: false
       # FlakeHub cache requires the repository to be registered with FlakeHub
       # and fails closed for ordinary GitHub repositories.  Magic Nix Cache
       # uses the GitHub Actions cache and does not require that account.
-      - uses: DeterminateSystems/magic-nix-cache-action@v9
+      - uses: DeterminateSystems/magic-nix-cache-action@6221693898146dc97e38ad0e013488a16477a4c4 # v9
         if: runner.os != 'macOS'
         with:
           use-flakehub: disabled
@@ -47,14 +49,22 @@ jobs:
         run: nix flake check path:. --no-build
       - name: Run Envy Python tests
         run: nix build "path:.#checks.${{ matrix.system }}.envy-python-tests"
+      - name: Run storage lifecycle integration tests
+        run: nix build --no-link "path:.#checks.${{ matrix.system }}.envy-storage-tests"
       - name: Run Rust TUI tests
         run: nix build "path:.#checks.${{ matrix.system }}.envy-tui-tests"
       - name: Run shell checks
         run: nix build "path:.#checks.${{ matrix.system }}.envy-shell-checks"
       - name: Lint Python and Nix
         run: nix build "path:.#checks.${{ matrix.system }}.envy-lint"
+      - name: Audit GitHub Actions offline
+        run: nix build --no-link "path:.#checks.${{ matrix.system }}.envy-github-actions"
       - name: Run agent tool tests
         run: nix build "path:.#checks.${{ matrix.system }}.envy-agent-tests"
+      - name: Run Pi powerline footer regressions
+        run: nix build --no-link "path:.#checks.${{ matrix.system }}.pi-powerline-tests"
+      - name: Run Pi delegated approval regressions
+        run: nix build --no-link "path:.#checks.${{ matrix.system }}.pi-auto-assigned-tests"
       - name: Run Pi queue regressions
         run: nix build --no-link "path:.#checks.${{ matrix.system }}.pi-queue-tests"
       - name: Run Pi goal regressions

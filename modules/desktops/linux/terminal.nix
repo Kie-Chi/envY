@@ -5,30 +5,35 @@ let
   desktop = config.envy.linux.desktop;
   enabled = config.envy.linux.option == "desktop"
     && (desktop == "gnome" || desktop == "all");
+  alacrittySelected = builtins.elem "alacritty" (map lib.getName config.envy.software.nix.packages.effective);
+  palette = import ../../cores/tokyo-night.nix;
 in
 {
-  config = lib.mkIf enabled {
-    envy.software.nix.packages.include = with pkgs; [ tilix ];
-    envy.software.nix.packages.references.tilix = "nix:tilix";
+  config = lib.mkMerge [
+    (lib.mkIf enabled {
+      envy.software.nix.packages.include = with pkgs; [ tilix ];
+      envy.software.nix.packages.references.tilix = "nix:tilix";
 
-    dconf.settings = {
-      "com/gexperts/Tilix" = {
-        default-profile = profile-uuid;
-      };
+      dconf.settings = {
+        "com/gexperts/Tilix" = {
+          default-profile = profile-uuid;
+        };
 
-      "com/gexperts/Tilix/profiles/${profile-uuid}" = {
-        use-system-font = false;
-        font = "Maple Mono NF CN 12";
-        visible-name = "Default (Dracula)";
-        background-color = "#282A36";
-        foreground-color = "#F8F8F2";
-        cursor-background-color = "#F8F8F2";
-        palette = [
-          "#21222C" "#FF5555" "#50FA7B" "#F1FA8C" "#BD93F9" "#FF79C6" "#8BE9FD" "#F8F8F2"
-          "#6272A4" "#FF6E6E" "#69FF94" "#FFFFA5" "#D6ACFF" "#FF92DF" "#A4FFFF" "#FFFFFF"
-        ];
-        use-theme-colors = false;
+        "com/gexperts/Tilix/profiles/${profile-uuid}" = {
+          use-system-font = false;
+          font = "Maple Mono NF CN 12";
+          visible-name = "Default (Tokyo Night)";
+          background-color = palette.background;
+          foreground-color = palette.foreground;
+          cursor-background-color = palette.foreground;
+          palette = palette.ansi;
+          use-theme-colors = false;
+        };
       };
-    };
-  };
+    })
+    (lib.mkIf alacrittySelected {
+      xdg.configFile."alacritty/alacritty.toml".source =
+        pkgs.vimPlugins.tokyonight-nvim.src + "/extras/alacritty/tokyonight_night.toml";
+    })
+  ];
 }

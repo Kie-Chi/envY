@@ -10,6 +10,7 @@ let
   patches = [
     ../../../../files/agents/patches/pi-anthropic-sse-crlf.patch
     ../../../../files/agents/patches/pi-retry-patterns.patch
+    ../../../../files/agents/patches/pi-before-settle-abort.patch
   ]
     ++ lib.optional moreThinking ../../../../files/agents/patches/pi-ultra-thinking.patch;
 in

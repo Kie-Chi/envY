@@ -1,4 +1,4 @@
-"""Offline diagnostics for the deployed, envY-managed Pi runtime."""
+"""Offline diagnostics for deployed envY-managed agent resources."""
 
 import json
 import os
@@ -83,6 +83,63 @@ def _metadata(path: Path) -> dict:
     return data
 
 
+def _skill_metadata(path: Path) -> dict:
+    source = _store_path(str(path))
+    if source.stat().st_mode & 0o222:
+        raise ValueError("mutable metadata")
+    data = _json(source)
+    if data.get("schemaVersion") != 1:
+        raise ValueError("unsupported metadata schema")
+    entries = data["skills"]
+    if not isinstance(entries, list) or len(entries) > 512:
+        raise ValueError("invalid skills")
+    targets = set()
+    for entry in entries:
+        name = entry["name"]
+        adapter = entry["adapter"]
+        prefix = {"claude": ".claude/skills", "codex": ".codex/skills"}.get(adapter)
+        if not isinstance(name, str) or not NAME.fullmatch(name) or prefix is None:
+            raise ValueError("invalid skill identity")
+        target = entry["target"]
+        if target != f"{prefix}/{name}" or target in targets:
+            raise ValueError("invalid skill target")
+        targets.add(target)
+        if not isinstance(entry.get("recursive", False), bool):
+            raise ValueError("invalid recursive flag")
+        entry["source"] = str(_store_path(entry["source"], directory=True))
+    return data
+
+
+def _skill_checks(home: Path) -> list[CheckResult]:
+    metadata = home / ".config/envy/agent-skills.json"
+    if not metadata.exists() and not metadata.is_symlink():
+        return [warn(SECTION_AGENTS, "Agent skill metadata", "Managed skill metadata is not deployed",
+                     hint="Run envy apply, then envy doctor agents")]
+    try:
+        data = _skill_metadata(metadata)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError):
+        return [error(SECTION_AGENTS, "Agent skill metadata", "Managed skill metadata is invalid or not a read-only Nix store source")]
+    results = [ok(SECTION_AGENTS, "Agent skill metadata", "Managed skill contract validated")]
+    for entry in data["skills"]:
+        link = home / entry["target"]
+        source = Path(entry["source"])
+        try:
+            marker = source / "SKILL.md"
+            matches = marker.is_file() and (
+                (link / "SKILL.md").is_symlink()
+                and (link / "SKILL.md").resolve(strict=True) == marker.resolve(strict=True)
+                if entry.get("recursive") else
+                link.is_symlink() and link.resolve(strict=True) == source
+                and (link / "SKILL.md").is_file()
+            )
+        except (OSError, RuntimeError):
+            matches = False
+        label = {"claude": "Claude", "codex": "Codex"}[entry["adapter"]]
+        results.append((ok if matches else error)(SECTION_AGENTS, f"{label} skills: {entry['name']}",
+            "Managed link matches expected source" if matches else "Managed link is missing or has a different source"))
+    return results
+
+
 def _probe(data: dict) -> dict:
     """Launch only the validated store Node/probe, with no inherited credentials."""
     with tempfile.TemporaryDirectory(prefix="envy-agent-doctor-") as temporary:
@@ -132,12 +189,12 @@ def _executable(command: str, args: list) -> bool:
     return index < len(args) and isinstance(args[index], str) and shutil.which(os.path.expanduser(args[index])) is not None
 
 def run_checks() -> list[CheckResult]:
+    results = list(_skill_checks(Path.home()))
     enabled, _ = app_policy(SimpleNamespace(casks=[], brews=[], packages=["pi"]))
     if not enabled:
-        return [info(SECTION_AGENTS, "Pi runtime", "Pi is excluded by machine policy; agent checks skipped")]
+        return results + [info(SECTION_AGENTS, "Pi runtime", "Pi is excluded by machine policy; agent checks skipped")]
     home = Path.home()
     agent = home / ".pi/agent"
-    results = []
     if (home / ".config/envy/agent-runtime/pi.env").exists():
         results.append(info(SECTION_AGENTS, "Pi runtime override", "Immediate runtime override exists; envy apply clears it"))
     metadata = agent / "envy-runtime.json"

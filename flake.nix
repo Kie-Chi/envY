@@ -292,6 +292,21 @@
           touch "$out"
         '';
 
+      mkEnvyStorageCheck = system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          python = mkEnvyPython system;
+          organize = pkgs.callPackage ./modules/storage/organize.nix { };
+        in pkgs.runCommand "envy-storage-tests" {
+          nativeBuildInputs = [ python organize pkgs.restic pkgs.lsof ];
+        } ''
+          export PYTHONPYCACHEPREFIX="$TMPDIR/pycache"
+          export PYTHONPATH="${./resources/scripts}"
+          export ENVY_ROOT="${./.}"
+          python -m unittest discover -s ${./resources/scripts/tests} -p 'test_storage.py'
+          touch "$out"
+        '';
+
       mkEnvyTuiCheck = system:
         let pkgs = nixpkgs.legacyPackages.${system};
         in pkgs.callPackage ./modules/cores/packages/envy-tui.nix {};
@@ -365,11 +380,53 @@
           touch "$out"
         '';
 
+      mkEnvyPiPowerlineCheck = system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          piPackage = inputs.pi.packages.${system}.default;
+          patchedPi = import ./modules/agents/providers/pi/package.nix {
+            inherit lib piPackage;
+            moreThinking = true;
+          };
+          extension = import ./modules/agents/providers/pi/powerline.nix { inherit lib pkgs; };
+        in pkgs.runCommand "pi-powerline-tests" {
+          nativeBuildInputs = [ pkgs.nodejs_24 ];
+        } ''
+          node ${./modules/agents/providers/pi/tests/pi-powerline.mjs} \
+            ${extension} ${patchedPi}/lib/pi/node_modules
+          touch "$out"
+        '';
+
+      mkEnvyPiAutoAssignedCheck = system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          piPackage = inputs.pi.packages.${system}.default;
+          patchedPi = import ./modules/agents/providers/pi/package.nix {
+            inherit lib piPackage;
+            moreThinking = true;
+          };
+          extension = import ./modules/agents/providers/pi/auto-assigned.nix {
+            inherit pkgs;
+            piSource = inputs.pi.outPath;
+          };
+        in pkgs.runCommand "pi-auto-assigned-tests" {
+          nativeBuildInputs = [ pkgs.nodejs_24 ];
+        } ''
+          node ${./modules/agents/providers/pi/tests/pi-auto-assigned.mjs} \
+            ${extension} ${patchedPi}/lib/pi/node_modules
+          touch "$out"
+        '';
+
       mkEnvyPiQueueCheck = system:
         import ./modules/agents/providers/pi/queue.nix {
           inherit lib;
           pkgs = nixpkgs.legacyPackages.${system};
           piPackage = inputs.pi.packages.${system}.default;
+        };
+
+      mkGithubActionsCheck = system:
+        import ./checks/github-actions.nix {
+          pkgs = nixpkgs.legacyPackages.${system};
         };
 
       mkEnvyPiGoalCheck = system:
@@ -456,10 +513,14 @@
             name = "pi-diff-tui-tests";
             runtimeInputs = [ pkgs.python3 ];
             text = ''
-              exec python3 ${./modules/agents/providers/pi/tests/pi-context-tui.py} \
+              python3 ${./modules/agents/providers/pi/tests/pi-context-tui.py} \
                 ${pkgs.nodejs_24}/bin/node \
                 ${patchedPi}/lib/pi/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js \
                 ${views.context} ${views.diff} ${pkgs.git}/bin/git
+              exec python3 ${./modules/agents/providers/pi/tests/pi-diff-latency.py} \
+                ${pkgs.nodejs_24}/bin/node \
+                ${patchedPi}/lib/pi/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js \
+                ${views.diff} ${pkgs.git}/bin/git
             '';
           };
         in pkgs.runCommand "pi-diff-tests" {
@@ -467,6 +528,8 @@
           passthru = { inherit tui; };
         } ''
           node ${./modules/agents/providers/pi/tests/pi-diff.mjs} \
+            ${views.diff} ${patchedPi}/lib/pi/node_modules
+          node ${./modules/agents/providers/pi/tests/pi-diff-scans.mjs} \
             ${views.diff} ${patchedPi}/lib/pi/node_modules
           touch "$out"
         '';
@@ -720,11 +783,15 @@
       devShells.x86_64-linux.default = mkDevShell "x86_64-linux";
       checks.aarch64-darwin.platform-option-boundaries = mkPlatformOptionCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-python-tests = mkEnvyPythonCheck "aarch64-darwin";
+      checks.aarch64-darwin.envy-storage-tests = mkEnvyStorageCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-tui-tests = mkEnvyTuiCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-shell-checks = mkEnvyShellCheck "aarch64-darwin";
       checks.aarch64-darwin.secret-safety = mkSecretSafetyCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-lint = mkEnvyLintCheck "aarch64-darwin";
+      checks.aarch64-darwin.envy-github-actions = mkGithubActionsCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-agent-tests = mkEnvyAgentCheck "aarch64-darwin";
+      checks.aarch64-darwin.pi-powerline-tests = mkEnvyPiPowerlineCheck "aarch64-darwin";
+      checks.aarch64-darwin.pi-auto-assigned-tests = mkEnvyPiAutoAssignedCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-queue-tests = mkEnvyPiQueueCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-goal-tests = mkEnvyPiGoalCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-model-tests = mkEnvyPiModelCheck "aarch64-darwin";
@@ -737,11 +804,15 @@
       checks.x86_64-linux.platform-option-boundaries = mkPlatformOptionCheck "x86_64-linux";
       checks.x86_64-linux.linux-policy-boundaries = linuxPolicyCheck;
       checks.x86_64-linux.envy-python-tests = mkEnvyPythonCheck "x86_64-linux";
+      checks.x86_64-linux.envy-storage-tests = mkEnvyStorageCheck "x86_64-linux";
       checks.x86_64-linux.envy-tui-tests = mkEnvyTuiCheck "x86_64-linux";
       checks.x86_64-linux.envy-shell-checks = mkEnvyShellCheck "x86_64-linux";
       checks.x86_64-linux.secret-safety = mkSecretSafetyCheck "x86_64-linux";
       checks.x86_64-linux.envy-lint = mkEnvyLintCheck "x86_64-linux";
+      checks.x86_64-linux.envy-github-actions = mkGithubActionsCheck "x86_64-linux";
       checks.x86_64-linux.envy-agent-tests = mkEnvyAgentCheck "x86_64-linux";
+      checks.x86_64-linux.pi-powerline-tests = mkEnvyPiPowerlineCheck "x86_64-linux";
+      checks.x86_64-linux.pi-auto-assigned-tests = mkEnvyPiAutoAssignedCheck "x86_64-linux";
       checks.x86_64-linux.pi-queue-tests = mkEnvyPiQueueCheck "x86_64-linux";
       checks.x86_64-linux.pi-goal-tests = mkEnvyPiGoalCheck "x86_64-linux";
       checks.x86_64-linux.pi-model-tests = mkEnvyPiModelCheck "x86_64-linux";

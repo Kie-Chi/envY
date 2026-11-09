@@ -82,3 +82,32 @@ test("real SDK command renders actual Git index differences with the real compon
   assert.equal(fs.readFileSync(sample, "utf8"), "after-envy-diff\n");
   assert.deepEqual(fs.readFileSync(path.join(cwd, ".git/index")), index);
 });
+
+test("limited coverage survives history restore and renders an explicit warning", async () => {
+  const rendered = [];
+  const base = session.extensionRunner.createCommandContext();
+  const ctx = Object.create(base);
+  const entries = [{ type: "custom", customType: "pi-diff.turn", data: {
+    turn: 1, endedAt: new Date().toISOString(), fileCount: 0, patches: [], coverageLimited: true,
+  } }];
+  Object.defineProperties(ctx, {
+    cwd: { value: home }, mode: { value: "tui" }, hasUI: { value: true },
+    sessionManager: { value: { getBranch: () => entries } },
+    ui: { value: {
+      notify: message => assert.fail(message),
+      custom: async factory => {
+        const component = factory({ terminal: { rows: 50, columns: 120 }, requestRender() {} }, themes.theme, {}, () => {});
+        rendered.push(component.render(120).join("\n"));
+        component.handleInput("l");
+        rendered.push(component.render(120).join("\n"));
+        component.handleInput("q");
+      },
+    } },
+  });
+  await command.handler("", ctx);
+  assert.equal(rendered.length, 2);
+  for (const text of rendered) {
+    assert.match(text, /Automatic scan coverage is limited|自动扫描覆盖受限/);
+    assert.doesNotMatch(text, /No file changes in this turn|本轮没有文件改动/);
+  }
+});

@@ -6,6 +6,7 @@
     ./modules/software
     ./modules/mirrors
     ./modules/llm
+    ./modules/storage
     ./modules/agents
     ./modules/cores
     ./modules/devps

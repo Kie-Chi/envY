@@ -17,6 +17,7 @@ let
     vercelAgentSkills = inputs.vercel-agent-skills;
     wazaSource = inputs.waza;
   };
+  behaviorCases = builtins.fromJSON (builtins.readFile ../modules/agents/providers/pi/tests/skill-cases.json);
   maintenanceNames = [ "envy-maintain" "pi-maintain" ];
   maintenanceCatalog = lib.getAttrs maintenanceNames sharedDefaults.agents.skills.catalog;
   evaluate = policy: (lib.evalModules {
@@ -70,6 +71,12 @@ let
   hasFailure = config: text: builtins.any
     (item: !item.assertion && lib.hasInfix text item.message) config.assertions;
 in
+assert behaviorCases.schemaVersion == 1;
+assert builtins.all (case: builtins.all (name:
+  builtins.hasAttr name sharedDefaults.agents.skills.catalog
+  && builtins.elem "pi" sharedDefaults.agents.skills.catalog.${name}.targets
+  && builtins.elem name sharedDefaults.agents.skills.active
+) (case.requiredSkills ++ case.excludedSkills)) behaviorCases.cases;
 assert builtins.all (item: item.assertion) valid.assertions;
 assert valid.agents.skills.effective.pi == [ "shared" "extra" ];
 assert valid.agents.skills.effective.other-pi == valid.agents.skills.effective.pi;

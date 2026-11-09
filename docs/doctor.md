@@ -20,7 +20,9 @@ app schema 位于 resources/scripts/envy/schemas/{common,darwin,linux}/apps.py�
 
 ## Agent 检查
 
-`envy doctor agents` 只读检查 envY 部署的 Pi 运行契约、扩展/角色/skill 链接与 MCP 命令。命令会显示即时运行覆盖是否存在；存在覆盖是正常信息，`envy apply` 会清除它。
+`envy doctor agents` 只读检查 envY 部署的资源：`.config/envy/agent-skills.json` 描述 Claude/Codex 的托管 skill 来源与链接，`.pi/agent/envy-runtime.json` 描述 Pi 的扩展、角色、skills 和 MCP 命令。Claude 与 claude-code 的共享目录按最终目标去重；排除 Pi 时仍检查 Claude/Codex 链接。命令会显示 Pi 即时运行覆盖是否存在；存在覆盖是正常信息，`envy apply` 会清除它。
+
+契约由 Home Manager 从选中的 catalog 和最终 source 生成，只接受只读 Nix store metadata，并比对实际链接及 `SKILL.md` 来源。它不读取完整用户配置或认证，不执行 MCP、不安装或修复插件。Claude 插件的配置声明不作为已安装证据；此检查不验证插件安装状态。
 
 扩展探针使用隔离的临时目录和真实 Pi 宿主，不读取真实 auth、models、sessions，不发起模型请求或启动 MCP。只检查 envY 管理的固定来源；发现声明的最低 Pi 版本时进行比较，未知声明不等于兼容。cron 工厂因 daemon 副作用而跳过并单独报告。加载通过只证明工厂与注册成功，不能代替工具调用、语言服务或 TUI 的集成验证。
 

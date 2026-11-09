@@ -20,6 +20,7 @@ description: "修改 envY 的 Nix 选项、机器软件政策、Python CLI、Rus
 | CLI/TUI JSON 契约 | `resources/scripts/envy/jsonio.py`、各 CLI JSON 分支与 TUI 解析代码 | `test_structured_output.py` 及相关命令测试，再运行受影响的 Rust 测试；核对 `schemaVersion`、`command`、`ok`、`data`、`warnings` 和失败时的 `error` |
 | 启动脚本、shell 片段 | `envy`、`install.sh`、`setup.sh`、`requires.sh` 及实际被改脚本 | 先 `bash -n` / 对应 shell 语法检查；完整入口为 `envy-shell-checks` |
 | agent wrapper、工具或 skill 注册 | `modules/agents/`、`checks/agent-skills.nix`、`docs/agents.md` | wrapper/工具选 `envy-agent-tests`；skill discovery、adapter 和 manifest 边界选 `platform-option-boundaries`；Pi 宿主/扩展改动再用 pi-maintain |
+| GitHub Actions workflow | `.github/workflows/`、`checks/github-actions.nix` 与锁定 zizmor 的离线选项 | `envy-github-actions`；固定 Action 版本对应 SHA，不使用真实凭据或 `--fix` |
 | secret 声明、schema、权限或模板 | owning feature、`resources/scripts/envy/config/`、`schemas/` | 对应 secret/schema 测试与 `secret-safety`；不读取、打印真实凭据来验证 |
 
 测试文件名用于定位，运行前查看实际测试的 fixture 和依赖。`test_structured_config.py` 验证运行时 JSON/TOML 合并，并不代替 CLI JSON envelope 测试。JSON 改动需同时验证成功与错误路径、stdout 可解析性以及消费者兼容性；保持 TUI 只负责展示，不在 Rust 中重建政策。

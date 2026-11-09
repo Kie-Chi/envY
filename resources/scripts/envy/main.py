@@ -12,6 +12,7 @@ from envy import _check_schema_api
 from envy.config.cli import app as config_app
 from envy.doctor import app as doctor_app
 from envy.habit import app as habit_app
+from envy.storage.cli import app as storage_app
 from envy.journal import show_log
 from envy.key import app as key_app
 from envy.mirror.cli import app as mirror_app
@@ -435,6 +436,9 @@ cli.add_typer(mirror_app, name="mirror")
 # Personal interaction habits are versioned machine policy.
 cli.add_typer(habit_app, name="habit")
 cli.add_typer(habit_app, name="habits", rich_help_panel="Aliases")
+
+# Rule-driven local cleanup, remote archives, and recovery.
+cli.add_typer(storage_app, name="storage")
 
 # Read-only generation inventory and closure comparison.
 cli.add_typer(history_app, name="history")

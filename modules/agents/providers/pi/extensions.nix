@@ -4,7 +4,7 @@ let
   # Use the same locked source as the Pi executable, so extension APIs and
   # imports cannot drift independently. These need only Pi's bundled modules.
   extensionRoot = piSource + "/packages/coding-agent/examples/extensions";
-  extensions = [ "questionnaire" "todo" "tools" "handoff" ];
+  extensions = [ "todo" "tools" "handoff" ];
   # Upstream examples assume Pi runs interactively from a checkout. Adapt only
   # those assumptions; --replace-fail turns upstream drift into a build error.
   examples = pkgs.runCommand "pi-envy-examples" { } ''
@@ -25,6 +25,8 @@ let
   # peer range against the locked Pi before changing a version.
   views = import ./views.nix { inherit lib pkgs; };
   packages = {
+    auto-assigned = import ./auto-assigned.nix { inherit pkgs piSource; };
+    powerline = import ./powerline.nix { inherit lib pkgs; };
     "context-view" = views.context;
     diff = views.diff;
     goal-x = import ./goal.nix { inherit lib pkgs piPackage; };
@@ -54,6 +56,7 @@ in
   # Each queued prompt gets its own delivery boundary rather than merging
   # several pending prompts into one turn. Machine settings may override this.
   envy.agents.pi.additionalSettings = {
+    theme = lib.mkDefault "system";
     steeringMode = lib.mkDefault "one-at-a-time";
     followUpMode = lib.mkDefault "one-at-a-time";
   };

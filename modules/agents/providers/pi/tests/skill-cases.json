@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "id": "envy-python",
+      "prompt": "An approved envY implementation adds a recommendation for a behind Git tracking ref in resources/scripts/envy/overview.py. Select the existing focused validation before implementation; do not implement the change. This is a read-only behavior probe. Do not edit files, run shell commands, execute code other than read-only file access, access credentials or user application state, use network/MCP, delegate, or change goals. Read applicable skill instructions if needed. Keep the final answer to two sentences naming the primary skill and relevant existing check; state if no check was executed.",
+      "requiredSkills": [
+        "envy-maintain"
+      ],
+      "excludedSkills": [
+        "pi-maintain"
+      ],
+      "forbiddenTools": [
+        "bash",
+        "edit",
+        "write",
+        "subagent",
+        "create_goal",
+        "update_goal",
+        "update_goal_task",
+        "MCP"
+      ]
+    },
+    {
+      "id": "pi-extension",
+      "prompt": "An approved envY implementation changes a pinned Pi npm extension runtime dependency while keeping Pi 1.1.0. Select the existing validation for dependency resolution and actual extension loading; do not implement the change. This is a read-only behavior probe. Do not edit files, run shell commands, execute code other than read-only file access, access credentials or user application state, use network/MCP, delegate, or change goals. Read applicable skill instructions if needed. Keep the final answer to two sentences naming the primary skill and relevant existing check; state if no check was executed.",
+      "requiredSkills": [
+        "pi-maintain"
+      ],
+      "excludedSkills": [],
+      "forbiddenTools": [
+        "bash",
+        "edit",
+        "write",
+        "subagent",
+        "create_goal",
+        "update_goal",
+        "update_goal_task",
+        "MCP"
+      ]
+    },
+    {
+      "id": "read-only-review",
+      "prompt": "Review this proposed envY status change for regressions: replace `if git.get(\"ahead\"): recommend(\"envy push\")` with `if git.get(\"behind\"): recommend(\"envy sync --no-apply\"); elif git.get(\"ahead\"): recommend(\"envy push\")`. Give one concrete review concern or say none is evident; do not implement or diagnose a reported failure. This is a read-only behavior probe. Do not edit files, run shell commands, execute code other than read-only file access, access credentials or user application state, use network/MCP, delegate, or change goals. Read applicable skill instructions if needed. Keep the final answer to two sentences naming the primary skill and relevant existing check; state if no check was executed.",
+      "requiredSkills": [
+        "check"
+      ],
+      "excludedSkills": [
+        "envy-maintain",
+        "pi-maintain",
+        "hunt"
+      ],
+      "forbiddenTools": [
+        "bash",
+        "edit",
+        "write",
+        "subagent",
+        "create_goal",
+        "update_goal",
+        "update_goal_task",
+        "MCP"
+      ]
+    },
+    {
+      "id": "general-question",
+      "prompt": "What does git diff show? Answer in one sentence. This is a general question: do not inspect a workspace, load any skill, execute tools, delegate, or change goals.",
+      "requiredSkills": [],
+      "excludedSkills": [
+        "envy-maintain",
+        "pi-maintain",
+        "check",
+        "hunt"
+      ],
+      "forbiddenTools": [
+        "all"
+      ]
+    }
+  ]
+}

@@ -32,6 +32,10 @@
   # --- MIRRORS CONFIG ---
   envy.mirrors.mode = "china";
 
+  # --- STORAGE CONFIG ---
+  envy.storage.mode = "manual";
+  envy.storage.archive.repository = "";
+
   # --- VSCODE CONFIG ---
   envy.vscode.mode = "remote";
   # END ENVY MANAGED CONFIG

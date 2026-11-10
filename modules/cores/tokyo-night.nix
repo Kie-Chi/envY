@@ -15,7 +15,8 @@
     "hl+" = "#2ac3de";
     border = "#27a1b9";
     header = "#ff9e64";
-    info = "#545c7e";
+    # Keep count and progress text readable on the dark finder background.
+    info = "#a9b1d6";
     pointer = "#ff007c";
     marker = "#ff007c";
     prompt = "#2ac3de";

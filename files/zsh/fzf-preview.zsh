@@ -1,5 +1,6 @@
 # fzf-tab supplies realpath separately from its displayed completion text.
 zstyle ':completion:*' menu no
+zstyle ':completion:*:descriptions' format '[%d]'
 zstyle ':fzf-tab:*' switch-group '<' '>'
 zstyle ':fzf-tab:complete:*:*' fzf-preview '
   if [[ -d "$realpath" ]]; then

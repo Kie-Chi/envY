@@ -32,8 +32,17 @@ in
       };
     })
     (lib.mkIf alacrittySelected {
-      xdg.configFile."alacritty/alacritty.toml".source =
-        pkgs.vimPlugins.tokyonight-nvim.src + "/extras/alacritty/tokyonight_night.toml";
+      programs.alacritty = {
+        enable = true;
+        package = null;
+        settings = {
+          general.import = [
+            "${pkgs.vimPlugins.tokyonight-nvim.src}/extras/alacritty/tokyonight_night.toml"
+          ];
+          font.normal.family = "Maple Mono NF CN";
+          font.size = 12.0;
+        };
+      };
     })
   ];
 }

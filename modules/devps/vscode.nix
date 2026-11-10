@@ -25,7 +25,7 @@ in
         "files.autoGuessEncoding" = true;
         "explorer.confirmDragAndDrop" = false;
         "workbench.iconTheme" = "vscode-icons";
-        "workbench.colorTheme" = "Tokyo Night Storm";
+        "workbench.colorTheme" = "Tokyo Night";
         "workbench.editor.autoLockGroups"."mainThreadWebview-markdown.preview" = true;
         "workbench.editorAssociations" = {
           "*.copilotmd" = "vscode.markdown.preview.editor";
@@ -128,6 +128,7 @@ in
       extensions = with pkgs.vscode-extensions; [
         anthropic.claude-code
         eamodio.gitlens
+        enkia.tokyo-night
         formulahendry.code-runner
         github.copilot
         github.copilot-chat

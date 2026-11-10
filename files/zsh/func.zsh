@@ -105,8 +105,8 @@ extract() {
 alias ec='extract'
 
 function cat() {
-    if [ -t 1 ]; then
-        bat "$@"
+    if [ -t 1 ] && (( $+commands[bat] )); then
+        command bat "$@"
     else
         command cat "$@"
     fi

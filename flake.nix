@@ -748,6 +748,7 @@
       mkPlatformOptionCheck = system:
         assert import ./checks/agent-skills.nix { inherit inputs; };
         assert platformOptionBoundaries;
+        assert import ./checks/terminal-themes.nix { inherit lib darwinConfigurations homeConfigurations; };
         nixpkgs.legacyPackages.${system}.runCommand "envy-platform-option-boundaries" { } ''
           touch $out
         '';

@@ -10,6 +10,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from envy import log
+from envy.evaluation import informative_nix_error
 from envy.process import run_process
 from envy.utils import ENVY_ROOT, current_machine_id, machine_build_attr, platform_name
 from envy.workflows.generations import closure_diff, current_generation
@@ -26,16 +27,15 @@ def plan_configuration(*, json_output: bool = False) -> None:
         activity=f"build plan for {machine}",
     )
     if result.returncode != 0:
-        lines = [line.strip() for line in (result.stderr or "").splitlines() if line.strip()]
-        detail = lines[-1] if lines else "plan build failed"
+        detail = informative_nix_error(result.stderr or "", fallback="plan build failed")
         if json_output:
             log.console.print_json(json.dumps({
                 "schemaVersion": 1, "machine": machine, "ok": False,
-                "error": detail[:500],
+                "error": detail,
             }, ensure_ascii=False))
         else:
             log.error("plan", "selected machine build failed")
-            log.hint(detail[:500])
+            log.hint(detail)
         raise typer.Exit(code=result.returncode or 1)
     outputs = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
     if not outputs:

@@ -391,7 +391,10 @@ def refine_secrets(*, write: bool = True, strict: bool = False, prune: bool = Fa
                 log.fix("secrets", "created missing credential secret path", credential=credential_name)
             else:
                 report.errors.append(secret_path)
-                log.error("secrets", "credential secret path is missing", credential=credential_name)
+                log.error("secrets", "credential is declared, but its encrypted YAML path is missing",
+                          credential=credential_name, key=secret_path)
+                log.hint("Run: envy config refine to create the empty path, then set its value with envy config secret-set "
+                         + secret_path + " --stdin")
             current = ""
         else:
             normalized = secret_store._secret_scalar_text(current)
@@ -419,7 +422,10 @@ def refine_secrets(*, write: bool = True, strict: bool = False, prune: bool = Fa
                 current = normalized
         if not str(current).strip():
             report.warnings.append(secret_path)
-            log.warn("secrets", "credential secret is empty", credential=credential_name)
+            log.warn("secrets", "credential is declared, but its key value is not set",
+                     credential=credential_name, key=secret_path)
+            log.hint("Set the key through stdin: envy config secret-set " + secret_path + " --stdin. "
+                     "Do not put the key value in the machine Nix file.")
 
     if prune:
         for path in OBSOLETE_SECRET_PATHS:

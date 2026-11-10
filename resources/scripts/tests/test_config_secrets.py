@@ -161,6 +161,26 @@ class SecretRefineTests(unittest.TestCase):
         self.assertEqual(self.written[-1]["llm"], {"missing": {"apikey": ""}, "number": {"apikey": "42"}})
         self.assertIn("llm/missing/apikey", refined.warnings)
 
+    def test_credential_diagnostics_distinguish_missing_paths_from_empty_keys(self):
+        self.credentials = {"demo": "llm/demo/key"}
+        for data, missing in (({}, True), ({"llm": {"demo": {"key": ""}}}, False)):
+            self.data = data
+            with self.subTest(missing=missing), patch.object(refine.log, "error") as log_error, \
+                 patch.object(refine.log, "warn") as log_warn, patch.object(refine.log, "hint") as log_hint:
+                refine.refine_secrets(write=False)
+                messages = [call.args[1] for call in log_error.call_args_list + log_warn.call_args_list]
+                self.assertIn("credential is declared, but its key value is not set", messages)
+                self.assertEqual("credential is declared, but its encrypted YAML path is missing" in messages, missing)
+                self.assertTrue(any("envy config secret-set llm/demo/key --stdin" in call.args[0] for call in log_hint.call_args_list))
+        self.data = {"llm": {"demo": {"key": "never-print-this-key"}}}
+        with patch.object(refine.log, "error") as log_error, patch.object(refine.log, "warn") as log_warn, \
+             patch.object(refine.log, "hint") as log_hint:
+            refine.refine_secrets(write=False)
+            calls = repr(log_error.call_args_list + log_warn.call_args_list + log_hint.call_args_list)
+            self.assertNotIn("never-print-this-key", calls)
+            self.assertNotIn("key value is not set", calls)
+        self.assertEqual(self.written, [])
+
     def test_obsolete_paths_are_reported_until_pruned(self):
         self.data = {"home": {"passwd": "set"}, "llm": {"retired": {"apikey": "old"}, "kept": "yes"}}
 

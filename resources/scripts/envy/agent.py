@@ -290,21 +290,21 @@ def _validate_issues(values: dict[str, Any]) -> list[error.ConfigError]:
             if value not in declared_profiles:
                 issues.append(
                     error.unknown_reference(
-                        path, "agent profile", declared="envy.agentProfiles.<name>"
+                        path, "profile", name=value, declared=f"envy.agentProfiles.{value}"
                     )
                 )
             continue
-        if not path.startswith("envy.agents.") or not path.endswith((".endpoint", ".credential")):
+        if not path.startswith(("envy.agents.", "envy.agentProfiles.")) or not path.endswith((".endpoint", ".credential")):
             continue
         if not isinstance(value, str):
             continue
         if path.endswith(".endpoint") and value not in declared_endpoints | _KNOWN_ENDPOINTS:
             issues.append(
-                error.unknown_reference(path, "endpoint", declared="envy.llm.endpoints.<name>")
+                error.unknown_reference(path, "endpoint", name=value, declared=f"envy.llm.endpoints.{value}.baseUrl")
             )
         if path.endswith(".credential") and value not in declared_credentials | _KNOWN_CREDENTIALS:
             issues.append(
-                error.unknown_reference(path, "credential", declared="envy.llm.credentials.<name>")
+                error.unknown_reference(path, "credential", name=value, declared=f"envy.llm.credentials.{value}.secretPath")
             )
 
     _, agents = _managed_manifest(values)
@@ -316,7 +316,10 @@ def _validate_issues(values: dict[str, Any]) -> list[error.ConfigError]:
             issues.append(error.invalid_value(path, "only the pi agent supports a non-empty model list"))
             continue
         try:
-            model_bindings(_initial_values() | values, item)
+            model_bindings(_initial_values() | values, item, name=name)
+        except error.ConfigValidationError as exc:
+            if not any(issue.path == exc.issue.path and issue.code == exc.issue.code for issue in issues):
+                issues.append(exc.issue)
         except (ValueError, TypeError) as exc:
             issues.append(error.invalid_value(path, str(exc)))
     return sorted(set(issues), key=lambda item: (item.path, item.message))
@@ -660,6 +663,9 @@ def _runtime_pi_models(values: dict[str, Any], agent: dict[str, Any]) -> dict[st
 def refresh_runtime(*, values: dict[str, Any] | None = None) -> list[str]:
     """Refresh private overrides; keep Pi's non-envY providers and roll back failures."""
     values = values if values is not None else _read_values()
+    issues = _validate_issues(values)
+    if issues:
+        raise error.ConfigValidationError(issues[0])
     profiles = _profile_values(values)
     _, agents = _managed_manifest(values)
     for item in agents.values():
@@ -954,7 +960,14 @@ def cmd_profile_use(
 @app.command(name="refresh")
 def cmd_refresh(json_output: bool = typer.Option(False, "--json")):
     """Refresh private runtime overrides without running Nix apply."""
-    refreshed = refresh_runtime()
+    try:
+        refreshed = refresh_runtime()
+    except error.ConfigValidationError as exc:
+        if json_output:
+            emit_error("agent.refresh", str(exc), code=exc.issue.code.value)
+        else:
+            error.report("agents", [exc.issue])
+        raise typer.Exit(code=1) from exc
     if json_output:
         emit("agent.refresh", data={"agents": refreshed})
     else:

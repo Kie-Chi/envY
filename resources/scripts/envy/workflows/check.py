@@ -7,6 +7,7 @@ import re
 import typer
 
 from envy import log
+from envy.evaluation import informative_nix_error
 from envy.process import run_process
 from envy.utils import ENVY_ROOT, current_machine_id, platform_name
 
@@ -101,9 +102,8 @@ def run_machine_checks(
             log.ok("check", "machine passed", machine=label)
         else:
             log.error("check", "machine failed", machine=label, exit_code=result.returncode)
-            lines = [line.strip() for line in (result.stderr or "").splitlines() if line.strip()]
-            if lines:
-                log.hint(lines[-1][:500])
+            if (result.stderr or "").strip():
+                log.hint(informative_nix_error(result.stderr))
     return results
 
 

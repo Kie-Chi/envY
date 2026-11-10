@@ -7,6 +7,8 @@ here so every command describes the same failure the same way.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+import re
 from typing import Any, Iterable, Sequence
 
 from envy import log
@@ -22,6 +24,33 @@ class ConfigError:
     message: str
     hint: str | None = None
     line: int | None = None
+
+
+class ConfigValidationError(ValueError):
+    """Carry a precise diagnostic through legacy ValueError boundaries."""
+
+    def __init__(self, issue: ConfigError):
+        self.issue = issue
+        super().__init__(summary([issue]))
+
+
+def parse_nix_error(stderr: str) -> ConfigError | None:
+    """Read only explicit envY diagnostics, never guess from a Nix trace."""
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", stderr)
+    for line in reversed(clean.splitlines()):
+        match = re.fullmatch(r"\s*error: \[envy-config\] (.+)", line)
+        if not match:
+            continue
+        try:
+            data = json.loads(match.group(1))
+            if not isinstance(data, dict) or set(data) != {"code", "path", "message", "hint"}:
+                continue
+            if not all(isinstance(data[key], str) and data[key].strip() for key in data):
+                continue
+            return ConfigError(ErrorCode(data["code"]), data["path"], data["message"], data["hint"])
+        except (ValueError, TypeError):
+            continue
+    return None
 
 
 def managed_block_missing(path: str, *, hint: str) -> ConfigError:
@@ -97,11 +126,11 @@ def missing_required(path: str, field: str | None = None, *, hint: str | None = 
     return ConfigError(ErrorCode.MISSING_REQUIRED, path, detail, hint)
 
 
-def unknown_reference(path: str, kind: str, *, declared: str) -> ConfigError:
+def unknown_reference(path: str, kind: str, *, declared: str, name: str | None = None) -> ConfigError:
     return ConfigError(
         ErrorCode.UNKNOWN_REFERENCE,
         path,
-        f"references an unknown {kind}",
+        f"{kind} {name!r} is not declared" if name is not None else f"references an unknown {kind}",
         f"Declare it under {declared} first.",
     )
 
@@ -175,9 +204,11 @@ def summary(errors: Iterable[ConfigError], *, prefix: str = "") -> str:
     """Return one actionable line for typer.BadParameter, hints included."""
     parts = []
     for item in errors:
-        detail = f"{item.path}: {item.message}" if item.path else item.message
+        detail = item.message
+        if item.path:
+            detail += f". Location: {item.path}"
         if item.hint:
-            detail += f" ({item.hint})"
+            detail += f". Next: {item.hint}"
         parts.append(detail)
     body = "; ".join(parts)
     return f"{prefix}: {body}" if prefix else body

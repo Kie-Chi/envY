@@ -126,8 +126,8 @@ class ErrorTests(unittest.TestCase):
         ])
         self.assertEqual(
             summary,
-            "envy.agents.a: unknown field for this configuration path "
-            "(Allowed fields: adapter); envy.agents.b: expected a string",
+            "unknown field for this configuration path. Location: envy.agents.a. "
+            "Next: Allowed fields: adapter; expected a string. Location: envy.agents.b",
         )
 
 

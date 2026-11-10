@@ -368,13 +368,15 @@
           };
           btwPackage = extensions.home.file.".pi/agent/extensions/envy-btw".source;
         in pkgs.runCommand "pi-model-tests" {
-          nativeBuildInputs = [ pkgs.nodejs_24 python ];
+          nativeBuildInputs = [ pkgs.nodejs_24 python (lib.getBin pkgs.nix) ];
         } ''
           export HOME="$TMPDIR/home"
           mkdir -p "$HOME"
           export PYTHONPYCACHEPREFIX="$TMPDIR/pycache"
           export PYTHONPATH="${./resources/scripts}"
           python ${./modules/agents/providers/pi/tests/pi-models.py} ${fixtures}
+          python ${./modules/agents/providers/pi/tests/pi-model-diagnostics.py} \
+            ${./modules/agents/providers/pi/models.nix} ${nixpkgs.outPath}/lib
           node ${./modules/agents/providers/pi/tests/pi-models.mjs} \
             ${patchedPi}/lib/pi/node_modules ${fixtures} ${btwPackage}
           touch "$out"

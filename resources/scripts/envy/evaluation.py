@@ -248,18 +248,13 @@ def _read_latest_cache(machine_id: str) -> dict[str, Any] | None:
 
 
 def informative_nix_error(stderr: str, *, fallback: str = "nix eval exited without stderr") -> str:
-    """Return the most useful line from a failed Nix invocation's stderr.
+    """Explain explicit envY diagnostics; preserve unrecognized stderr verbatim."""
+    from envy.error import parse_nix_error, summary
 
-    Nix prints the real cause on an ``error:`` line, but the final line is often
-    a bare location trace (or blank), so ``splitlines()[-1]`` hides the reason.
-    Prefer the last ``error:`` line, then the last non-empty line.
-    """
-    lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
-    if not lines:
-        return fallback
-    error_lines = [line for line in lines if "error:" in line]
-    chosen = error_lines[-1] if error_lines else lines[-1]
-    return chosen[:500]
+    diagnostic = parse_nix_error(stderr or "")
+    if diagnostic is not None:
+        return summary([diagnostic])
+    return stderr if (stderr or "").strip() else fallback
 
 
 def _evaluate_machine_manifest(machine_id: str) -> dict[str, Any] | None:
@@ -298,7 +293,7 @@ def _evaluate_machine_manifest(machine_id: str) -> dict[str, Any] | None:
 
 
 def last_manifest_error() -> str | None:
-    """Return the latest safe, short Nix manifest evaluation failure detail."""
+    """Return the latest Nix manifest evaluation diagnostic without truncation."""
     return _last_manifest_error
 
 

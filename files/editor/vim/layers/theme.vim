@@ -19,7 +19,13 @@ end
 " let g:airline_theme = 'catppuccin'
 let g:airline#extensions#csv#enabled = 1
 
-" ignore if onedark theme is not installed
+" Keep split boundaries visible when Tokyo Night is loaded or reloaded.
+set fillchars+=vert:│
+augroup envy_tokyonight_separators
+    autocmd!
+    autocmd ColorScheme tokyonight highlight VertSplit guifg=#7aa2f7 guibg=#1a1b26 ctermfg=111 ctermbg=NONE gui=NONE cterm=NONE
+augroup END
+
 try
     colorscheme tokyonight
     " highlight CocHighlightText guibg=#505050

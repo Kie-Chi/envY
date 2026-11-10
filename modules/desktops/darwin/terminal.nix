@@ -114,9 +114,8 @@ in
             "Screen" = -2; # Follow the screen containing the mouse cursor.
             "Space" = -1;
 
-            "Transparency" = 0.25;
-            "Blur" = true;
-            "Blur Radius" = 25;
+            "Transparency" = 0.0;
+            "Blur" = false;
             "Horizontal Canvas Fraction" = 1.0;
             "Rows" = 25;
 

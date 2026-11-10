@@ -29,6 +29,10 @@ const originalCwd = process.cwd();
 process.chdir(cwd);
 const host = await import(pathToFileURL(path.join(nodeModules, "@earendil-works/pi-coding-agent/dist/index.js")));
 const ai = await import(pathToFileURL(path.join(nodeModules, "@earendil-works/pi-ai/dist/index.js")));
+const tui = await import(pathToFileURL(path.join(nodeModules, "@earendil-works/pi-tui/dist/index.js")));
+const { KeybindingsManager } = await import(pathToFileURL(path.join(nodeModules, "@earendil-works/pi-coding-agent/dist/core/keybindings.js")));
+const keybindings = KeybindingsManager.create(agentDir);
+tui.setKeybindings(keybindings);
 host.initTheme("dark", false);
 const themes = await import(pathToFileURL(path.join(nodeModules, "@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js")));
 const sessions = [];
@@ -96,13 +100,72 @@ async function fixture({ main = [], verdicts = [], source = packagePath, ui, cod
     ui: { value: { setStatus() {}, notify: text => notices.push(text) } },
   });
   const command = args => extension.commands.get("auto-assigned").handler(args, context);
-  return { session, command, notices, requests, mainRequests, questionnaire: extension.tools.get("questionnaire").definition, counts: () => ({ main: mainCalls, review: reviewCalls }),
+  return { session, command, autoAssignedCommand: extension.commands.get("auto-assigned"), notices, requests, mainRequests, questionnaire: extension.tools.get("questionnaire").definition, counts: () => ({ main: mainCalls, review: reviewCalls }),
     decisions: () => session.sessionManager.getBranch().filter(e => e.type === "custom" && e.customType === "envy-auto-assigned-review"),
   };
 }
 const renderQuestionnaire = (h, result) => h.questionnaire.renderResult(result, { expanded: true, isPartial: false }, themes.theme, {}).render(200).join("\n");
 const approve = { decision: "continue", reason: "The concrete plan is within the explicitly delegated task." };
 const done = { decision: "done", reason: "The requested change and checks are complete." };
+
+test("argument completion offers described actions and filters only the first argument", async () => {
+  const h = await fixture();
+  const complete = h.autoAssignedCommand.getArgumentCompletions;
+  assert.equal(typeof complete, "function");
+  const items = await complete("");
+  assert.deepEqual(items.map(item => item.value), ["on", "off", "status"]);
+  for (const item of items) {
+    assert.equal(item.label, item.value);
+    assert.ok(item.description?.trim(), "Every action needs a usage description");
+  }
+  for (const [prefix, expected] of [["o", ["on", "off"]], ["on", ["on"]], ["of", ["off"]], ["s", ["status"]], ["  o", ["on", "off"]], ["  ", ["on", "off", "status"]]]) {
+    assert.deepEqual((await complete(prefix)).map(item => item.value), expected, prefix);
+  }
+  for (const prefix of ["unknown", "ON", "on ", "on Fix the function", "on 修复补全", "off ", "status ", "  on  task"]) {
+    assert.equal(await complete(prefix), null, prefix);
+  }
+  assert.deepEqual(h.counts(), { main: 0, review: 0 });
+  await h.command("status");
+  assert.match(h.notices.at(-1), /is off/);
+});
+
+test("real editor shows action hints for Tab selection and leaves task scope unchanged", { timeout: 5000 }, async () => {
+  const h = await fixture();
+  const provider = new tui.CombinedAutocompleteProvider([h.autoAssignedCommand], cwd, null);
+  const terminal = { requestRender() {}, terminal: { rows: 40, columns: 120 } };
+  const editor = new host.CustomEditor(terminal, themes.getEditorTheme(), keybindings);
+  editor.setAutocompleteProvider(provider);
+  let submitted = false;
+  editor.onSubmit = () => { submitted = true; };
+  const input = async text => {
+    for (const char of text) editor.handleInput(char);
+    await new Promise(resolve => setImmediate(resolve));
+  };
+  for (const [prefix, action] of [["", "on"], ["of", "off"], ["s", "status"]]) {
+    editor.setText("/auto-assigne");
+    await input("d");
+    await input(" " + prefix);
+    assert.equal(editor.isShowingAutocomplete(), true);
+    const view = editor.render(120).join("\n");
+    const items = await h.autoAssignedCommand.getArgumentCompletions(prefix);
+    for (const item of items) {
+      assert.ok(view.includes(item.label), "Tab must display " + item.label);
+      assert.ok(view.includes(item.description), "Tab must display the action hint");
+    }
+    editor.handleInput("\t");
+    assert.equal(editor.getText(), "/auto-assigned " + action);
+  }
+  const scoped = "/auto-assigned on 修复补全";
+  editor.setText("/auto-assigned on ");
+  await input("修复补全");
+  assert.equal(editor.isShowingAutocomplete(), false);
+  await input("\t");
+  assert.equal(editor.getText(), scoped);
+  assert.equal(submitted, false, "Tab must not execute the command");
+  assert.deepEqual(h.counts(), { main: 0, review: 0 });
+  await h.command("status");
+  assert.match(h.notices.at(-1), /is off/);
+});
 
 test("default off: ordinary answers never trigger reviewer calls", async () => {
   const h = await fixture({ main: ["A plan, waiting for your approval."] });

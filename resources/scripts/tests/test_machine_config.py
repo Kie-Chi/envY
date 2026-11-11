@@ -95,6 +95,22 @@ class DarwinMachineConfigTests(unittest.TestCase):
         self.assertIn('envy.vscode.mode = "local";', text)
         self.assertIn('envy.software.nix.packages.exclude = [ "okular" ];', text)
 
+    def test_managed_block_keeps_hand_written_rules(self):
+        with self.machine_file_patch(), patch.object(
+            machine_nix, "current_machine_id", return_value="test-mac"
+        ), patch.object(machine_nix, "set_device_machine_id"):
+            machine_nix.write_machine_nix(self.values())
+            text = self.machine.read_text()
+            custom = ('  envy.storage.rules = [ { id = "demo"; path = "/tmp/demo"; '
+                      'action = "quarantine"; } ];\n')
+            self.machine.write_text(text.replace(machine_nix.MANAGED_END,
+                                                 custom + machine_nix.MANAGED_END))
+            machine_nix.write_machine_nix(self.values())
+        text = self.machine.read_text()
+        self.assertEqual(text.count("envy.storage.rules"), 1)
+        self.assertIn('envy.storage.rules = [ { id = "demo"; path = "/tmp/demo"; action = "quarantine"; } ];', text)
+        self.assertIn('envy.vscode.mode', text)
+
     def test_mirror_block_is_independent_from_machine_config_block(self):
         overrides = {
             "envy.mirrors.overrides.npm.source": "chsrc:npm/npmmirror",

@@ -2,6 +2,8 @@
 
 let
   palette = import ../../cores/tokyo-night.nix;
+  btopSelected = builtins.elem "btop" (map lib.getName
+    config.home-manager.users.${config.envy.user.name}.envy.software.nix.packages.effective);
   itermColor = hex: lib.listToAttrs (lib.imap0 (index: name: {
     name = "${name} Component";
     value = (lib.fromHexString (builtins.substring (1 + index * 2) 2 hex)) / 255.0;
@@ -114,9 +116,8 @@ in
             "Screen" = -2; # Follow the screen containing the mouse cursor.
             "Space" = -1;
 
-            "Transparency" = 0.25;
-            "Blur" = true;
-            "Blur Radius" = 25;
+            "Transparency" = 0.0;
+            "Blur" = false;
             "Horizontal Canvas Fraction" = 1.0;
             "Rows" = 25;
 
@@ -127,25 +128,26 @@ in
             "HotKey Character (Native)" = quakeHotkey.character;
             "HotKey Modifier" = quakeHotkey.modifier;           # Function 键掩码
           } // terminalColors)
-          {
-            Name = "BtopDashboard";
-            Guid = "F6A1C2D3-E4B5-4C6D-A7B8-D9E0F1A2B3C4";
-            "Custom Command" = "Yes";
-            "Command" = "${pkgs.btop}/bin/btop";
-            "Window Type" = 2;
-            "Has Hotkey" = true;
-            "HotKey Key Code" = 51;
-            "HotKey Character" = 63246;
-            "HotKey Character (Native)" = 63246;
-            "HotKey Modifier" = 8388608;
-            "HotKey Modifier Flags" = 393216;
-            "Floating window" = true;
-            "Animate showing and hiding" = true;
-            "Space" = -1;
-            "Rows" = 30;
-            "Columns" = 100;
-          }
-        ];
+        ] ++ lib.optional btopSelected ({
+          Name = "BtopDashboard";
+          Guid = "F6A1C2D3-E4B5-4C6D-A7B8-D9E0F1A2B3C4";
+          "Custom Command" = "Yes";
+          "Command" = "${pkgs.btop}/bin/btop";
+          "Normal Font" = "MapleMono-NF-CN-Regular 13";
+          "Use Ligatures" = true;
+          "Window Type" = 2;
+          "Has Hotkey" = true;
+          "HotKey Key Code" = 51;
+          "HotKey Character" = 63246;
+          "HotKey Character (Native)" = 63246;
+          "HotKey Modifier" = 8388608;
+          "HotKey Modifier Flags" = 393216;
+          "Floating window" = true;
+          "Animate showing and hiding" = true;
+          "Space" = -1;
+          "Rows" = 30;
+          "Columns" = 100;
+        } // terminalColors);
       };
     };
   };

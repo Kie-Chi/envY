@@ -344,12 +344,12 @@ fn activity_tables_show_local_times_with_their_age() {
     );
     let (text, buffer) = render(&mut app, 120, 8);
     assert_snapshot(&text, GENERATIONS_TABLE);
-    assert!(cell_at(&buffer, "10 min ago")
-        .modifier
-        .contains(Modifier::DIM));
-    assert!(cell_at(&buffer, "ypk8n1d1")
-        .modifier
-        .contains(Modifier::DIM));
+    let age = cell_at(&buffer, "10 min ago");
+    assert_eq!(age.fg, Color::Reset);
+    assert!(!age.modifier.contains(Modifier::DIM));
+    let target = cell_at(&buffer, "ypk8n1d1");
+    assert_eq!(target.fg, Color::Reset);
+    assert!(!target.modifier.contains(Modifier::DIM));
     assert!(!cell_at(&buffer, "darwin-system")
         .modifier
         .contains(Modifier::DIM));
@@ -410,7 +410,7 @@ fn software_table_ellipsizes_long_cells_and_shows_a_scrollbar() {
     assert_snapshot(&text, SOFTWARE_TABLE);
     assert_terminal_palette(&buffer);
     let selected = cell_at(&buffer, "effective");
-    assert_eq!(selected.bg, theme::MUTED, "selection bar is drawn");
+    assert_eq!(selected.bg, theme::SUBTLE, "selection bar is drawn");
     assert_eq!(selected.fg, OK, "selection keeps the cell color");
 }
 
@@ -432,9 +432,9 @@ fn software_columns_follow_the_width_and_groups_are_named_once() {
 
     let (text, buffer) = render(&mut app, 130, 10);
     assert!(text.contains("VERSION") && text.contains("SOURCE"));
-    assert!(cell_at(&buffer, "nix:nixpkgs")
-        .modifier
-        .contains(Modifier::DIM));
+    let source = cell_at(&buffer, "nix:nixpkgs");
+    assert_eq!(source.fg, Color::Reset);
+    assert!(!source.modifier.contains(Modifier::DIM));
 }
 
 #[test]

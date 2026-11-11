@@ -373,21 +373,21 @@ def translate_failure(command: Sequence[str], stderr: str) -> str | None:
 
 def render_command_error(error: CommandError) -> None:
     command = error.cmd if isinstance(error.cmd, list) else [str(error.cmd)]
+    from envy.error import parse_nix_error
+
+    diagnostic = parse_nix_error(str(error.stderr or ""))
+    if diagnostic is not None:
+        log.error("config", diagnostic.message, code=diagnostic.code.value)
+        log.hint("Location: " + diagnostic.path)
+        if diagnostic.hint:
+            log.hint("Next: " + diagnostic.hint)
+        if not log.is_debug():
+            return
     log.error("command", "external command failed", exit_code=error.returncode)
     log.hint(command_display(command))
     stderr = str(error.stderr or "")
     if stderr:
-        lines = [line.strip() for line in stderr.splitlines() if line.strip()]
-        if log.is_debug():
-            selected = lines[-12:]
-        else:
-            important = [
-                line for line in lines
-                if re.search(r"\b(?:error|failed|failure|denied|timed out)\b", line, re.I)
-            ]
-            selected = [*(important[-2:]), *(lines[-2:])]
-        for line in dict.fromkeys(selected):
-            log.hint(line[:500])
+        log.console.print(stderr.rstrip(), markup=False, highlight=False)
     translation = translate_failure(command, stderr)
     if translation is not None:
         log.hint(translation)

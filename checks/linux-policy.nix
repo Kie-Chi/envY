@@ -61,6 +61,8 @@ let
   sunshineExcluded = mkConfiguration "policy-sunshine-excluded" "desktop" "gnome" [ "sunshine" ];
   vscodeExcluded = mkConfiguration "policy-vscode-excluded" "desktop" "gnome" [ "vscode" ];
   waydroidExcluded = mkConfiguration "policy-waydroid-excluded" "desktop" "gnome" [ "waydroid" ];
+  terminalToolsExcluded = mkConfiguration "policy-terminal-tools-excluded" "server" "none" [ "bat" "btop" "tmux" "fzf" "zoxide" "delta" "atuin" ];
+  alacrittyExcluded = mkConfiguration "policy-alacritty-excluded" "desktop" "niri" [ "alacritty" ];
   directSelections = mkConfigurationWith
     "policy-direct-selections"
     "server"
@@ -70,6 +72,7 @@ let
       envy.environment.sessionVariables = {
         EDITOR = "machine-editor";
         ENVY_POLICY_CHECK = "enabled";
+        FZF_DEFAULT_OPTS = "--height=60%";
       };
       envy.environment.sessionPath = [ "/opt/envy-policy-check/bin" ];
       envy.shell.zsh.aliases = {
@@ -188,6 +191,31 @@ assert !hasPackage "vscode" vscodeExcluded;
 assert !vscodeExcluded.config.programs.vscode.enable;
 assert !hasActivation "vscodeProfiles" vscodeExcluded;
 assert !hasActivation "vscodeRemoteSyncNotice" vscodeExcluded;
+assert hasPackage "bat" server && hasPackage "btop" server && hasPackage "tmux" server;
+assert builtins.hasAttr "bat/config" server.config.xdg.configFile;
+assert hasActivation "batCache" server;
+assert !hasPackage "bat" terminalToolsExcluded;
+assert !hasPackage "btop" terminalToolsExcluded;
+assert !hasPackage "tmux" terminalToolsExcluded;
+assert !hasPackage "fzf" terminalToolsExcluded;
+assert !hasPackage "zoxide" terminalToolsExcluded;
+assert !hasPackage "delta" terminalToolsExcluded;
+assert !hasPackage "atuin" terminalToolsExcluded;
+assert !(inputs.nixpkgs.lib.hasInfix "/bin/atuin init zsh" terminalToolsExcluded.config.programs.zsh.initContent);
+assert !(builtins.hasAttr "atuin/config.toml" terminalToolsExcluded.config.xdg.configFile);
+assert !(builtins.hasAttr "delta/config" terminalToolsExcluded.config.xdg.configFile);
+assert !(builtins.hasAttr "pager" terminalToolsExcluded.config.programs.git.settings);
+assert !(inputs.nixpkgs.lib.hasInfix "/bin/fzf --zsh" terminalToolsExcluded.config.programs.zsh.initContent);
+assert !(inputs.nixpkgs.lib.hasInfix "/bin/zoxide init zsh" terminalToolsExcluded.config.programs.zsh.initContent);
+assert !hasPackage "alacritty" alacrittyExcluded;
+assert !alacrittyExcluded.config.programs.alacritty.enable;
+assert !(builtins.hasAttr "alacritty/alacritty.toml" alacrittyExcluded.config.xdg.configFile);
+assert niri.config.programs.alacritty.settings.font.normal.family == "Maple Mono NF CN";
+assert directSelections.config.home.sessionVariables.FZF_DEFAULT_OPTS == "--height=60%";
+assert !(builtins.hasAttr "bat/config" terminalToolsExcluded.config.xdg.configFile);
+assert !(builtins.hasAttr "btop/btop.conf" terminalToolsExcluded.config.xdg.configFile);
+assert !(builtins.hasAttr ".tmux.conf.local" terminalToolsExcluded.config.home.file);
+assert !hasActivation "batCache" terminalToolsExcluded;
 assert !hasPackage "waydroid" waydroidExcluded;
 assert !hasPackage "waydroid-helper" waydroidExcluded;
 assert !hasActivation "installWayDroid" waydroidExcluded;

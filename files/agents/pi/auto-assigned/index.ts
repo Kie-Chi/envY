@@ -147,6 +147,16 @@ export default function autoAssigned(pi: ExtensionAPI) {
 
   pi.registerCommand("auto-assigned", {
     description: "Delegate in-scope plan approval: on [task scope], off, status (session only)",
+    getArgumentCompletions: prefix => {
+      const action = prefix.trimStart();
+      if (/\s/.test(action)) return null;
+      const items = [
+        { value: "on", label: "on", description: "Enable for [task scope] or the latest user message" },
+        { value: "off", label: "off", description: "Stop delegated approval for this session" },
+        { value: "status", label: "status", description: "Show delegation state and task scope" },
+      ].filter(item => item.value.startsWith(action));
+      return items.length ? items : null;
+    },
     handler: async (args, ctx) => {
       const [action = "status", ...rest] = (args.trim() || "status").split(/\s+/);
       if (action === "off") {

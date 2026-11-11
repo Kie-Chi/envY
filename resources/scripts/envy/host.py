@@ -13,7 +13,7 @@ from envy import log
 from envy.evaluation import informative_nix_error
 from envy.jsonio import emit, emit_error
 from envy.mutation import offer_mutation_commit
-from envy.process import run_process
+from envy.process import CommandError, render_command_error, run_process
 from envy.secure_io import atomic_write_bytes, atomic_write_text
 from envy.utils import (
     DEVICE_LABEL_FILE,
@@ -572,8 +572,11 @@ def cmd_check(
     log.step("host", "evaluating machine configuration", machine=selected)
     result = run_process(
         ["nix", "eval", "--impure", attr, "--raw"],
-        cwd=ENVY_ROOT, check=False,
+        cwd=ENVY_ROOT, capture=True, check=False,
     )
     if result.returncode != 0:
+        render_command_error(CommandError(result))
         raise typer.Exit(code=result.returncode)
+    if result.stdout:
+        log.console.print(result.stdout, end="", markup=False, highlight=False)
     log.ok("host", "machine configuration evaluates successfully", machine=selected)

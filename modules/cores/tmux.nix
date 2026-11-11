@@ -40,7 +40,7 @@ in
     home.file.".tmux.conf".source = ohMyTmux + "/.tmux.conf";
     home.file.".tmux.conf.local".text = ''
       # Oh My Tmux customizations managed by envY.
-      # Adapt only its palette; keep its status formats and session behavior.
+      # Keep its status formats and bindings while normalizing terminal I/O.
       ${themeColors}
       tmux_conf_theme_status_left_fg="${palette.foreground}"
       tmux_conf_theme_status_left_bg="${palette.background}"
@@ -59,11 +59,19 @@ in
       set -g mouse on
       set -g focus-events on
       set -g default-terminal tmux-256color #!important
+      # Let applications request modified keys on every terminal and reconnect.
+      set -s extended-keys on #!important
+      set -s extended-keys-format csi-u #!important
       set -g set-clipboard on
       set -g allow-passthrough on
       set -g status-keys emacs
       set -g mode-keys vi
       set -as terminal-features ',xterm*:RGB:clipboard'
+
+      # Refresh Wayland clipboard context without replacing SSH/X11 defaults.
+      # Check membership so repeated reloads do not append duplicate entries.
+      if -F '#{!:#{m/r:(^| )WAYLAND_DISPLAY( |$),#{update-environment}}}' 'set -ag update-environment WAYLAND_DISPLAY'
+      if -F '#{!:#{m/r:(^| )XDG_SESSION_TYPE( |$),#{update-environment}}}' 'set -ag update-environment XDG_SESSION_TYPE'
 
       # Keep Ctrl-a and Ctrl-l available to Vim and shell applications.
       set -g prefix2 None #!important

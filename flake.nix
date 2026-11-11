@@ -271,6 +271,20 @@
       mkEnvyPythonCheck = system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
+          homes = if system == darwinSystem then
+            lib.mapAttrs (_: configuration: let
+              config = configuration.config;
+            in config.home-manager.users.${config.envy.user.name}) darwinConfigurations
+          else lib.mapAttrs (_: configuration: configuration.config) homeConfigurations;
+          tmuxHomes = lib.filterAttrs (_: config:
+            builtins.hasAttr ".tmux.conf.local" config.home.file
+          ) homes;
+          terminalFixtures = pkgs.writeText "envy-terminal-theme-fixtures.json" (builtins.toJSON {
+            selectedCases = lib.mapAttrs (_: config: {
+              tmuxSource = config.home.file.".tmux.conf".source;
+              tmuxConfig = config.home.file.".tmux.conf.local".text;
+            }) tmuxHomes;
+          });
           python = pkgs.python3.withPackages (ps: [
             ps.typer
             ps.rich
@@ -279,13 +293,15 @@
             ps.tomli-w
           ]);
         in pkgs.runCommand "envy-python-tests" {
-          nativeBuildInputs = [ python pkgs.git ];
+          nativeBuildInputs = [ python pkgs.git pkgs.tmux pkgs.perl ];
         } ''
           export HOME="$TMPDIR/home"
           mkdir -p "$HOME"
           export PYTHONPYCACHEPREFIX="$TMPDIR/pycache"
           export PYTHONPATH="${./resources/scripts}"
           export ENVY_TEST_ROOT="${./.}"
+          export ENVY_TERMINAL_THEME_FIXTURES=${terminalFixtures}
+          export ENVY_REQUIRE_TMUX_TESTS=1
           cd ${./.}
           python -m compileall -q ${./resources/scripts/envy}
           python -m unittest discover -s ${./resources/scripts/tests} -p 'test_*.py'

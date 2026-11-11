@@ -507,3 +507,23 @@ class RealToolImportTests(ImportScenarios, KeyWorldTest):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UsbScanTests(unittest.TestCase):
+    def test_unreadable_volume_is_skipped(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mount = Path(tmp)
+            (mount / "usb" / "recovery").mkdir(parents=True)
+            (mount / "usb" / "recovery" / "backup.age").write_text("x")
+            locked = mount / "locked"
+            locked.mkdir()
+            (locked / "secret.age").write_text("x")
+            locked.chmod(0o000)
+            try:
+                found = prompts.scan_usb_key_files([mount])
+            finally:
+                locked.chmod(0o700)
+        self.assertEqual([path.name for path in found], ["backup.age"])

@@ -370,3 +370,120 @@ class StorageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StorageDirectoryTests(unittest.TestCase):
+    """Directory rules, protected overrides, and native maintenance gating."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.home = Path(self.temporary.name).resolve()
+        self.state = self.home / "state"
+        self.data = self.home / "Library" / "Application Support" / "Demo" / "Cache"
+        self.bucket = self.data / "bucket"
+        (self.bucket / "nested").mkdir(parents=True)
+        (self.bucket / "nested" / "blob.bin").write_bytes(b"x" * 4096)
+        old = time.time() - 40 * 86400
+        for entry in [*self.bucket.rglob("*"), self.bucket]:
+            os.utime(entry, (old, old))
+        self.manifest = {"settings": {"envy.user.home": str(self.home)}, "storage": {
+            "mode": "report", "quarantineDays": 1, "archive": {}, "protectedOverrides": [
+                str(self.data)], "rules": [{
+                    "id": "demo-cache", "path": str(self.data), "action": "quarantine",
+                    "targets": "dirs", "depth": 1, "recursiveAge": True,
+                    "minAgeDays": 30, "names": ["bucket"]}]}}
+
+    def policy(self):
+        return policy_from_manifest(self.manifest, self.state, self.home / "isolation")
+
+    def scan(self, path):
+        events = [{"type": "MSG", "msg": "envy-storage-candidate", "path": str(path)},
+                  {"type": "REPORT", "error_count": 0, "success_count": 1}]
+        return subprocess.CompletedProcess([], 0, "\n".join(json.dumps(e) for e in events), "")
+
+    def plan(self, policy, path=None):
+        with patch.object(planner, "run_process", return_value=self.scan(path or self.bucket)):
+            return planner.plan(policy, self.state)
+
+    def test_directory_candidate_is_frozen_and_restored(self):
+        policy = self.policy()
+        plan = self.plan(policy)
+        self.assertEqual(len(plan["candidates"]), 1)
+        candidate = plan["candidates"][0]
+        self.assertTrue(candidate["path"].endswith("bucket"))
+        self.assertIn("treeHash", candidate)
+        self.assertGreater(candidate["size"], 0)
+        with patch.object(lifecycle, "assert_inactive"):
+            lifecycle.execute(policy, self.state, plan["id"])
+            self.assertFalse(self.bucket.exists())
+            run = records(self.state, "runs")[0]
+            target = self.home / "restored"
+            result = lifecycle.restore(policy, self.state, run["id"], target)
+        self.assertEqual(result["restored"], [str(self.bucket)])
+        restored = target / self.bucket.relative_to("/") / "nested" / "blob.bin"
+        self.assertEqual(restored.read_bytes(), b"x" * 4096)
+
+    def test_changed_directory_is_never_moved(self):
+        policy = self.policy()
+        plan = self.plan(policy)
+        (self.bucket / "late.bin").write_bytes(b"late")
+        with patch.object(lifecycle, "assert_inactive"):
+            batch = lifecycle.execute(policy, self.state, plan["id"])
+        self.assertTrue(self.bucket.exists())
+        batch_errors = batch["errors"]
+        self.assertTrue(batch_errors)
+
+    def test_protected_override_is_scoped_to_its_directory(self):
+        from envy.storage.model import is_protected
+        policy = self.policy()
+        self.assertFalse(is_protected(self.bucket, policy))
+        sibling = self.home / "Library" / "Application Support" / "Demo" / "Vault" / "secret"
+        sibling.mkdir(parents=True)
+        self.assertTrue(is_protected(sibling, policy))
+
+    def test_override_must_name_a_nested_directory(self):
+        self.manifest["storage"]["protectedOverrides"] = [
+            str(self.home / "Library" / "Application Support" / "Demo")]
+        with self.assertRaises(StorageError):
+            self.policy()
+
+    def test_directory_archive_is_rejected(self):
+        self.manifest["storage"]["archive"] = {"repository": "sftp:test@nas:/a",
+                                               "passwordFile": str(self.home / "pw")}
+        self.manifest["storage"]["rules"][0]["action"] = "archive"
+        with self.assertRaises(StorageError):
+            self.policy()
+
+    def test_running_process_marks_candidates_blocked(self):
+        self.manifest["storage"]["rules"][0]["processes"] = ["python3"]
+        policy = self.policy()
+        with patch.object(planner, "active_processes", return_value=["python3"]):
+            plan = self.plan(policy)
+        self.assertTrue(plan["candidates"][0]["blocked"])
+        with patch.object(lifecycle, "active_processes", return_value=["python3"]):
+            with patch.object(lifecycle, "assert_inactive"):
+                batch = lifecycle.execute(policy, self.state, plan["id"])
+        self.assertTrue(self.bucket.exists())
+        self.assertTrue(batch["errors"])
+
+    def test_unmatched_glob_root_is_reported(self):
+        self.manifest["storage"]["rules"][0]["path"] = str(self.data / "*" / "missing")
+        plan = self.plan(self.policy())
+        self.assertEqual(plan["candidates"], [])
+        self.assertTrue(any("matched no roots" in entry["reason"] for entry in plan["skipped"]))
+
+    def test_expand_resolves_wildcards(self):
+        from envy.storage.model import expand
+        first = self.data / "one"
+        second = self.data / "two"
+        first.mkdir()
+        second.mkdir()
+        self.assertLessEqual({first, second}, set(expand(str(self.data / "*"))))
+
+    def test_maintenance_actions_require_policy_enablement(self):
+        from envy.storage import maintenance
+        policy = self.policy()
+        self.assertEqual(policy.maintenance, ())
+        with self.assertRaises(StorageError):
+            maintenance.preview(policy, ["docker"])

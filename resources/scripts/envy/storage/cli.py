@@ -10,7 +10,7 @@ from rich.table import Table
 
 from envy import jsonio, log
 from envy.evaluation import machine_manifest
-from envy.storage import lifecycle, planner
+from envy.storage import lifecycle, maintenance, planner
 from envy.storage.backend import Archive
 from envy.storage.model import StorageError, policy_from_manifest
 from envy.storage.state import locked, read_record, records
@@ -47,16 +47,38 @@ def _perform(command, json_output, operation):
     else:
         if command == "plan" or "candidates" in data:
             table = Table(title=f"Storage plan {data.get('id', '')}")
-            for name in ("Rule", "Action", "Bytes", "Path"):
+            for name in ("Rule", "Targets", "Entries", "GiB", "Blocked", "Note"):
                 table.add_column(name)
-            for item in data.get("candidates", []):
-                table.add_row(item.get("rule", ""), item.get("action", "expire"),
-                              str(item["size"]), item["path"])
+            for item in data.get("rules", []):
+                table.add_row(item.get("id", ""), item.get("targets", ""),
+                              str(item.get("candidates", 0)),
+                              f"{item.get('bytes', 0) / 2**30:.3f}",
+                              str(item.get("blocked", 0)), item.get("reason", ""))
             log.console.print(table)
-            for entry in data.get("skipped", []):
+            for entry in data.get("skipped", [])[:10]:
                 log.warn("storage", entry["reason"], path=entry["path"])
             if data.get("id"):
+                log.hint("Inspect every candidate: envy storage plan --json")
                 log.hint(f"Execute this plan: envy storage run {data['id']} --yes")
+        elif command == "validate":
+            table = Table(title="Storage rule validation")
+            for name in ("Rule", "Root", "Check", "Error"):
+                table.add_column(name)
+            for item in data.get("rules", []):
+                table.add_row(item.get("rule", ""), item.get("root", ""),
+                              "ok" if item.get("ok") else "failed", item.get("error", ""))
+            log.console.print(table)
+        elif command == "maintain":
+            table = Table(title="Storage maintenance")
+            for name in ("Action", "Available", "Commands", "Note"):
+                table.add_column(name)
+            for item in data.get("items", []):
+                table.add_row(item.get("action", ""), "yes" if item.get("available") else "no",
+                              " ; ".join(" ".join(command) for command in item.get("commands", [])),
+                              item.get("note", ""))
+            log.console.print(table)
+            if not data.get("execute"):
+                log.hint("Execute selected actions with: envy storage maintain --yes --nix/--docker/--go")
         else:
             log.console.print_json(data=data)
     if failed:
@@ -110,6 +132,11 @@ def cmd_status(json_output: bool = typer.Option(False, "--json", help="Emit JSON
         policy, state = _context()
         with locked(state):
             return {"mode": policy.mode, "rules": [rule.id for rule in policy.rules],
+                    "ruleDetails": [{"id": rule.id, "path": rule.path, "action": rule.action,
+                                    "targets": rule.targets, "depth": rule.depth,
+                                    "recursiveAge": rule.recursive_age,
+                                    "processes": list(rule.processes)} for rule in policy.rules],
+                    "maintenance": list(policy.maintenance),
                     "archiveConfigured": bool(policy.repository),
                     "latestPlan": max(records(state, "plans"), key=lambda plan: plan["createdAt"], default=None),
                     "runs": records(state, "runs")}
@@ -141,6 +168,34 @@ def cmd_restore(
         with locked(state):
             return lifecycle.restore(policy, state, run_id, target)
     _perform("restore", json_output, operation)
+
+
+@app.command("maintain")
+def cmd_maintain(
+    nix: bool = typer.Option(False, "--nix", help="Collect unreferenced Nix store paths, keeping generations."),
+    docker: bool = typer.Option(False, "--docker", help="Prune Docker build cache and dangling images."),
+    go: bool = typer.Option(False, "--go", help="Clean the Go build cache."),
+    yes: bool = typer.Option(False, "--yes", help="Execute instead of previewing."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+):
+    """Preview or run explicit native maintenance; never part of the schedule."""
+    def operation():
+        policy, state = _context()
+        actions = [name for name, enabled in (("nix", nix), ("docker", docker), ("go", go)) if enabled]
+        with locked(state):
+            if yes:
+                return maintenance.maintain(policy, actions or None)
+            return maintenance.preview(policy, actions or None)
+    _perform("maintain", json_output, operation)
+
+
+@app.command("validate")
+def cmd_validate(json_output: bool = typer.Option(False, "--json", help="Emit JSON.")):
+    """Run organize check against every generated rule config; no scan, no writes."""
+    def operation():
+        policy, state = _context()
+        return planner.validate(policy, state)
+    _perform("validate", json_output, operation)
 
 
 @app.command("init")

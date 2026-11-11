@@ -10,8 +10,9 @@ from pathlib import Path
 
 from envy.secure_io import ensure_private_directory
 from envy.storage.backend import Archive
-from envy.storage.model import Policy, StorageError, no_symlinks, signature, validate_file
-from envy.storage.planner import assert_inactive, file_hash
+from envy.storage.model import (Policy, StorageError, no_symlinks, signature,
+                                tree_digest, validate_entry)
+from envy.storage.planner import active_processes, assert_inactive, file_hash
 from envy.storage.state import read_record, records, write_record
 
 
@@ -23,10 +24,16 @@ def _rule(policy: Policy, candidate: dict):
 
 
 def _recheck(policy: Policy, candidate: dict) -> None:
-    info = validate_file(Path(candidate["path"]), _rule(policy, candidate), policy)
+    rule = _rule(policy, candidate)
+    path = Path(candidate["path"])
+    info = validate_entry(path, Path(candidate["root"]), rule, policy)
     if signature(info) != candidate["signature"]:
         raise StorageError("Candidate changed after the plan was created")
-    assert_inactive(Path(candidate["path"]))
+    if rule.targets == "dirs" and tree_digest(path) != candidate["treeHash"]:
+        raise StorageError("Candidate changed after the plan was created")
+    if active_processes(rule):
+        raise StorageError("A declared process is running; candidate retained")
+    assert_inactive(path)
 
 
 def _open_parent(path: Path) -> int:
@@ -57,6 +64,16 @@ def _stage(candidate: dict, destination: Path) -> None:
         os.close(descriptor)
 
 
+def _verify_staged(candidate: dict, destination: Path) -> None:
+    if signature(destination.lstat())[:4] != candidate["signature"][:4]:
+        raise StorageError("Moved entry identity changed; retained for manual recovery")
+    if candidate.get("targets") == "dirs":
+        if tree_digest(destination) != candidate["treeHash"]:
+            raise StorageError("Staged directory changed; retained for recovery")
+    elif candidate["action"] == "archive" and file_hash(destination) != candidate["sha256"]:
+        raise StorageError("Staged file changed; it has been retained for recovery")
+
+
 def execute(policy: Policy, state: Path, plan_id: str) -> dict:
     plan = read_record(state, "plans", plan_id)
     if plan.get("policy") != policy.fingerprint or not 0 <= time.time() - plan["createdAt"] <= 86400:
@@ -81,7 +98,6 @@ def execute(policy: Policy, state: Path, plan_id: str) -> dict:
             candidate["sha256"] = file_hash(Path(candidate["path"]))
             _recheck(policy, candidate)
         batch["snapshot"] = backend.backup([candidate["path"] for candidate in archives], batch["id"])
-        # Save the exact snapshot before touching any source file.
         batch["items"] = [dict(candidate, status="backed-up") for candidate in archives]
         write_record(state, "runs", batch)
     directory = state / "quarantine" / batch["id"]
@@ -103,18 +119,15 @@ def execute(policy: Policy, state: Path, plan_id: str) -> dict:
                         expiresAt=time.time() + policy.quarantine_days * 86400)
             write_record(state, "runs", batch)
             _stage(candidate, destination)
-            if signature(destination.lstat())[:4] != candidate["signature"][:4]:
-                raise StorageError("Moved file identity changed; retained for manual recovery")
-            item["status"] = "quarantined"
+            _verify_staged(candidate, destination)
             item["heldSignature"] = signature(destination.lstat())
-            write_record(state, "runs", batch)
             if candidate["action"] == "archive":
-                if file_hash(destination) != candidate["sha256"]:
-                    raise StorageError("Staged file changed; it has been retained for recovery")
                 if signature(destination.lstat()) != item["heldSignature"]:
                     raise StorageError("Staged file changed before release")
                 item["status"] = "archived-held"
-                write_record(state, "runs", batch)
+            else:
+                item["status"] = "quarantined"
+            write_record(state, "runs", batch)
         except (OSError, StorageError) as exc:
             batch["errors"].append({"path": candidate["path"], "reason": str(exc)})
             write_record(state, "runs", batch)
@@ -130,6 +143,13 @@ def _held_path(state: Path, batch: dict, item: dict) -> Path:
         raise StorageError("Invalid quarantine record path")
     no_symlinks(path)
     return path
+
+
+def _release(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
 
 
 def purge(policy: Policy, state: Path, *, execute: bool = False) -> dict:
@@ -152,7 +172,7 @@ def purge(policy: Policy, state: Path, *, execute: bool = False) -> dict:
                     write_record(state, "runs", batch)
                     continue
                 if signature(path.lstat()) != item["heldSignature"]:
-                    raise StorageError("Quarantined file changed; retained")
+                    raise StorageError("Quarantined entry changed; retained")
                 assert_inactive(path, ancestors=False)
                 if item["action"] == "archive":
                     if backend.identity() != batch["repositoryId"]:
@@ -161,11 +181,14 @@ def purge(policy: Policy, state: Path, *, execute: bool = False) -> dict:
                         raise StorageError("Archive content changed; local file retained")
                     if file_hash(path) != item["sha256"]:
                         raise StorageError("Held archive file changed; retained")
+                elif item.get("targets") == "dirs":
+                    if tree_digest(path) != item["treeHash"]:
+                        raise StorageError("Held directory changed; retained")
                 if signature(path.lstat()) != item["heldSignature"]:
-                    raise StorageError("Quarantined file changed before release")
+                    raise StorageError("Quarantined entry changed before release")
                 item["status"] = "releasing"
                 write_record(state, "runs", batch)
-                path.unlink()
+                _release(path)
                 item["status"] = final_status
                 write_record(state, "runs", batch)
             except (OSError, StorageError) as exc:
@@ -193,18 +216,25 @@ def restore(policy: Policy, state: Path, run_id: str, target: Path) -> dict:
         if "heldPath" in item and _held_path(state, batch, item).exists():
             held = _held_path(state, batch, item)
             expected = item.get("heldSignature", item["signature"])
-            # Recover stable local edits as well as the original archived bytes.
             if signature(held.lstat())[:2] != expected[:2]:
                 raise StorageError("Recovery file changed; manual inspection required")
             if destination.exists():
-                if file_hash(destination) != file_hash(held):
+                if item.get("targets") == "dirs":
+                    if tree_digest(destination) != item["treeHash"]:
+                        raise StorageError("Restore target conflicts with a held directory")
+                elif file_hash(destination) != file_hash(held):
                     raise StorageError("Restore target conflicts with a held file")
             else:
                 destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
                 no_symlinks(destination.parent)
-                shutil.copy2(held, destination, follow_symlinks=False)
-                if file_hash(destination) != file_hash(held):
-                    raise StorageError("Quarantine restore verification failed")
+                if item.get("targets") == "dirs":
+                    shutil.copytree(held, destination, symlinks=False)
+                    if tree_digest(destination) != item["treeHash"]:
+                        raise StorageError("Quarantine restore verification failed")
+                else:
+                    shutil.copy2(held, destination, follow_symlinks=False)
+                    if file_hash(destination) != file_hash(held):
+                        raise StorageError("Quarantine restore verification failed")
             restored.append(item["path"])
         elif item["action"] == "archive" and batch["snapshot"]:
             if file_hash(destination) != item["sha256"]:

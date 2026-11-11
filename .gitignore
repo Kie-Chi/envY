@@ -13,3 +13,5 @@ target/
 .envy-transaction.lock
 secrets/.secrets-plain-*.yaml
 secrets/.secrets-encrypted-*.yaml
+# Local NAS credential file; never commit.
+.nas_cred

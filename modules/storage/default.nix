@@ -30,7 +30,7 @@ in
     };
   };
 
-  launchd.agents.envy-storage = lib.mkIf (machinePlatform == "darwin" && policy.mode != "manual") {
+  launchd.agents.envy-storage = lib.mkIf (machinePlatform == "darwin" && policy.mode == "auto") {
     enable = true;
     config = {
       Label = "dev.envy.storage";
@@ -41,7 +41,7 @@ in
     };
   };
 
-  systemd.user = lib.mkIf (machinePlatform == "linux" && policy.mode != "manual") {
+  systemd.user = lib.mkIf (machinePlatform == "linux" && policy.mode == "auto") {
     services.envy-storage = {
       Unit.Description = "envY storage lifecycle";
       Service = {

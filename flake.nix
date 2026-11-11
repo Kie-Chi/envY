@@ -348,6 +348,26 @@
           touch "$out"
         '';
 
+      # Parity between the Nix Codex provider and `envy agent` runtime writes.
+      mkEnvyCodexCheck = system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          python = pkgs.python3.withPackages (ps: [
+            ps.typer ps.rich ps.prompt-toolkit ps.pyyaml ps.tomli-w
+          ]);
+          fixtures = pkgs.writeText "codex-config-fixtures.json" (builtins.toJSON
+            (import ./modules/agents/providers/codex/tests/fixtures.nix { inherit lib pkgs; }));
+        in pkgs.runCommand "codex-config-tests" {
+          nativeBuildInputs = [ python ];
+        } ''
+          export HOME="$TMPDIR/home"
+          mkdir -p "$HOME"
+          export PYTHONPYCACHEPREFIX="$TMPDIR/pycache"
+          export PYTHONPATH="${./resources/scripts}"
+          python ${./resources/scripts/tests/test_agent_codex.py} ${fixtures}
+          touch "$out"
+        '';
+
       mkEnvyPiModelCheck = system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
@@ -608,6 +628,7 @@
           ENVY_READER_PATH=${./modules/agents/skills/read/scripts/read.py} python ${./modules/agents/tests/test_reader.py}
           ENVY_DEEPSEEK_SEARCH_PATH=${./modules/agents/tools/deepseek_search.py} python ${./modules/agents/tests/test_deepseek_search.py}
           ${import ./modules/agents/tests/wrappers.nix { inherit lib pkgs; }}
+          ${import ./modules/agents/tests/runtime-files.nix { inherit lib pkgs; }}
           touch "$out"
         '';
 
@@ -795,6 +816,7 @@
       checks.aarch64-darwin.pi-queue-tests = mkEnvyPiQueueCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-goal-tests = mkEnvyPiGoalCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-model-tests = mkEnvyPiModelCheck "aarch64-darwin";
+      checks.aarch64-darwin.codex-config-tests = mkEnvyCodexCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-subagent-tests = mkEnvyPiSubagentCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-doctor-tests = mkEnvyPiDoctorCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-lsp-tests = mkEnvyPiLspCheck "aarch64-darwin";
@@ -816,6 +838,7 @@
       checks.x86_64-linux.pi-queue-tests = mkEnvyPiQueueCheck "x86_64-linux";
       checks.x86_64-linux.pi-goal-tests = mkEnvyPiGoalCheck "x86_64-linux";
       checks.x86_64-linux.pi-model-tests = mkEnvyPiModelCheck "x86_64-linux";
+      checks.x86_64-linux.codex-config-tests = mkEnvyCodexCheck "x86_64-linux";
       checks.x86_64-linux.pi-subagent-tests = mkEnvyPiSubagentCheck "x86_64-linux";
       checks.x86_64-linux.pi-doctor-tests = mkEnvyPiDoctorCheck "x86_64-linux";
       checks.x86_64-linux.pi-lsp-tests = mkEnvyPiLspCheck "x86_64-linux";

@@ -17,6 +17,7 @@ from typing import Any, Optional
 import typer
 
 from envy import error, log
+from envy.agent_auth import update_auth
 from envy.agent_models import API_CHOICES, MODEL_LIMIT_FIELDS, model_bindings, profile_fields
 from envy.agent_completion import (
     complete_adapters,
@@ -41,7 +42,7 @@ from envy.mutation import offer_mutation_commit
 from envy.nix_literals import LiteralError, LiteralReader, escape_string
 from envy.secure_io import atomic_write_text, ensure_private_directory
 from envy.transaction import FileTransaction
-from envy.structured_config import update_file
+from envy.structured_config import merge, update_file
 from envy.utils import SECRETS_FILE, current_machine_id
 
 
@@ -657,6 +658,74 @@ def _runtime_pi_models(values: dict[str, Any], agent: dict[str, Any]) -> dict[st
     return {"providers": providers}
 
 
+def _codex_provider_id(endpoint_name: str) -> str:
+    return f"envy-{endpoint_name}"
+
+
+def _codex_wire_api(agent: dict[str, Any], protocol: str) -> str | None:
+    """Map envY APIs to Codex wire APIs; keep the Codex default when unset."""
+    api = agent.get("api")
+    if api == "openai-completions":
+        return "chat"
+    if api == "openai-responses":
+        return "responses"
+    if api == "anthropic-messages" or (api is None and protocol == "anthropic-compatible"):
+        raise ValueError("Codex cannot use an Anthropic wire API; select an OpenAI-compatible endpoint")
+    return None
+
+
+def _codex_settings(values: dict[str, Any], agent: dict[str, Any]) -> dict[str, Any]:
+    """Render one codex instance into the shape Codex reads from config.toml."""
+    endpoint_name = agent.get("endpoint")
+    model = agent.get("model")
+    if not isinstance(endpoint_name, str) or not endpoint_name:
+        return {}
+    if not isinstance(model, str) or not model:
+        return {}
+    base_url = _nested_value(values, "envy.llm.endpoints", endpoint_name, "baseUrl", "")
+    protocol = _nested_value(values, "envy.llm.endpoints", endpoint_name, "protocol", "openai-compatible")
+    if not base_url:
+        return {}
+    provider = _codex_provider_id(endpoint_name)
+    provider_config: dict[str, Any] = {"name": endpoint_name, "base_url": base_url}
+    wire_api = _codex_wire_api(agent, str(protocol))
+    if wire_api is not None:
+        provider_config["wire_api"] = wire_api
+    if agent.get("credential") is not None:
+        provider_config["requires_openai_auth"] = True
+    settings = {
+        "model": model,
+        "model_provider": provider,
+        "model_providers": {provider: provider_config},
+    }
+    if isinstance(agent.get("contextWindow"), int):
+        settings["model_context_window"] = agent["contextWindow"]
+    if isinstance(agent.get("maxTokens"), int):
+        settings["model_max_output_tokens"] = agent["maxTokens"]
+    return settings
+
+
+def _codex_runtime(values: dict[str, Any], agents: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """Return the merged Codex declaration and the default instance secret path."""
+    codex = {name: agent for name, agent in agents.items()
+             if isinstance(agent, dict) and agent.get("adapter") == "codex"}
+    if not codex:
+        return {}, ""
+    data: dict[str, Any] = {}
+    # Sorted attribute order matches runtime-files.nix aggregation, so the last
+    # instance owns the scalar model and model_provider defaults.
+    for name in sorted(codex):
+        data = merge(data, _codex_settings(values, codex[name]))
+    # The "codex" instance owns the shared auth.json credential, matching
+    # providers/codex.nix; fall back to the last instance when it is absent.
+    default = codex["codex"] if "codex" in codex else codex[sorted(codex)[-1]]
+    credential = default.get("credential")
+    secret_path = (
+        _nested_value(values, "envy.llm.credentials", credential, "secretPath", "")
+        if isinstance(credential, str) else ""
+    )
+    return data, str(secret_path or "")
+
 def refresh_runtime(*, values: dict[str, Any] | None = None) -> list[str]:
     """Refresh private overrides; keep Pi's non-envY providers and roll back failures."""
     values = values if values is not None else _read_values()
@@ -668,6 +737,8 @@ def refresh_runtime(*, values: dict[str, Any] | None = None) -> list[str]:
         # the shared limits with the default profile's limits for every model.
         if item.get("adapter") != "pi" and isinstance(profile_name, str) and profile_name in profiles:
             item.update(_profile_agent_fields(profiles[profile_name]))
+    lookup = _initial_values() | values
+    codex_config, codex_secret_path = _codex_runtime(lookup, agents)
     pi_agent = agents.get("pi", {})
     pi_data = _runtime_pi_models(values, pi_agent) if pi_agent.get("adapter") == "pi" else None
     secrets, decrypt_ok = read_secrets_data()
@@ -680,12 +751,25 @@ def refresh_runtime(*, values: dict[str, Any] | None = None) -> list[str]:
     pi_models = Path.home() / ".pi" / "agent" / "models.json"
     if pi_data is not None:
         targets.append(pi_models)
+    codex_key = _secret_value(secrets, codex_secret_path)
+    codex_config_target = Path.home() / ".codex" / "config.toml"
+    codex_auth_target = Path.home() / ".codex" / "auth.json"
+    if codex_config:
+        targets.extend([codex_config_target, codex_auth_target])
     ensure_private_directory(_RUNTIME_DIR)
     with FileTransaction(targets) as transaction:
         if pi_data is not None:
             ensure_private_directory(pi_models.parent)
             update_file(pi_models, pi_data, managed_key_prefixes={"providers": "envy-pi"})
             pi_models.chmod(0o600)
+        if codex_config:
+            ensure_private_directory(codex_config_target.parent)
+            update_file(
+                codex_config_target, codex_config, format="toml",
+                managed_key_prefixes={"model_providers": "envy"},
+            )
+        if codex_key:
+            update_auth(codex_auth_target, codex_key)
         for name, env in rendered.items():
             atomic_write_text(_RUNTIME_DIR / f"{name}.env", env, mode=0o600, private_parent=True)
         transaction.commit()

@@ -18,6 +18,12 @@ envY 的 modules/agents 管理 agent 安装、provider wrapper、skill catalog �
 - linux/：Codex wrapper（Darwin 用 cask 安装 Codex）、rtk 与桌面机的 Cursor。
 - files/agents/：非 Nix 静态文件，包括 provider prompt（prompts/）和 Pi 补丁（patches/）。
 
+## Codex 配置与凭据
+
+`providers/codex.nix` 把 `envy.agents.codex`（先经 `envy.agentProfiles` 解析）渲染成 Codex 自己的 `~/.codex/config.toml`：托管 `model`、`model_context_window`、`model_max_output_tokens`、`model_provider` 和 `model_providers.envy-<endpoint>`。`wire_api` 由 api 映射（`openai-responses → responses`、`openai-completions → chat`），未设置 api 时保留 Codex 默认值；Anthropic endpoint 直接报错。`runtime-files.nix` 按 adapter 聚合所有 codex 实例后只写一次，机器 `additionalSettings` 仍覆盖生成值；`managedKeyPrefixes.model_providers = "envy"` 只替换 envY 命名的 provider，保留 Codex 的 `projects`、`tui`、`plugins` 等键。
+
+Codex 从 `~/.codex/auth.json` 读取 API key，而不是 `OPENAI_API_KEY`。activation 的 `mergeCodexAuth` 与 `envy agent refresh` 都会把解密后的 `envy.llm.credentials.<name>` 写入该文件的 `OPENAI_API_KEY`（`auth_mode = "apikey"`）并保留其他 Codex 字段；这是 envY 唯一写入应用 auth 文件的位置，`codex login` 之后需要重新 apply 或 refresh。`envy agent` 用同一套渲染规则即时写 `config.toml` 和 `auth.json`，`tests/test_agent_codex.py` 对比 Nix 与 Python 输出。
+
 ## Pi 补丁
 
 pi/package.nix 在 Pi 的 workspace 构建阶段打补丁，库和打包后的 CLI 会一起重新编译。上游求值时会从 `source` 读取 package 与 lock 文件，所以不能给 `source` 套补丁派生，否则会变成 import-from-derivation，导致在另一平台上无法求值那个平台的机器。

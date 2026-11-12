@@ -40,6 +40,9 @@ let
       version = "2.15.0";
       url = "https://registry.npmjs.org/@juicesharp/rpiv-btw/-/rpiv-btw-2.15.0.tgz";
       hash = "sha512-lJ1uelu5id+aQctYdpi6Plk7JQu5QkwNDqkTPgzmnxZAktgyI8JlNvDnRiGOUUnLHjLxvqHZzPmugYyJmUG/4Q==";
+      postUnpack = ''
+        ${pkgs.patch}/bin/patch --batch --fuzz=0 -p1 < ${../../../../files/agents/patches/pi-btw-scroll.patch}
+      '';
     };
   };
   link = target: source: lib.nameValuePair target { inherit source; };
@@ -72,6 +75,9 @@ in
         "tui.input.submit" = "enter";
         "app.message.followUp" = "alt+enter";
         "app.message.dequeue" = "alt+up";
+        # Goal compact scrolling owns Ctrl+Shift+arrows; retain chat navigation.
+        "tui.altScreen.previousPrompt" = [ "ctrl+up" ];
+        "tui.altScreen.nextPrompt" = [ "ctrl+down" ];
       };
     }
     {

@@ -46,6 +46,8 @@ pi/package.nix 在 Pi 的 workspace 构建阶段打补丁，库和打包后的 C
 
 `/btw` 不继承主会话的思考档位。未指定档位的 Sol 请求省略推理 effort，由服务端采用默认值，避免发送会被拒绝的 `none`；不改扩展的认证、上下文、无工具或会话隔离边界。
 
+`pi-btw-scroll.patch` 在扩展解包时修正弹层的滚动方向和边界。长回答使用 ↑/↓、PageUp/PageDown、Home/End 浏览；全屏模式下，指针位于弹层内时也可用滚轮，抵达边界仍由弹层消费事件。关闭弹层后焦点恢复到编辑器。`pi-coexist-tests` 使用真实 BTW、Goal 和宿主输入分发验证这些边界，其 `.tui` 入口覆盖隔离 CLI/PTY 交互。
+
 `envy agent` 的 Python 运行时生成器使用相同兼容规则，切换 profile 时不会把不支持的档位重新写回 `models.json`。`tests/models.nix` 求值实际 provider 的托管配置；`tests/pi-models.py` 对比 Nix 与运行时配置；`tests/model-lists.nix` 通过实际选项 schema 和共享默认值验证模型列表、profile 覆盖、显式 null、去重及非法输入；`tests/pi-models.mjs` 用真实 `/btw` 执行函数与 Pi 请求编码器执行离线回归，检查模型 schema、档位钳制及两种 OpenAI API 和 Anthropic 的参数。两平台的 `pi-model-tests` flake check 和 CI 运行这些检查；使用假凭据，在请求发送前捕获参数并禁止 fetch，不调用模型。
 
 ### Pi 多模型列表
@@ -136,6 +138,8 @@ envy.agents.pi.models = [
 - 全局 `~/.pi/agent/pi-goal-x-settings.json` 通过 writable merge 只管理 `hideUnfocusedBanner = true`、`hideUnfocusedPrompt = true`、`autoSelectSingleGoal = false`，保留其他字段。没有焦点的会话不被自动提示阻拦，也不自动接管旧目标。仍可用 `/goal-list`、`/goal-focus`、`/goal-resume` 手动选择。扩展自身的环境变量与项目设置仍按上游优先级覆盖全局默认。
 - 普通 goal 与 Sisyphus 都保留完整阶段、顺序、约束和完成条件；不再要求正文只写一句。`create_goal` 支持与正文一起保存经过校验的父子任务树；未显式提供任务树时，从编号、清单及中英文阶段标记中派生任务，单步骤工作不强制拆分。直接创建时仍尊重关闭任务跟踪的设置。引导草拟还校验用户原始阶段数，拒绝阶段更少的摘要提案。
 - 界面短标题和 `get_goal` 默认摘要不是完整需求；正文用 `get_goal section=objective`、任务用 `section=tasks` 分页读取。补丁不反向重建以前已被模型压缩的目标，也不能仅凭阶段数判断每个阶段的语义是否完整，仍需核对确认提案。
+
+Goal 紧凑任务列表使用 `Ctrl+Shift+↑/↓` 滚动；envY 将 Pi 全屏主聊天的上一条／下一条导航限定为 `Ctrl+↑/↓`，避免宿主先消费 Goal 按键。只有任务数超过紧凑窗口时才发生列表滚动。键位通过现有 writable merge 部署，重启 Pi 后加载。
 
 ### 子 Agent 角色与工具
 

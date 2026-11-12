@@ -598,6 +598,9 @@
           sources = lib.mapAttrsToList (_: file: toString file.source)
             (lib.filterAttrs (target: _: lib.hasPrefix ".pi/agent/extensions/" target) files);
           sourceJson = lib.escapeShellArg (builtins.toJSON sources);
+          keybindings = (lib.findFirst (file: file.target == ".pi/agent/keybindings.json")
+            (throw "Pi navigation tests require managed keybindings") extensions.envy.agents.pi.runtimeFiles).data;
+          bindingsJson = lib.escapeShellArg (builtins.toJSON keybindings);
           views = import ./modules/agents/providers/pi/views.nix { inherit lib pkgs; };
           lsp = import ./modules/agents/providers/pi/lsp.nix { inherit lib pkgs; };
           tui = pkgs.writeShellApplication {
@@ -607,7 +610,7 @@
               exec python3 ${./modules/agents/providers/pi/tests/pi-context-tui.py} \
                 ${pkgs.nodejs_24}/bin/node \
                 ${patchedPi}/lib/pi/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js \
-                ${views.context} ${views.diff} ${pkgs.git}/bin/git ${sourceJson}
+                ${views.context} ${views.diff} ${pkgs.git}/bin/git ${sourceJson} ${bindingsJson}
             '';
           };
         in pkgs.runCommand "pi-coexist-tests" {
@@ -617,6 +620,10 @@
           node ${./modules/agents/providers/pi/tests/pi-coexist.mjs} \
             ${patchedPi}/lib/pi/node_modules ${sourceJson} \
             ${builtins.head lsp.serverCommand} ${./files/agents/subagents}
+          node ${./modules/agents/providers/pi/tests/pi-navigation.mjs} \
+            ${patchedPi}/lib/pi/node_modules \
+            ${extensions.home.file.".pi/agent/extensions/envy-btw".source} \
+            ${extensions.home.file.".pi/agent/extensions/envy-goal-x".source} ${bindingsJson}
           touch "$out"
         '';
 

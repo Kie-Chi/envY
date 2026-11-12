@@ -285,6 +285,33 @@
               tmuxConfig = config.home.file.".tmux.conf.local".text;
             }) tmuxHomes;
           });
+          completionHome = lib.findFirst
+            (home: lib.any (package: lib.getName package == "fzf") home.home.packages)
+            (throw "Completion tests require a machine selecting fzf") (builtins.attrValues homes);
+          shellLines = lib.splitString "\n" completionHome.programs.zsh.initContent;
+          styleStart = lib.lists.findFirstIndex
+            (lib.hasInfix "zstyle -e ':fzf-tab:*' fzf-flags '") (-1) shellLines;
+          styleLines = assert styleStart >= 0; lib.drop styleStart shellLines;
+          styleEnd = lib.lists.findFirstIndex
+            (line: builtins.match "[[:space:]]*'[[:space:]]*" line != null) (-1) (builtins.tail styleLines);
+          completionFixtures = pkgs.writeText "envy-completion-fixtures.json" (builtins.toJSON {
+            zsh = lib.getExe pkgs.zsh;
+            fzf = lib.getExe pkgs.fzf;
+            zoxide = lib.getExe pkgs.zoxide;
+            ohMyZsh = "${pkgs.oh-my-zsh}/share/oh-my-zsh";
+            suggestions = "${pkgs.zsh-autosuggestions}/share/zsh-autosuggestions/zsh-autosuggestions.zsh";
+            syntax = "${pkgs.zsh-syntax-highlighting}/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh";
+            fzfTab = "${pkgs.zsh-fzf-tab}/share/fzf-tab/fzf-tab.plugin.zsh";
+            omzPlugins = completionHome.programs.zsh.oh-my-zsh.plugins;
+            # Limit this fixture to completion integrations, excluding prompt and history UIs.
+            initLines = builtins.filter (line: lib.any (text: lib.hasInfix text line) [
+              "zsh-autosuggestions.zsh" "oh-my-zsh.sh" "/bin/zoxide init zsh"
+              "/bin/fzf --zsh" "/share/fzf-tab/fzf-tab.plugin.zsh" "zsh-syntax-highlighting.zsh"
+            ]) shellLines;
+            fzfOptions = completionHome.home.sessionVariables.FZF_DEFAULT_OPTS;
+            fzfFlags = assert styleEnd >= 0;
+              lib.concatStringsSep "\n" (lib.take (styleEnd + 2) styleLines);
+          });
           python = pkgs.python3.withPackages (ps: [
             ps.typer
             ps.rich
@@ -293,7 +320,7 @@
             ps.tomli-w
           ]);
         in pkgs.runCommand "envy-python-tests" {
-          nativeBuildInputs = [ python pkgs.git pkgs.tmux pkgs.perl ];
+          nativeBuildInputs = [ python pkgs.git pkgs.tmux pkgs.perl pkgs.zsh pkgs.fzf pkgs.zoxide ];
         } ''
           export HOME="$TMPDIR/home"
           mkdir -p "$HOME"
@@ -301,6 +328,7 @@
           export PYTHONPATH="${./resources/scripts}"
           export ENVY_TEST_ROOT="${./.}"
           export ENVY_TERMINAL_THEME_FIXTURES=${terminalFixtures}
+          export ENVY_COMPLETION_FIXTURES=${completionFixtures}
           export ENVY_REQUIRE_TMUX_TESTS=1
           cd ${./.}
           python -m compileall -q ${./resources/scripts/envy}

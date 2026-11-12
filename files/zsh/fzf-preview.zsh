@@ -2,6 +2,9 @@
 zstyle ':completion:*' menu no
 zstyle ':completion:*:descriptions' format '[%d]'
 zstyle ':fzf-tab:*' switch-group '<' '>'
+# Account for the outer border and prompt without changing other fzf widgets.
+zstyle ':fzf-tab:*' fzf-min-height 12
+zstyle ':fzf-tab:*' fzf-pad 4
 zstyle ':fzf-tab:complete:*:*' fzf-preview '
   if [[ -d "$realpath" ]]; then
     if (( $+commands[eza] )); then

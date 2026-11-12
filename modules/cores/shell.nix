@@ -110,7 +110,14 @@ in
 
         ${lib.optionalString fzfSelected ''
           ${builtins.readFile ../../files/zsh/fzf-preview.zsh}
-          zstyle ':fzf-tab:*' fzf-flags ${lib.escapeShellArg "--color=${fzfColors}"} '--border=rounded' '--preview-window=right:55%:wrap:<50(down:45%:wrap)'
+          zstyle -e ':fzf-tab:*' fzf-flags '
+            reply=( "--color=${fzfColors}" --border=rounded )
+            if (( COLUMNS >= 100 && LINES >= 20 )); then
+              reply+=( --preview-window=right:55%:wrap )
+            else
+              reply+=( --preview-window=hidden )
+            fi
+          '
         ''}
 
         ${builtins.readFile ../../files/zsh/opt.zsh}

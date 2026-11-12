@@ -130,7 +130,11 @@
   envy.agents.cc.credential = "hbapi";
   envy.agents.cc.endpoint = "sub2api-anthropic";
   envy.agents.cc.model = "claude-opus-5";
-  envy.agents.codex.profile = "deepseek";
+  envy.agents.codex.profile = "xikai-magpie";
+  envy.agents.codex.models = [
+    { profile = "xikai-magpie"; model = "gpt-6.1-sol"; }
+    { profile = "xikai-magpie"; model = "gpt-6-astra"; }
+  ];
   envy.agents.codex.adapter = "codex";
   envy.agents.codex.credential = "xikai";
   envy.agents.codex.endpoint = "xikai-openai";

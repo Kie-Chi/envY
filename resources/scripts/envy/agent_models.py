@@ -1,4 +1,4 @@
-"""Resolve Pi model candidates without accessing credentials or application state."""
+"""Resolve agent model candidates without accessing credentials or application state."""
 
 from __future__ import annotations
 
@@ -8,10 +8,12 @@ from typing import Any
 
 from envy import error
 from envy.errno import ErrorCode
+from envy.schemas.common.config import valid_thinking_level_map
 
 
 MODEL_LIMIT_FIELDS = ("contextWindow", "maxTokens")
-MODEL_FIELDS = ("endpoint", "credential", "api", "model") + MODEL_LIMIT_FIELDS
+MODEL_FIELDS = ("endpoint", "credential", "api", "model", "thinkingLevelMap") + MODEL_LIMIT_FIELDS
+MODEL_DEFAULT_FIELDS = MODEL_LIMIT_FIELDS + ("thinkingLevelMap",)
 API_CHOICES = ("openai-completions", "openai-responses", "anthropic-messages")
 
 
@@ -19,14 +21,17 @@ def profile_fields(profile: dict[str, Any]) -> dict[str, Any]:
     return {field: profile.get(field) for field in MODEL_FIELDS}
 
 
-def model_bindings(values: dict[str, Any], agent: dict[str, Any], *, name: str = "pi") -> list[dict[str, Any]]:
+def model_bindings(
+    values: dict[str, Any], agent: dict[str, Any], *, name: str = "pi",
+    default_api: str = "openai-completions",
+) -> list[dict[str, Any]]:
     """Return default-first bindings; retain diagnostic origins only during resolution."""
     root = f"envy.agents.{name}"
     models = agent.get("models", [])
     multi = bool(models)
     if not isinstance(models, list):
         raise error.ConfigValidationError(error.invalid_type(root + ".models", "a list"))
-    defaults = {field: agent.get(field) for field in MODEL_LIMIT_FIELDS}
+    defaults = {field: agent.get(field) for field in MODEL_DEFAULT_FIELDS}
 
     def resolve(item: dict[str, Any], path: str, *, candidate: bool = False):
         if not isinstance(item, dict):
@@ -50,9 +55,16 @@ def model_bindings(values: dict[str, Any], agent: dict[str, Any], *, name: str =
                 overrides = {field: item[field] for field in MODEL_FIELDS if field in item}
                 source |= overrides
                 origins.update({field: path + "." + field for field in overrides})
+            elif "thinkingLevelMap" in item:
+                source["thinkingLevelMap"] = item["thinkingLevelMap"]
+                origins["thinkingLevelMap"] = path + ".thinkingLevelMap"
         else:
             source = defaults | item
         selection = profile_fields(source)
+        if not valid_thinking_level_map(selection["thinkingLevelMap"]):
+            raise error.ConfigValidationError(error.invalid_type(origins["thinkingLevelMap"], "a Pi thinking level map or null"))
+        if agent.get("adapter", "pi") != "pi" and selection["thinkingLevelMap"] is not None:
+            raise error.ConfigValidationError(error.invalid_value(origins["thinkingLevelMap"], "thinkingLevelMap requires the pi adapter"))
         for field in ("endpoint", "credential", "model"):
             value = selection[field]
             if value is not None and (not isinstance(value, str) or not value):
@@ -110,7 +122,7 @@ def model_bindings(values: dict[str, Any], agent: dict[str, Any], *, name: str =
             if not values.get(credential_prefix + "secretPath"):
                 fail("credential", ErrorCode.MISSING_REQUIRED, f"credential {credential!r} secretPath is not set",
                      f"Set {credential_prefix}secretPath to the encrypted YAML path; the key value belongs in sops, not Nix.")
-        api = selection["api"] or ("anthropic-messages" if endpoint["protocol"] == "anthropic-compatible" else "openai-completions")
+        api = selection["api"] or ("anthropic-messages" if endpoint["protocol"] == "anthropic-compatible" else default_api)
         selection = selection | {"api": api}
         identity = hashlib.sha256(json.dumps(
             [endpoint_name, api, credential], ensure_ascii=False, separators=(",", ":")

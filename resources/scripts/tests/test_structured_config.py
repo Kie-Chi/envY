@@ -34,6 +34,17 @@ class StructuredConfigTests(unittest.TestCase):
                 {"runtime": {"keep": True}, "model": {"name": "new"}, "tools": ["a", "b"]},
             )
 
+    def test_managed_scalars_remove_stale_values_and_preserve_user_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "config.toml"
+            target.write_text('model_catalog_json = "old.json"\nmodel_context_window = 100\ncustom = true\n')
+            update_file(target, {"model_context_window": 200}, format="toml",
+                        managed_keys=["model_catalog_json", "model_context_window"])
+            data = __import__("tomllib").loads(target.read_text())
+            self.assertNotIn("model_catalog_json", data)
+            self.assertEqual(data["model_context_window"], 200)
+            self.assertTrue(data["custom"])
+
     def test_parse_failure_keeps_original(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "settings.json"

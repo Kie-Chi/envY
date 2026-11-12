@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import stat
 import sys
 import tempfile
@@ -12,6 +14,7 @@ from unittest.mock import patch
 
 from envy import agent
 from envy.agent_auth import update_auth
+from envy.agent_codex import model_catalog
 from envy.structured_config import update_file
 
 
@@ -57,15 +60,13 @@ class CodexSettingsTests(unittest.TestCase):
 
     def test_missing_api_keeps_the_codex_default(self):
         settings = agent._codex_settings(self.values(), self.agent(api=None))
-        self.assertNotIn("wire_api", settings["model_providers"]["envy-xikai-openai"])
+        self.assertEqual(settings["model_providers"]["envy-xikai-openai"]["wire_api"], "responses")
 
-    def test_completions_api_maps_to_chat(self):
-        settings = agent._codex_settings(
-            self.values(), self.agent(endpoint="deepseek-openai", credential="deepseek", api="openai-completions"),
-        )
-        self.assertEqual(
-            settings["model_providers"]["envy-deepseek-openai"]["wire_api"], "chat",
-        )
+    def test_completions_api_is_rejected_before_writing(self):
+        with self.assertRaisesRegex(ValueError, "Codex requires openai-responses"):
+            agent._codex_settings(
+                self.values(), self.agent(endpoint="deepseek-openai", credential="deepseek", api="openai-completions"),
+            )
 
     def test_model_limits_are_forwarded(self):
         settings = agent._codex_settings(
@@ -96,7 +97,7 @@ class CodexSettingsTests(unittest.TestCase):
     def test_aggregate_keeps_every_provider_and_the_codex_default(self):
         agents = {
             "codex": self.agent(),
-            "aa-alt": self.agent(endpoint="deepseek-openai", credential="deepseek", api="openai-completions"),
+            "aa-alt": self.agent(endpoint="deepseek-openai", credential="deepseek", api="openai-responses"),
         }
         data, secret_path = agent._codex_runtime(self.values(), agents)
         self.assertEqual(data["model_provider"], "envy-xikai-openai")
@@ -109,6 +110,57 @@ class CodexSettingsTests(unittest.TestCase):
             "cc": {"adapter": "claude-code", "endpoint": "xikai-openai", "model": "x"},
         })
         self.assertEqual((data, secret_path), ({}, ""))
+
+
+class CodexCatalogTests(unittest.TestCase):
+    def bundled(self):
+        return {"models": [{
+            "slug": "native", "display_name": "Native", "base_instructions": "Native instructions",
+            "context_window": 200, "max_context_window": 300,
+            "default_reasoning_level": "high", "supported_reasoning_levels": [{"effort": "high"}],
+        }]}
+
+    def test_catalog_preserves_native_instructions_and_known_capabilities(self):
+        result = subprocess.CompletedProcess([], 0, stdout=json.dumps(self.bundled()))
+        with patch("envy.agent_codex.subprocess.run", return_value=result) as run:
+            catalog = model_catalog([{"model": "native", "contextWindow": 500}])
+        model = catalog["models"][0]
+        self.assertEqual(model["base_instructions"], "Native instructions")
+        self.assertEqual(model["supported_reasoning_levels"], [{"effort": "high"}])
+        self.assertEqual(model["context_window"], 500)
+        self.assertEqual(model["max_context_window"], 500)
+        self.assertNotEqual(run.call_args.kwargs["env"]["CODEX_HOME"], str(Path.home() / ".codex"))
+        self.assertEqual(run.call_args.args[0][-1], "--bundled")
+
+    def test_unknown_models_do_not_inherit_native_capability_claims(self):
+        result = subprocess.CompletedProcess([], 0, stdout=json.dumps(self.bundled()))
+        with patch("envy.agent_codex.subprocess.run", return_value=result):
+            catalog = model_catalog([{"model": "custom"}])
+        model = catalog["models"][0]
+        self.assertEqual(model["slug"], "custom")
+        self.assertEqual(model["base_instructions"], "Native instructions")
+        self.assertEqual(model["supported_reasoning_levels"], [])
+        self.assertIsNone(model["context_window"])
+        self.assertFalse(model["support_verbosity"])
+
+    def test_invalid_bundled_metadata_is_rejected(self):
+        for payload in ('{}', '{"models": []}', 'invalid', '{"models": [1]}'):
+            with self.subTest(payload=payload), patch("envy.agent_codex.subprocess.run", return_value=subprocess.CompletedProcess([], 0, stdout=payload)):
+                with self.assertRaises(ValueError):
+                    model_catalog([{"model": "custom"}])
+
+    @unittest.skipUnless(os.environ.get("CODEX_TEST_BINARY"), "native Codex binary not selected")
+    def test_native_client_loads_generated_catalog_offline(self):
+        executable = os.environ["CODEX_TEST_BINARY"]
+        catalog = model_catalog([{"model": "gpt-6.1-sol"}, {"model": "envy-custom-test", "contextWindow": 10000}], executable=executable)
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / "catalog.json").write_text(json.dumps(catalog))
+            (home / "config.toml").write_text('model_catalog_json = "' + str(home / "catalog.json") + '"\n')
+            result = subprocess.run([executable, "features", "list"], env=dict(os.environ, CODEX_HOME=directory),
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([item["slug"] for item in catalog["models"]], ["gpt-6.1-sol", "envy-custom-test"])
 
 
 class CodexAuthTests(unittest.TestCase):
@@ -180,8 +232,15 @@ class CodexParityTests(unittest.TestCase):
             profile = selection.get("profile")
             if isinstance(profile, str) and profile in profiles:
                 selection.update(agent._profile_agent_fields(profiles[profile]))
-            data, _ = agent._codex_runtime(values, {"codex": selection})
+            if fixture.get("invalid"):
+                with self.assertRaises(ValueError, msg=fixture["name"]):
+                    agent._codex_runtime(values, {"codex": selection})
+                continue
+            with patch.object(Path, "home", return_value=Path("/test-home")):
+                data, _ = agent._codex_runtime(values, {"codex": selection})
             self.assertEqual(data, fixture["expected"], fixture["name"])
+            self.assertEqual([entry["selection"] for entry in agent._codex_bindings(values, selection)],
+                             fixture["selections"], fixture["name"])
 
 
 class CodexRuntimeTests(unittest.TestCase):
@@ -201,7 +260,7 @@ class CodexRuntimeTests(unittest.TestCase):
             "envy.agents.codex.model": "gpt-6.1-sol",
             "envy.agentProfiles.deepseek.endpoint": "deepseek-openai",
             "envy.agentProfiles.deepseek.credential": "deepseek",
-            "envy.agentProfiles.deepseek.api": "openai-completions",
+            "envy.agentProfiles.deepseek.api": "openai-responses",
             "envy.agentProfiles.deepseek.model": "deepseek-v4-pro",
             "envy.llm.endpoints.xikai-openai.baseUrl": "https://api.xikai.site/v1",
             "envy.llm.endpoints.deepseek-openai.baseUrl": "https://api.deepseek.com",
@@ -214,7 +273,7 @@ class CodexRuntimeTests(unittest.TestCase):
         config = (self.home / ".codex" / "config.toml").read_text()
         self.assertIn('model = "deepseek-v4-pro"', config)
         self.assertIn('model_provider = "envy-deepseek-openai"', config)
-        self.assertIn('wire_api = "chat"', config)
+        self.assertIn('wire_api = "responses"', config)
         auth = json.loads((self.home / ".codex" / "auth.json").read_text())
         self.assertEqual(auth, {"auth_mode": "apikey", "OPENAI_API_KEY": "sk-deepseek"})
 
@@ -229,6 +288,91 @@ trust_level = "trusted"
         data = __import__("tomllib").loads(target.read_text())
         self.assertEqual(data["projects"]["/tmp/x"]["trust_level"], "trusted")
         self.assertEqual(data["model"], "deepseek-v4-pro")
+
+    def list_values(self):
+        return self.values | {
+            "envy.agents.codex.profile": None,
+            "envy.agents.codex.model": None,
+            "envy.agents.codex.models": [
+                {"profile": "deepseek"}, {"profile": "deepseek", "model": "second"},
+            ],
+        }
+
+    def test_lists_select_first_model_and_its_credential(self):
+        values = self.list_values()
+        _, agents = agent._managed_manifest(values)
+        settings, secret = agent._codex_runtime(values, agents)
+        self.assertEqual(settings["model"], "deepseek-v4-pro")
+        self.assertEqual(secret, "llm/deepseek/apikey")
+        self.assertEqual(settings["model_catalog_json"], str(self.home / ".codex/envy-models.json"))
+        self.assertEqual(len(agent._codex_bindings(values, agents["codex"])), 2)
+        self.assertIn("sk-deepseek", agent._runtime_env(values, agents["codex"], {"llm": {"deepseek": {"apikey": "sk-deepseek"}}}))
+
+    def test_refresh_replaces_catalog_and_clears_catalog_selection(self):
+        values = self.list_values()
+        def catalog(selections):
+            return {"models": [{"slug": item["model"]} for item in selections]}
+        with patch.object(agent, "model_catalog", side_effect=catalog):
+            agent.refresh_runtime(values=values)
+            path = self.home / ".codex/envy-models.json"
+            self.assertEqual([item["slug"] for item in json.loads(path.read_text())["models"]], ["deepseek-v4-pro", "second"])
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            values["envy.agents.codex.models"] = values["envy.agents.codex.models"][:1]
+            agent.refresh_runtime(values=values)
+            self.assertEqual(len(json.loads(path.read_text())["models"]), 1)
+            agent.refresh_runtime(values=self.values)
+        data = __import__("tomllib").loads((self.home / ".codex/config.toml").read_text())
+        self.assertNotIn("model_catalog_json", data)
+
+    def test_invalid_models_leave_runtime_untouched(self):
+        agent.refresh_runtime(values=self.values)
+        target = self.home / ".codex/config.toml"
+        original = target.read_bytes()
+        for changes in ({"endpoint": "xikai-openai"}, {"credential": "xikai"},
+                        {"api": "openai-completions"}, {"api": "anthropic-messages"},
+                        {"maxTokens": 100}, {"model": None}):
+            values = self.list_values()
+            values["envy.agents.codex.models"][1].update(changes)
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                agent.refresh_runtime(values=values)
+            self.assertEqual(target.read_bytes(), original)
+
+    def test_profile_without_limits_inherits_agent_limits_during_refresh(self):
+        values = self.values | {"envy.agents.codex.contextWindow": 10000, "envy.agents.codex.maxTokens": 2000}
+        agent.refresh_runtime(values=values)
+        data = __import__("tomllib").loads((self.home / ".codex/config.toml").read_text())
+        self.assertEqual(data["model_context_window"], 10000)
+        self.assertEqual(data["model_max_output_tokens"], 2000)
+
+    def test_catalog_failure_keeps_existing_config(self):
+        agent.refresh_runtime(values=self.values)
+        target = self.home / ".codex/config.toml"
+        original = target.read_bytes()
+        with patch.object(agent, "model_catalog", side_effect=ValueError("catalog unavailable")):
+            with self.assertRaises(ValueError):
+                agent.refresh_runtime(values=self.list_values())
+        self.assertEqual(target.read_bytes(), original)
+
+    def test_catalog_and_config_roll_back_together(self):
+        agent.refresh_runtime(values=self.values)
+        target = self.home / ".codex/config.toml"
+        catalog = self.home / ".codex/envy-models.json"
+        catalog.write_text('{"models": ["original"]}')
+        before = (target.read_bytes(), catalog.read_bytes())
+        with patch.object(agent, "model_catalog", return_value={"models": ["new"]}), \
+             patch.object(agent, "update_auth", side_effect=OSError("write failed")):
+            with self.assertRaises(OSError):
+                agent.refresh_runtime(values=self.list_values())
+        self.assertEqual((target.read_bytes(), catalog.read_bytes()), before)
+
+    def test_duplicate_and_explicit_null_candidates(self):
+        values = self.list_values()
+        values["envy.agents.codex.models"] = [{"profile": "deepseek", "credential": None, "api": None}] * 2
+        _, agents = agent._managed_manifest(values)
+        bindings = agent._codex_bindings(values, agents["codex"])
+        self.assertEqual(len(bindings), 1)
+        self.assertIsNone(bindings[0]["selection"]["credential"])
+        self.assertEqual(bindings[0]["api"], "openai-responses")
 
     def test_without_codex_instance_nothing_is_written(self):
         agent.refresh_runtime(values={"envy.agents.pi.adapter": "pi"})

@@ -85,3 +85,14 @@ COMMON_SECRET_FIELDS = [
 
 OBSOLETE_MACHINE_KEYS = ["envy.llm.dashscope.url", "envy.llm.dashscope.model"]
 OBSOLETE_SECRET_PATHS = ["llm/dashscope/apikey"]
+
+
+PI_THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+
+
+def valid_thinking_level_map(value: object) -> bool:
+    """Accept Pi level keys mapped to non-empty provider efforts or null."""
+    return value is None or (isinstance(value, dict) and all(
+        key in PI_THINKING_LEVELS and (effort is None or isinstance(effort, str) and bool(effort))
+        for key, effort in value.items()
+    ))

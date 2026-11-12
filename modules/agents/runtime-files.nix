@@ -17,6 +17,7 @@ let
     inherit name data;
     inherit (settingsFile) target format;
     managedKeyPrefixes = settingsFile.managedKeyPrefixes or {};
+    managedKeys = settingsFile.managedKeys or [];
   };
 
   perAgentEntries = lib.concatLists (lib.mapAttrsToList (agentName: agent:
@@ -72,6 +73,11 @@ in
           default = false;
           description = "Merge every instance of this adapter into one settings file.";
         };
+        managedKeys = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [];
+          description = "Top-level keys replaced or removed with each declaration.";
+        };
         managedKeyPrefixes = lib.mkOption {
           type = lib.types.attrsOf lib.types.str;
           default = {};
@@ -87,6 +93,7 @@ in
     home.activation = lib.listToAttrs (map (file:
       lib.nameValuePair "mergeAgentRuntime-${file.name}" (sys.mergeWritable {
         inherit (file) name target format data managedKeyPrefixes;
+        managedKeys = file.managedKeys or [];
       })
     ) runtimeFiles);
     assertions = [

@@ -4,20 +4,15 @@ let
   profiles = config.envy.agentProfiles;
   wrapper = import ../wrapper.nix { inherit lib pkgs; };
 
-  # Keep this override order identical to envy/agent.py: a named profile
-  # replaces every model selection field, including explicit nulls.
-  resolveAgent = agent:
-    let profile = agent.profile; in
-    if profile != null && builtins.hasAttr profile profiles then
-      agent // {
-        endpoint = profiles.${profile}.endpoint or null;
-        credential = profiles.${profile}.credential or null;
-        api = profiles.${profile}.api or null;
-        model = profiles.${profile}.model or null;
-        contextWindow = profiles.${profile}.contextWindow or null;
-        maxTokens = profiles.${profile}.maxTokens or null;
-      }
-    else agent;
+  selectionsFor = agent: import ./codex/models.nix { inherit lib; } {
+    inherit agent profiles;
+    inherit (config.envy.llm) endpoints credentials;
+  };
+  resolveAgent = agent: agent // (selectionsFor agent).default.selection;
+  catalogTarget = "/.codex/envy-models.json";
+  catalogSelections = map (entry: entry.selection) (selectionsFor config.envy.agents.codex).bindings;
+  catalogSource = pkgs.writeText "codex-model-selections.json" (builtins.toJSON catalogSelections);
+  codexExecutable = if pkgs.stdenv.hostPlatform.isDarwin then "/opt/homebrew/bin/codex" else lib.getExe pkgs.codex;
 
   codexAgent = config.envy.agents.codex;
   resolvedAgent = resolveAgent codexAgent;
@@ -26,14 +21,6 @@ let
   # touching user-defined providers in Codex configuration.
   providerId = endpointName: "envy-${endpointName}";
 
-  wireApi = agent: endpoint:
-    if agent.api == "openai-completions" then "chat"
-    else if agent.api == "openai-responses" then "responses"
-    else if agent.api == "anthropic-messages"
-      || (agent.api == null && endpoint != null && endpoint.protocol == "anthropic-compatible")
-      then throw "Codex cannot use an Anthropic wire API; select an OpenAI-compatible endpoint."
-    else null;
-
   # Render one instance into Codex config.toml shape. runtime-files.nix merges
   # every codex instance into one file before machine additionalSettings.
   settingsFor = agent:
@@ -41,7 +28,6 @@ let
       resolved = resolveAgent agent;
       inherit (wrapper.resolve config resolved) endpoint credentialName;
       endpointName = resolved.endpoint;
-      api = wireApi resolved endpoint;
     in
       lib.optionalAttrs (endpoint != null && endpointName != null && resolved.model != null) ({
         model = resolved.model;
@@ -51,10 +37,11 @@ let
             name = endpointName;
             base_url = endpoint.baseUrl;
           }
-          // lib.optionalAttrs (api != null) { wire_api = api; }
+          // { wire_api = "responses"; }
           // lib.optionalAttrs (credentialName != null) { requires_openai_auth = true; };
       }
-      // lib.optionalAttrs ((resolved.contextWindow or null) != null) { model_context_window = resolved.contextWindow; }
+      // lib.optionalAttrs ((agent.models or []) != []) { model_catalog_json = config.envy.user.home + catalogTarget; }
+      // lib.optionalAttrs ((agent.models or []) == [] && (resolved.contextWindow or null) != null) { model_context_window = resolved.contextWindow; }
       // lib.optionalAttrs ((resolved.maxTokens or null) != null) { model_max_output_tokens = resolved.maxTokens; });
 
   authSecret =
@@ -71,6 +58,7 @@ in
       format = "toml";
       aggregate = true;
       managedKeyPrefixes.model_providers = "envy";
+      managedKeys = [ "model_catalog_json" "model_context_window" "model_max_output_tokens" ];
       render = settingsFor;
     };
 
@@ -92,7 +80,15 @@ in
     '';
 
     # Codex reads its API credential from auth.json, not from OPENAI_API_KEY.
-    home.activation = lib.optionalAttrs (authSecret != null) {
+    home.activation = lib.optionalAttrs ((codexAgent.models or []) != []) {
+      mergeCodexModels = lib.hm.dag.entryBetween [ "mergeAgentRuntime-codex-settings" ] [ "linkGeneration" ] ''
+        if [ -z "$DRY_RUN_CMD" ]; then
+          PYTHONPATH=${../../../resources/scripts} ${pkgs.python3}/bin/python -m envy.agent_codex \
+            --source ${catalogSource} --target "$HOME"${lib.escapeShellArg catalogTarget} \
+            --codex ${lib.escapeShellArg codexExecutable}
+        fi
+      '';
+    } // lib.optionalAttrs (authSecret != null) {
       mergeCodexAuth = lib.hm.dag.entryAfter [ "userBoundary" ] ''
         _LOG_CTX="mergeCodexAuth"
         if [ -z "$DRY_RUN_CMD" ] && [ -f ${lib.escapeShellArg authSecret} ]; then

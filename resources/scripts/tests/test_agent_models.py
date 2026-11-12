@@ -58,6 +58,63 @@ class AgentModelsTests(unittest.TestCase):
     def providers(self, **kwargs):
         return agent._runtime_pi_models(self.values, self.config(**kwargs))["providers"]
 
+    def test_thinking_maps_inherit_override_and_clear_consistently(self):
+        restricted = {"off": None, "minimal": None, "ultra": None}
+        self.values["envy.agentProfiles.fast.thinkingLevelMap"] = restricted
+        cases = [
+            ({"profile": "fast"}, restricted),
+            ({"profile": "fast", "thinkingLevelMap": {"off": "none"}}, {"off": "none"}),
+            ({"profile": "fast", "thinkingLevelMap": None}, None),
+            ({"profile": "fast", "thinkingLevelMap": {}}, {}),
+        ]
+        for fields, expected in cases:
+            for models in ([], [fields]):
+                config = self.config(**fields, models=models)
+                with self.subTest(config=config):
+                    selection = model_bindings(self.values, config)[0]["selection"]
+                    self.assertEqual(selection["thinkingLevelMap"], expected)
+                    model = next(iter(agent._runtime_pi_models(self.values, config)["providers"].values()))["models"][0]
+                    self.assertEqual(model.get("thinkingLevelMap", {}), restricted if expected is None else expected)
+        bindings = model_bindings(self.values, self.config(thinkingLevelMap={"off": None}))
+        self.assertEqual(bindings[0]["selection"]["thinkingLevelMap"], restricted)
+        self.assertEqual(bindings[1]["selection"]["thinkingLevelMap"], {"off": None})
+        self.values["envy.agentProfiles.fast.thinkingLevelMap"] = None
+        config = self.config(models=[{"profile": "fast"}], thinkingLevelMap={"off": None})
+        self.assertIsNone(model_bindings(self.values, config)[0]["selection"]["thinkingLevelMap"])
+        scalar = self.config(profile="fast", models=[], thinkingLevelMap={"off": None})
+        self.assertEqual(model_bindings(self.values, scalar)[0]["selection"]["thinkingLevelMap"], {"off": None})
+
+    def test_thinking_map_edits_round_trip_and_preserve_profile(self):
+        agent._write_values(self.values | {"envy.agents.pi.profile": "fast", "envy.agents.pi.models": self.models[1:]})
+        for prefix in ("envy.agentProfiles.fast", "envy.agents.pi"):
+            for command in (agent._set, updates.set_config_value):
+                for value in ({"off": None, "high": "medium"}, {}, None):
+                    command(prefix + ".thinkingLevelMap", json.dumps(value))
+                    self.assertEqual(agent._read_values()[prefix + ".thinkingLevelMap"], value)
+                    self.assertEqual(agent._read_values()["envy.agents.pi.profile"], "fast")
+
+    def test_invalid_thinking_maps_never_rewrite_machine(self):
+        agent._write_values(self.values)
+        before = self.machine.read_bytes()
+        for value in ([], False, "high", {"bogus": None}, {"high": 1}, {"off": False}, {"low": ""}):
+            for path in ("envy.agents.pi.thinkingLevelMap", "envy.agentProfiles.fast.thinkingLevelMap"):
+                with self.subTest(value=value, path=path), self.assertRaises(typer.BadParameter):
+                    agent._set(path, json.dumps(value))
+                self.assertEqual(self.machine.read_bytes(), before)
+            with self.assertRaises(ValueError):
+                model_bindings(self.values, self.config(models=[{"profile": "fast", "thinkingLevelMap": value}]))
+
+    def test_non_pi_adapters_reject_direct_and_inherited_thinking_maps(self):
+        for adapter in ("codex", "claude-code", "generic"):
+            for selection in ({"thinkingLevelMap": {}}, {"profile": "fast"}):
+                values = self.values | {
+                    "envy.agentProfiles.fast.thinkingLevelMap": {"off": None},
+                    "envy.agents.other.adapter": adapter,
+                } | {"envy.agents.other." + field: value for field, value in selection.items()}
+                self.assertIn("envy.agents.other.thinkingLevelMap", agent._validate_values(values))
+            with self.assertRaisesRegex(ValueError, "requires the pi adapter"):
+                model_bindings(self.values, {"adapter": adapter, "models": [{"profile": "fast", "thinkingLevelMap": {}}]})
+
     def test_list_and_profile_reference_round_trip_through_both_editors(self):
         for command in ("agent", "config"):
             agent._write_values(self.values)

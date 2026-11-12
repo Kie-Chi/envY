@@ -20,7 +20,11 @@ envY 的 modules/agents 管理 agent 安装、provider wrapper、skill catalog �
 
 ## Codex 配置与凭据
 
-`providers/codex.nix` 把 `envy.agents.codex`（先经 `envy.agentProfiles` 解析）渲染成 Codex 自己的 `~/.codex/config.toml`：托管 `model`、`model_context_window`、`model_max_output_tokens`、`model_provider` 和 `model_providers.envy-<endpoint>`。`wire_api` 由 api 映射（`openai-responses → responses`、`openai-completions → chat`），未设置 api 时保留 Codex 默认值；Anthropic endpoint 直接报错。`runtime-files.nix` 按 adapter 聚合所有 codex 实例后只写一次，机器 `additionalSettings` 仍覆盖生成值；`managedKeyPrefixes.model_providers = "envy"` 只替换 envY 命名的 provider，保留 Codex 的 `projects`、`tui`、`plugins` 等键。
+`providers/codex.nix` 把 `envy.agents.codex`（先经 `envy.agentProfiles` 解析）渲染成 Codex 自己的 `~/.codex/config.toml`：托管 `model`、`model_context_window`、`model_max_output_tokens`、`model_provider` 和 `model_providers.envy-<endpoint>`。Codex 只允许 OpenAI 兼容 endpoint 上的 `openai-responses`，未设置 api 时也使用 Responses；Chat Completions 和 Anthropic 在写入前报错。`runtime-files.nix` 按 adapter 聚合所有 codex 实例后只写一次，机器 `additionalSettings` 仍覆盖生成值；`managedKeyPrefixes.model_providers = "envy"` 只替换 envY 命名的 provider，保留 Codex 的 `projects`、`tui`、`plugins` 等键。
+
+Codex 多模型模式由 activation 和即时刷新共用 `envy.agent_codex` 生成 `~/.codex/envy-models.json`，通过 `model_catalog_json` 加载。生成器在临时 `CODEX_HOME` 中运行已安装客户端的 `codex debug models --bundled`，离线复用原生指令和匹配模型的元数据；不调用模型接口，不读取真实认证。模型不在内置目录时沿用原生指令，并使用保守的能力声明。多模型目录在启动时加载，修改后需重启对应客户端；桌面端模型选择器是否展示候选项取决于其内嵌 Codex 版本。
+
+默认选择沿用顶层 profile/model；未指定默认模型时使用列表第一项。多模型的 `contextWindow` 写入各模型元数据，避免全局上下文窗口覆盖切换后的模型；`maxTokens` 保留全局映射，因此候选项必须一致。移除候选项会重写目录，清空列表会解除 envY 生成的目录引用，并清除过期的全局模型限制，保留用户的其他配置。
 
 Codex 从 `~/.codex/auth.json` 读取 API key，而不是 `OPENAI_API_KEY`。activation 的 `mergeCodexAuth` 与 `envy agent refresh` 都会把解密后的 `envy.llm.credentials.<name>` 写入该文件的 `OPENAI_API_KEY`（`auth_mode = "apikey"`）并保留其他 Codex 字段；这是 envY 唯一写入应用 auth 文件的位置，`codex login` 之后需要重新 apply 或 refresh。`envy agent` 用同一套渲染规则即时写 `config.toml` 和 `auth.json`，`tests/test_agent_codex.py` 对比 Nix 与 Python 输出。
 
@@ -36,7 +40,9 @@ pi/package.nix 在 Pi 的 workspace 构建阶段打补丁，库和打包后的 C
 
 ### 模型档位与 btw
 
-`pi/default.nix` 为 OpenAI Completions/Responses 下的 `gpt-6.1-sol` 及其带 `-` 后缀的别名、快照声明合法思考档位：排除 `off`、`minimal`、`ultra`，保留 `low/medium/high`；开启 `moreThinking` 时还保留 `xhigh/max`。显式请求不支持的档位由 Pi 钳制到合法档位，其他模型和 Anthropic 兼容设置保持原样。
+`pi/default.nix` 为 OpenAI Completions/Responses 下的 `gpt-6.1-sol` 及其带 `-` 后缀的快照，以及已知网关别名 `stepcode-gpt-6.1-sol`、`stepcode-gpt-6.1-sol-eastus2` 声明合法思考档位：排除 `off`、`minimal`、`ultra`，保留 `low/medium/high`；开启 `moreThinking` 时还保留 `xhigh/max`。显式请求不支持的档位由 Pi 钳制到合法档位。
+
+自定义模型可在 Pi 默认配置、profile 或 `models` 条目中声明 `thinkingLevelMap`，无需继续扩展模型名称匹配。显式映射整体替换兼容默认值；映射中的 `null` 禁用对应档位，整个字段设为 `null` 则清除继承映射并恢复兼容默认值。例如，采用相同 Sol 能力限制的网关模型可声明 `thinkingLevelMap = { off = null; minimal = null; ultra = null; };`。模型 ID 原样用于网关路由，Nix 部署与 Python 即时刷新采用同一语义；其他 adapter 拒绝这项 Pi 专属能力配置。
 
 `/btw` 不继承主会话的思考档位。未指定档位的 Sol 请求省略推理 effort，由服务端采用默认值，避免发送会被拒绝的 `none`；不改扩展的认证、上下文、无工具或会话隔离边界。
 
@@ -44,7 +50,7 @@ pi/package.nix 在 Pi 的 workspace 构建阶段打补丁，库和打包后的 C
 
 ### Pi 多模型列表
 
-`envy.agents.pi.models` 可以同时注册多个模型，混用 `openai-completions`、`openai-responses` 和 `anthropic-messages`。只有 Pi 实例支持非空列表，其他 adapter 的配置不变。
+`envy.agents.pi.models` 可以同时注册多个模型，混用 `openai-completions`、`openai-responses` 和 `anthropic-messages`。`envy.agents.codex.models` 也支持同样的 profile 继承、显式覆盖和去重，但所有候选项（含默认选择）必须使用同一个 endpoint、credential 和 `maxTokens`，且 API 必须为 Responses；其他 adapter 不支持非空列表。
 
 ```nix
 envy.agents.pi.models = [

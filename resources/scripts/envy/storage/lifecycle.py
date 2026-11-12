@@ -10,9 +10,9 @@ from pathlib import Path
 
 from envy.secure_io import ensure_private_directory
 from envy.storage.backend import Archive
-from envy.storage.model import (Policy, StorageError, no_symlinks, signature,
+from envy.storage.model import (MODEL_VERSION, Policy, StorageError, no_symlinks, signature,
                                 tree_digest, validate_entry)
-from envy.storage.planner import active_processes, assert_inactive, file_hash
+from envy.storage.planner import active_processes, assert_inactive, assert_no_conflicts, file_hash
 from envy.storage.state import read_record, records, write_record
 
 
@@ -76,10 +76,12 @@ def _verify_staged(candidate: dict, destination: Path) -> None:
 
 def execute(policy: Policy, state: Path, plan_id: str) -> dict:
     plan = read_record(state, "plans", plan_id)
-    if plan.get("policy") != policy.fingerprint or not 0 <= time.time() - plan["createdAt"] <= 86400:
+    if (plan.get("modelVersion") != MODEL_VERSION or plan.get("policy") != policy.fingerprint
+            or not 0 <= time.time() - plan["createdAt"] <= 86400):
         raise StorageError("Plan expired or policy changed; create a new plan")
     if any(record.get("plan") == plan_id for record in records(state, "runs")):
         raise StorageError("This plan already has an execution record; inspect storage status")
+    assert_no_conflicts(plan["candidates"])
     batch = {"id": uuid.uuid4().hex, "plan": plan_id, "createdAt": time.time(),
              "snapshot": None, "repositoryId": None, "items": [], "errors": []}
     eligible = []

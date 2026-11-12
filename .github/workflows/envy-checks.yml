@@ -51,6 +51,8 @@ jobs:
         run: nix build "path:.#checks.${{ matrix.system }}.envy-python-tests"
       - name: Run storage lifecycle integration tests
         run: nix build --no-link "path:.#checks.${{ matrix.system }}.envy-storage-tests"
+      - name: Validate shared storage rule selection
+        run: nix build --no-link "path:.#checks.${{ matrix.system }}.storage-rule-selection"
       - name: Run Rust TUI tests
         run: nix build "path:.#checks.${{ matrix.system }}.envy-tui-tests"
       - name: Run shell checks

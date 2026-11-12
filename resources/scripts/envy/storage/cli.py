@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import stat
 from pathlib import Path
 from typing import Optional
 
@@ -12,7 +14,7 @@ from envy import jsonio, log
 from envy.evaluation import machine_manifest
 from envy.storage import lifecycle, maintenance, planner
 from envy.storage.backend import Archive
-from envy.storage.model import StorageError, policy_from_manifest
+from envy.storage.model import StorageError, policy_from_manifest, rule_details
 from envy.storage.state import locked, read_record, records
 from envy.utils import ENVY_ROOT, state_dir
 from envy.workflows.system import clean_generations
@@ -39,10 +41,10 @@ def _perform(command, json_output, operation):
         else:
             log.error("storage", str(exc))
         raise typer.Exit(1) from exc
-    failed = bool(data.get("errors"))
+    failed = bool(data.get("errors")) or data.get("ok") is False
     if json_output:
         jsonio.emit(f"storage {command}", data=data, ok=not failed,
-                    error={"code": "partial_failure", "message": "Some files were retained; inspect errors"}
+                    error={"code": "partial_failure", "message": "Storage operation failed; inspect rule results and errors"}
                     if failed else None)
     else:
         if command == "plan" or "candidates" in data:
@@ -66,7 +68,8 @@ def _perform(command, json_output, operation):
                 table.add_column(name)
             for item in data.get("rules", []):
                 table.add_row(item.get("rule", ""), item.get("root", ""),
-                              "ok" if item.get("ok") else "failed", item.get("error", ""))
+                              "skipped" if item.get("skipped") else "ok" if item.get("ok") else "failed",
+                              item.get("error") or item.get("reason", ""))
             log.console.print(table)
         elif command == "maintain":
             table = Table(title="Storage maintenance")
@@ -78,7 +81,7 @@ def _perform(command, json_output, operation):
                               item.get("note", ""))
             log.console.print(table)
             if not data.get("execute"):
-                log.hint("Execute selected actions with: envy storage maintain --yes --nix/--docker/--go")
+                log.hint("Execute selected actions with: envy storage maintain --yes --nix/--docker/--go/--uv/--npm/--pip/--brew")
         else:
             log.console.print_json(data=data)
     if failed:
@@ -125,6 +128,21 @@ def cmd_run(
     _perform("run", json_output, operation)
 
 
+def _password_status(value: str) -> dict:
+    if not value:
+        return {"configured": False, "exists": False, "private": False}
+    try:
+        path = Path(value).resolve(strict=True)
+        info = path.stat()
+        private = (stat.S_ISREG(info.st_mode) and info.st_uid in {0, os.getuid()}
+                   and info.st_mode & 0o077 == 0)
+        return {"configured": True, "exists": True, "private": private}
+    except FileNotFoundError:
+        return {"configured": True, "exists": False, "private": False}
+    except (OSError, RuntimeError, StorageError) as exc:
+        return {"configured": True, "exists": None, "private": False, "error": str(exc)}
+
+
 @app.command("status")
 def cmd_status(json_output: bool = typer.Option(False, "--json", help="Emit JSON.")):
     """Show configured rules and durable archive/quarantine records."""
@@ -132,12 +150,14 @@ def cmd_status(json_output: bool = typer.Option(False, "--json", help="Emit JSON
         policy, state = _context()
         with locked(state):
             return {"mode": policy.mode, "rules": [rule.id for rule in policy.rules],
-                    "ruleDetails": [{"id": rule.id, "path": rule.path, "action": rule.action,
-                                    "targets": rule.targets, "depth": rule.depth,
-                                    "recursiveAge": rule.recursive_age,
-                                    "processes": list(rule.processes)} for rule in policy.rules],
+                    "ruleDetails": [rule_details(rule) for rule in policy.rules],
+                    "excluded": list(policy.excluded),
                     "maintenance": list(policy.maintenance),
-                    "archiveConfigured": bool(policy.repository),
+                    "archiveConfigured": bool(policy.repository and policy.password_file),
+                    "archive": {"configured": bool(policy.repository and policy.password_file),
+                                "mountSource": policy.mount_source,
+                                "passwordFile": _password_status(policy.password_file),
+                                "repositoryChecked": False},
                     "latestPlan": max(records(state, "plans"), key=lambda plan: plan["createdAt"], default=None),
                     "runs": records(state, "runs")}
     _perform("status", json_output, operation)
@@ -173,15 +193,21 @@ def cmd_restore(
 @app.command("maintain")
 def cmd_maintain(
     nix: bool = typer.Option(False, "--nix", help="Collect unreferenced Nix store paths, keeping generations."),
-    docker: bool = typer.Option(False, "--docker", help="Prune Docker build cache and dangling images."),
+    docker: bool = typer.Option(False, "--docker", help="Prune Docker build cache and dangling images older than 336h."),
     go: bool = typer.Option(False, "--go", help="Clean the Go build cache."),
+    uv: bool = typer.Option(False, "--uv", help="Maintain the uv cache."),
+    npm: bool = typer.Option(False, "--npm", help="Maintain the npm cache."),
+    pip: bool = typer.Option(False, "--pip", help="Maintain the pip cache."),
+    brew: bool = typer.Option(False, "--brew", help="Maintain Homebrew caches."),
     yes: bool = typer.Option(False, "--yes", help="Execute instead of previewing."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ):
     """Preview or run explicit native maintenance; never part of the schedule."""
     def operation():
         policy, state = _context()
-        actions = [name for name, enabled in (("nix", nix), ("docker", docker), ("go", go)) if enabled]
+        actions = [name for name, enabled in (("nix", nix), ("docker", docker), ("go", go),
+                                             ("uv", uv), ("npm", npm), ("pip", pip),
+                                             ("brew", brew)) if enabled]
         with locked(state):
             if yes:
                 return maintenance.maintain(policy, actions or None)
@@ -229,5 +255,6 @@ def cmd_gc(
     yes: bool = typer.Option(False, "--yes", help="Confirm generation cleanup."),
     brew: bool = typer.Option(True, "--brew/--no-brew", help="Clean Homebrew on Darwin."),
 ):
-    """Collect old Nix generations and package-manager caches through their native tools."""
+    """Delete old Nix generations and collect caches; maintain --nix keeps generations."""
+    log.warn("storage", "gc deletes old Nix generations; maintain --nix keeps generations")
     clean_generations(yes=yes, older_than=older_than, brew=brew)

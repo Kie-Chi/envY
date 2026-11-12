@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import time
 import uuid
 from pathlib import Path
@@ -12,9 +13,9 @@ import yaml
 
 from envy.process import run_process
 from envy.secure_io import secure_temporary_path
-from envy.storage.model import (Policy, Rule, StorageError, entry_bytes, expand,
-                                newest_mtime, no_symlinks, signature, tree_digest,
-                                validate_entry)
+from envy.storage.model import (MODEL_VERSION, Policy, Rule, StorageError, entry_bytes,
+                                expand, newest_mtime, no_symlinks, rule_details,
+                                signature, tree_digest, validate_entry)
 from envy.storage.state import write_record
 
 
@@ -42,7 +43,7 @@ def _recursive_age_filter(rule: Rule) -> dict:
         "                return False\n"
         "    return True\n"
         "except OSError:\n"
-        "    return False\n"
+        "    raise\n"
     )
     return {"python": code}
 
@@ -106,15 +107,22 @@ def _candidate(path: Path, root: Path, rule: Rule, policy: Policy, skipped: list
                 return None
         entry = {"path": str(path), "root": str(root), "rule": rule.id,
                  "action": rule.action, "targets": rule.targets,
+                 "source": rule.source, "overriddenFields": list(rule.overridden_fields),
                  "size": entry_bytes(path, rule.targets), "signature": signature(info)}
         if rule.targets == "dirs":
             entry["treeHash"] = tree_digest(path)
         if blocked:
             entry["blocked"] = blocked
         return entry
+    except PermissionError as exc:
+        raise StorageError(f"Rule {rule.id}: candidate inspection denied: {path}") from exc
     except (OSError, StorageError) as exc:
         skipped.append({"path": str(path), "rule": rule.id, "reason": str(exc)})
         return None
+
+
+def _scan_error(error: OSError) -> None:
+    raise error
 
 
 def _newest_matching(root: Path, rule: Rule) -> float | None:
@@ -122,7 +130,7 @@ def _newest_matching(root: Path, rule: Rule) -> float | None:
     newest: float | None = None
     if rule.targets == "files":
         extensions = {ext.casefold() for ext in rule.extensions}
-        for current, _directories, files in os.walk(root, followlinks=False):
+        for current, _directories, files in os.walk(root, followlinks=False, onerror=_scan_error):
             for name in files:
                 path = Path(current) / name
                 if rule.names and name not in rule.names:
@@ -131,12 +139,12 @@ def _newest_matching(root: Path, rule: Rule) -> float | None:
                     continue
                 try:
                     mtime = path.lstat().st_mtime
-                except OSError:
+                except FileNotFoundError:
                     continue
                 newest = mtime if newest is None else max(newest, mtime)
         return newest
     base = len(root.parts)
-    for current, directories, _files in os.walk(root, followlinks=False):
+    for current, directories, _files in os.walk(root, followlinks=False, onerror=_scan_error):
         for name in directories:
             path = Path(current) / name
             if rule.names and name not in rule.names:
@@ -145,7 +153,7 @@ def _newest_matching(root: Path, rule: Rule) -> float | None:
                 continue
             try:
                 mtime = newest_mtime(path) if rule.recursive_age else path.lstat().st_mtime
-            except OSError:
+            except FileNotFoundError:
                 continue
             newest = mtime if newest is None else max(newest, mtime)
         if rule.depth is not None and len(Path(current).parts) - base >= rule.depth:
@@ -154,14 +162,19 @@ def _newest_matching(root: Path, rule: Rule) -> float | None:
 
 
 def plan(policy: Policy, state: Path) -> dict:
-    matched: dict[str, dict] = {}
+    matched: list[dict] = []
     skipped: list[dict] = []
     roots_by_rule: dict[str, int] = {}
     blocked_by_rule: dict[str, str] = {}
     for rule in policy.rules:
-        roots = expand(rule.path)
+        try:
+            roots = expand(rule.path)
+        except OSError as exc:
+            raise StorageError(f"Rule {rule.id}: root inspection failed: {exc}") from exc
         roots_by_rule[rule.id] = len(roots)
         if not roots:
+            if not rule.optional_root:
+                raise StorageError(f"Rule {rule.id}: path pattern matched no roots")
             skipped.append({"path": rule.path, "rule": rule.id, "reason": "Path pattern matched no roots"})
             continue
         running = active_processes(rule)
@@ -172,11 +185,17 @@ def plan(policy: Policy, state: Path) -> dict:
         for root in roots:
             try:
                 no_symlinks(root)
-                if not root.exists():
+                try:
+                    info = root.stat()
+                except FileNotFoundError:
+                    if not rule.optional_root:
+                        raise StorageError(f"Rule {rule.id}: root does not exist: {root}")
                     skipped.append({"path": str(root), "rule": rule.id, "reason": "Root does not exist"})
                     continue
-                if not root.is_dir():
+                if not stat.S_ISDIR(info.st_mode):
                     raise StorageError("Rule root is not a directory: " + str(root))
+                with os.scandir(root):
+                    pass
                 config = {"rules": [_config(rule, root)]}
                 with secure_temporary_path(state, suffix=".yaml") as config_path:
                     config_path.write_text(yaml.safe_dump(config))
@@ -196,17 +215,19 @@ def plan(policy: Policy, state: Path) -> dict:
                     entry = _candidate(Path(event["path"]), root, rule, policy, skipped, blocked)
                     if entry is None:
                         continue
-                    key = entry["path"]
-                    if key in matched and matched[key]["action"] != entry["action"]:
-                        raise StorageError("Conflicting storage actions for " + key)
-                    matched.setdefault(key, entry)
+                    matched.append(entry)
                 if report is None or report.get("error_count") != 0:
                     raise StorageError("organize scan did not finish successfully")
+            except OSError as exc:
+                raise StorageError(f"Rule {rule.id}: root inspection failed: {exc}") from exc
+            except StorageError:
+                raise
             except (ValueError, KeyError, TypeError, AttributeError) as exc:
                 raise StorageError("Invalid organize output; no storage plan was accepted") from exc
+    assert_no_conflicts(matched)
     summary = []
     for rule in policy.rules:
-        entries = [entry for entry in matched.values() if entry["rule"] == rule.id]
+        entries = [entry for entry in matched if entry["rule"] == rule.id]
         reason = blocked_by_rule.get(rule.id, "")
         if not entries:
             detail = []
@@ -216,7 +237,11 @@ def plan(policy: Policy, state: Path) -> dict:
                     found = _newest_matching(root, rule)
                     if found is not None:
                         newest = found if newest is None else max(newest, found)
-            if not roots_by_rule.get(rule.id):
+            missing = [item["reason"] for item in skipped if item["rule"] == rule.id
+                       and item["reason"] == "Root does not exist"]
+            if missing:
+                detail.append("root does not exist")
+            elif not roots_by_rule.get(rule.id):
                 detail.append("path pattern matched no roots")
             elif newest is None:
                 detail.append("no entry matches the rule names or extensions")
@@ -228,21 +253,22 @@ def plan(policy: Policy, state: Path) -> dict:
             else:
                 detail.append("all matching entries were skipped by validation")
             reason = "; ".join([reason] + detail) if reason else detail[0]
-        summary.append({"id": rule.id, "targets": rule.targets, "action": rule.action,
+        summary.append({**rule_details(rule),
                         "roots": roots_by_rule.get(rule.id, 0), "candidates": len(entries),
                         "bytes": sum(entry["size"] for entry in entries),
                         "blocked": sum(1 for entry in entries if entry.get("blocked")),
                         "reason": reason})
-    record = {"id": uuid.uuid4().hex, "createdAt": time.time(), "policy": policy.fingerprint,
-              "candidates": list(matched.values()), "skipped": skipped, "rules": summary,
-              "bytes": sum(entry["size"] for entry in matched.values())}
+    record = {"modelVersion": MODEL_VERSION, "excluded": list(policy.excluded),
+              "id": uuid.uuid4().hex, "createdAt": time.time(), "policy": policy.fingerprint,
+              "candidates": list(matched), "skipped": skipped, "rules": summary,
+              "bytes": sum(entry["size"] for entry in matched)}
     write_record(state, "plans", record)
     return record
 
 
 def assert_inactive(path: Path, *, ancestors: bool = True) -> None:
     executable = "/usr/sbin/lsof" if Path("/usr/sbin/lsof").exists() else "lsof"
-    probes = [[executable, "-t", "--", str(path)]]
+    probes = [[executable, "-t", "+D", str(path)]] if path.is_dir() else [[executable, "-t", "--", str(path)]]
     if ancestors:
         probes.extend([executable, "-t", "+d", str(parent)] for parent in path.parents
                       if parent != Path.home() and Path.home() in parent.parents)
@@ -266,31 +292,56 @@ def file_hash(path: Path) -> str:
     return digest
 
 
+def assert_no_conflicts(candidates: list[dict]) -> None:
+    for index, candidate in enumerate(candidates):
+        path = Path(candidate["path"])
+        for previous in candidates[:index]:
+            other = Path(previous["path"])
+            if path == other or path in other.parents or other in path.parents:
+                raise StorageError(f"Conflicting storage candidates from rules {previous['rule']} and "
+                                   f"{candidate['rule']}: {other} overlaps {path}")
+
+
 def validate(policy: Policy, state: Path) -> dict:
-    """Validate every generated organize config without scanning or writing state."""
+    """Check configs, distinguishing absent optional roots from failed inspection."""
     results = []
     for rule in policy.rules:
-        roots = expand(rule.path)
-        if not roots:
-            results.append({"rule": rule.id, "root": rule.path, "ok": False,
-                            "error": "path pattern matched no roots"})
+        metadata = {"rule": rule.id, **rule_details(rule)}
+        try:
+            roots = expand(rule.path)
+            if not roots:
+                results.append({**metadata, "root": rule.path, "ok": rule.optional_root,
+                                "skipped": rule.optional_root,
+                                "reason": "path pattern matched no roots",
+                                "error": "" if rule.optional_root else "path pattern matched no roots"})
+                continue
+        except (OSError, StorageError) as exc:
+            results.append({**metadata, "root": rule.path, "ok": False, "error": str(exc)})
             continue
         for root in roots:
             try:
                 no_symlinks(root)
-                if not root.is_dir():
-                    results.append({"rule": rule.id, "root": str(root), "ok": False,
-                                    "error": "root is not a directory"})
+                try:
+                    info = root.stat()
+                except FileNotFoundError:
+                    if not rule.optional_root:
+                        raise StorageError("root does not exist")
+                    results.append({**metadata, "root": str(root), "ok": True, "skipped": True,
+                                    "reason": "root does not exist", "error": ""})
                     continue
+                if not stat.S_ISDIR(info.st_mode):
+                    raise StorageError("root is not a directory")
+                with os.scandir(root):
+                    pass
                 config = {"rules": [_config(rule, root)]}
                 with secure_temporary_path(state, suffix=".yaml") as config_path:
                     config_path.write_text(yaml.safe_dump(config))
                     result = run_process(["organize", "check", str(config_path)],
                                          capture=True, check=False, timeout=120)
-                results.append({"rule": rule.id, "root": str(root), "ok": result.returncode == 0,
+                results.append({**metadata, "root": str(root), "ok": result.returncode == 0,
                                 "error": "" if result.returncode == 0
-                                else (result.stdout or "").strip()[-300:]})
+                                else ((result.stderr or result.stdout or "organize check failed").strip()[-300:])})
             except (OSError, StorageError) as exc:
-                results.append({"rule": rule.id, "root": str(root), "ok": False,
-                                "error": str(exc)})
-    return {"ok": all(item["ok"] for item in results), "rules": results}
+                results.append({**metadata, "root": str(root), "ok": False, "error": str(exc)})
+    return {"ok": all(item["ok"] for item in results), "rules": results,
+            "excluded": list(policy.excluded)}

@@ -37,149 +37,23 @@
 
   # --- STORAGE CONFIG ---
   envy.storage.mode = "report";
-  envy.storage.archive.repository = "";
+  envy.storage.archive.repository = "sftp:xikai@192.168.255.139:/vol1/1000/share/envY/archive/macbook_air";
+  envy.storage.archive.mountSource = "";
 
   # --- VSCODE CONFIG ---
   envy.vscode.mode = "remote";
 
-  # Storage rules (report-only; hand-written policy).
-  # Report-only policy: planning never moves files; only explicit execution does.
+  # Shared rules are inherited; native maintenance is explicit and never scheduled.
   envy.storage.maintenance = {
     nix = true;
     docker = true;
     go = true;
+    uv = true;
+    npm = true;
+    pip = true;
+    brew = true;
   };
-
-  envy.storage.protectedOverrides = [
-    "/Users/chi/Library/Application Support/LarkShell/aha/users/*/profile_explorer/Service Worker/CacheStorage"
-    "/Users/chi/Library/Application Support/LarkShell/iron/users/*/profile_main/Service Worker/CacheStorage"
-    "/Users/chi/Library/Application Support/LarkShell/update"
-    "/Users/chi/Library/Application Support/LarkShell/sdk_storage/log"
-    "/Users/chi/Library/Containers/com.tencent.xinWeChat/Data/Library/Caches"
-    "/Users/chi/Library/Containers/com.tencent.xinWeChat/Data/Documents/app_data/log"
-    "/Users/chi/Library/Containers/com.tencent.xinWeChat/Data/Documents/app_data/radium/web/profiles"
-  ];
-
-  envy.storage.rules = [
-    {
-      id = "feishu-web-cache-aha";
-      path = "/Users/chi/Library/Application Support/LarkShell/aha/users/*/profile_explorer/Service Worker/CacheStorage";
-      action = "quarantine";
-      targets = "dirs";
-      depth = 1;
-      recursiveAge = true;
-      minAgeDays = 14;
-      processes = [ "Feishu" "Lark" ];
-    }
-    {
-      id = "feishu-web-cache-iron";
-      path = "/Users/chi/Library/Application Support/LarkShell/iron/users/*/profile_main/Service Worker/CacheStorage";
-      action = "quarantine";
-      targets = "dirs";
-      depth = 1;
-      recursiveAge = true;
-      minAgeDays = 14;
-      processes = [ "Feishu" "Lark" ];
-    }
-    {
-      id = "feishu-update";
-      path = "/Users/chi/Library/Application Support/LarkShell/update";
-      action = "quarantine";
-      targets = "dirs";
-      depth = 1;
-      recursiveAge = true;
-      minAgeDays = 14;
-      processes = [ "Feishu" "Lark" ];
-    }
-    {
-      id = "feishu-logs";
-      path = "/Users/chi/Library/Application Support/LarkShell/sdk_storage/log";
-      action = "quarantine";
-      extensions = [ "log" "alaudalog" ];
-      minAgeDays = 30;
-    }
-    {
-      id = "codex-sparkle";
-      path = "/Users/chi/Library/Caches/com.openai.codex/org.sparkle-project.Sparkle/Installation";
-      action = "quarantine";
-      targets = "dirs";
-      depth = 1;
-      recursiveAge = true;
-      minAgeDays = 14;
-      processes = [ "Codex" "ChatGPT" ];
-    }
-    {
-      id = "vscode-shipit";
-      path = "/Users/chi/Library/Caches/com.microsoft.VSCode.ShipIt";
-      action = "quarantine";
-      targets = "dirs";
-      depth = 1;
-      recursiveAge = true;
-      minAgeDays = 14;
-      processes = [ "/Visual Studio Code.app/" ];
-    }
-    {
-      id = "go-build-cache";
-      path = "/Users/chi/Library/Caches/go-build";
-      action = "quarantine";
-      minAgeDays = 30;
-    }
-    {
-      id = "wechat-cache-dirs";
-      path = "/Users/chi/Library/Containers/com.tencent.xinWeChat/Data/Library/Caches";
-      action = "quarantine";
-      targets = "dirs";
-      depth = 1;
-      recursiveAge = true;
-      minAgeDays = 14;
-      processes = [ "WeChat" "WeChatAppEx" ];
-    }
-    {
-      id = "wechat-cache-files";
-      path = "/Users/chi/Library/Containers/com.tencent.xinWeChat/Data/Library/Caches";
-      action = "quarantine";
-      minAgeDays = 14;
-      minSizeBytes = 1048576;
-      processes = [ "WeChat" "WeChatAppEx" ];
-    }
-    {
-      id = "wechat-web-cache";
-      path = "/Users/chi/Library/Containers/com.tencent.xinWeChat/Data/Documents/app_data/radium/web/profiles/*";
-      action = "quarantine";
-      targets = "dirs";
-      depth = 1;
-      names = [ "Cache" ];
-      recursiveAge = true;
-      minAgeDays = 14;
-      processes = [ "WeChat" "WeChatAppEx" ];
-    }
-    {
-      id = "wechat-web-cachestorage";
-      path = "/Users/chi/Library/Containers/com.tencent.xinWeChat/Data/Documents/app_data/radium/web/profiles/*/Service Worker";
-      action = "quarantine";
-      targets = "dirs";
-      depth = 1;
-      names = [ "CacheStorage" ];
-      recursiveAge = true;
-      minAgeDays = 14;
-      processes = [ "WeChat" "WeChatAppEx" ];
-    }
-    {
-      id = "wechat-logs";
-      path = "/Users/chi/Library/Containers/com.tencent.xinWeChat/Data/Documents/app_data/log";
-      action = "quarantine";
-      extensions = [ "xlog" ];
-      minAgeDays = 30;
-    }
-    {
-      id = "old-installers";
-      path = "/Users/chi/Downloads";
-      action = "quarantine";
-      extensions = [ "dmg" "pkg" "iso" ];
-      minAgeDays = 30;
-    }
-  ];
-
+  # Shared rules are provided by modules/storage; only machine differences belong here.
   # END ENVY MANAGED CONFIG
 
   # BEGIN ENVY MANAGED SOFTWARE

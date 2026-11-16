@@ -12,7 +12,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import IO, Mapping, Sequence
 from urllib.parse import urlsplit, urlunsplit
 
 from envy import log
@@ -260,10 +260,14 @@ def run_process(
     env: Mapping[str, str] | None = None,
     stdin_data: str | None = None,
     capture: bool = False,
+    stdout: IO | int | None = None,
+    stderr: IO | int | None = None,
     check: bool = True,
     timeout: int | float | None = None,
     activity: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    if capture and (stdout is not None or stderr is not None):
+        raise ValueError("capture=True cannot be combined with explicit stdout or stderr")
     argv = [str(part) for part in command]
     _maybe_prime_flake_sources(argv, cwd, env)
     displayed = command_display(argv)
@@ -282,14 +286,16 @@ def run_process(
                 input=stdin_data,
                 text=True,
                 capture_output=capture,
+                stdout=stdout,
+                stderr=stderr,
                 check=False,
                 timeout=timeout,
             )
         except FileNotFoundError as exc:
             result = subprocess.CompletedProcess(argv, 127, "" if capture else None, str(exc))
         except subprocess.TimeoutExpired as exc:
-            stderr = f"command timed out after {timeout} seconds"
-            result = subprocess.CompletedProcess(argv, 124, exc.stdout, stderr)
+            diagnostic = f"command timed out after {timeout} seconds"
+            result = subprocess.CompletedProcess(argv, 124, exc.stdout, diagnostic)
     finally:
         duration = reporter.stop()
 

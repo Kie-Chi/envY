@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import sys
 from typing import Any
 
@@ -12,7 +11,7 @@ from rich.table import Table
 from envy import log
 from envy.config.machine_nix import machine_config_file, read_mirror_overrides, write_mirror_overrides
 from envy.evaluation import machine_manifest
-from envy.jsonio import emit, emit_error
+from envy.jsonio import emit, emit_error, write_document
 # Reach probes through their module so tests can replace network access there.
 from envy.mirror import probe
 from envy.mirror.cache import MirrorCache, mirror_cache_path
@@ -73,7 +72,7 @@ def cmd_status(
             "platform": manifest.get("platform"),
             "settings": dict(entries),
         }
-        log.console.print_json(json.dumps(payload, ensure_ascii=False))
+        write_document(payload)
         return
     table = Table(title=f"Mirror policy - {manifest.get('id', 'current')}")
     table.add_column("Setting", style="cyan", no_wrap=True)
@@ -483,12 +482,12 @@ def cmd_probe(
     specs = probe.probe_specs(evaluated["mirrors"])
     if not specs:
         if json_output:
-            log.console.print_json(json.dumps({
+            write_document({
                 "schemaVersion": 1,
                 "machine": evaluated["manifest"].get("id", "current"),
                 "failed": 0,
                 "results": [],
-            }, ensure_ascii=False))
+            })
         else:
             log.warn("mirror", "no probe endpoints are declared")
         return
@@ -523,7 +522,7 @@ def cmd_probe(
             "failed": failed,
             "results": [result.to_dict() for result in results],
         }
-        log.console.print_json(json.dumps(payload, ensure_ascii=False))
+        write_document(payload)
     else:
         log.console.print(table)
     if failed:

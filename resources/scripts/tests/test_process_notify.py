@@ -1,8 +1,54 @@
+import json
+import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 
 from envy import log
 from envy import process
+
+
+class ProcessStreamTests(unittest.TestCase):
+    def test_default_and_capture_modes_keep_existing_stream_behavior(self):
+        with patch.object(process, "_maybe_prime_flake_sources"), \
+                patch.object(process._ActivityReporter, "start"), \
+                patch.object(process.subprocess, "run") as run:
+            for options in ({}, {"capture": False}, {"capture": True},
+                            {"capture": True, "stdout": None, "stderr": None}):
+                with self.subTest(options=options):
+                    run.return_value = subprocess.CompletedProcess([], 0, "", "")
+                    process.run_process(["fake-process"], **options)
+                    self.assertEqual(run.call_args.kwargs["capture_output"], options.get("capture", False))
+                    self.assertIsNone(run.call_args.kwargs.get("stdout"))
+                    self.assertIsNone(run.call_args.kwargs.get("stderr"))
+                    self.assertFalse(run.call_args.kwargs["check"])
+
+    def test_capture_rejects_explicit_streams_before_starting_process(self):
+        with patch.object(process, "_maybe_prime_flake_sources") as prime, \
+                patch.object(process.subprocess, "run") as run:
+            for streams in ({"stdout": subprocess.DEVNULL}, {"stderr": subprocess.DEVNULL},
+                            {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT}):
+                with self.subTest(streams=streams), self.assertRaisesRegex(ValueError, "capture"):
+                    process.run_process(["fake-process"], capture=True, **streams)
+            prime.assert_not_called()
+            run.assert_not_called()
+
+    def test_devnull_discards_large_output_and_preserves_returncode_and_json(self):
+        fixture = (
+            "import os, sys; "
+            "[(os.write(1, b'fake stdout' * 8192), os.write(2, b'fake stderr' * 8192)) "
+            "for _ in range(64)]; sys.exit(42)"
+        )
+        result = process.run_process([sys.executable, "-c", fixture], capture=False,
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                     check=False, timeout=10)
+        self.assertEqual(result.returncode, 42)
+        self.assertIsNone(result.stdout)
+        self.assertIsNone(result.stderr)
+        document = json.dumps({"returncode": result.returncode})
+        self.assertEqual(json.loads(document), {"returncode": 42})
+        self.assertNotIn("fake stdout", document)
+        self.assertNotIn("fake stderr", document)
 
 
 class NotifyEnabledTests(unittest.TestCase):

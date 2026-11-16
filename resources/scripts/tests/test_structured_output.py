@@ -39,6 +39,16 @@ class StructuredOutputTests(unittest.TestCase):
         self.assertFalse(failure["ok"])
         self.assertEqual(failure["error"]["code"], "confirmation-required")
 
+    def test_forced_terminal_color_and_narrow_width_cannot_change_json_values(self):
+        output = io.StringIO()
+        console = Console(file=output, force_terminal=True, color_system="standard", width=10)
+        data = {"path": "/tmp/" + "long path [bot] 中文/" * 30, "text": "line one\nline two"}
+        with patch("envy.jsonio.log.console", console), patch.dict("os.environ", {"FORCE_COLOR": "1"}):
+            emit("config.show", data=data)
+        text = output.getvalue()
+        self.assertEqual(json.loads(text)["data"], data)
+        self.assertNotIn("\x1b[", text)
+
     def test_doctor_json_has_stable_summary_and_serializable_details(self):
         results = [
             ok(SECTION_SYSTEM, "git", "available"),

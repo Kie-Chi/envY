@@ -113,7 +113,7 @@ fn store_path_cell(path: &str) -> TableCell {
 
 fn render_generations(frame: &mut Frame, app: &App, area: Rect) {
     let generations = app
-        .payload()
+        .payload().map(crate::model::report_data)
         .and_then(|payload| payload.get("generations"))
         .and_then(Value::as_array);
     let count = generations.map(Vec::len).unwrap_or(0);
@@ -152,7 +152,7 @@ fn render_generations(frame: &mut Frame, app: &App, area: Rect) {
         frame,
         area,
         DataTable {
-            title: "Generations · Space mark · d diff".to_string(),
+            title: "Generations · Enter details · Space mark · d diff".to_string(),
             position: Some(app.selection_position().unwrap_or((0, count))),
             columns: &GENERATION_COLUMNS,
             rows,
@@ -206,7 +206,7 @@ fn render_journal(frame: &mut Frame, app: &App, area: Rect) {
         frame,
         area,
         DataTable {
-            title: "Operation journal".to_string(),
+            title: "Operation journal · Enter receipt".to_string(),
             position: Some(app.selection_position().unwrap_or((0, count))),
             columns: &JOURNAL_COLUMNS,
             rows,

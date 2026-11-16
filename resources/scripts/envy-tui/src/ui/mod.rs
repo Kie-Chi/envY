@@ -4,6 +4,7 @@ mod configure;
 mod detail;
 mod home;
 mod popups;
+mod storage;
 mod table;
 #[cfg(test)]
 mod tests;
@@ -109,8 +110,9 @@ fn page_keys(screen: Screen) -> &'static str {
         Screen::Software => "Enter toggle  w why  / filter",
         Screen::Search => "Enter add  / query",
         Screen::Doctor => "Enter details  f filter",
-        Screen::History => "v view  Space mark  d diff",
-        Screen::Home => "2 Configure  3 Activity",
+        Screen::History => "Enter details  v view  Space mark  d diff",
+        Screen::Storage => "[ ] report  p project  x remove last  X clear  ↵ details  a actions",
+        Screen::Home => "t Storage  2 Configure  3 Activity",
         Screen::Config => "Enter edit host / setting",
         Screen::Mirror => "Enter source",
         _ => "r refresh",
@@ -123,8 +125,9 @@ fn compact_page_keys(screen: Screen) -> &'static str {
         Screen::Software => "↵ toggle  w why  / filter",
         Screen::Search => "↵ add  / query",
         Screen::Doctor => "↵ details  f filter",
-        Screen::History => "v view  Space mark  d diff",
-        Screen::Home => "2 Configure  3 Activity",
+        Screen::History => "Enter details  v view  Space mark  d diff",
+        Screen::Storage => "[ ] report  p project  x remove last  X clear  ↵ details  a actions",
+        Screen::Home => "t Storage  2 Configure  3 Activity",
         Screen::Config => "↵ edit setting",
         Screen::Mirror => "↵ source",
         _ => "r refresh",
@@ -172,6 +175,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         InputMode::Search => ("SEARCH", ACCENT),
         InputMode::SoftwareFilter => ("FILTER", ACCENT),
         InputMode::SettingValue => ("EDIT", ACCENT),
+        InputMode::StorageProject => ("PROJECT", ACCENT),
     };
     let activity = if app.mutation_loading {
         format!("  {} verifying", spinner())
@@ -239,13 +243,14 @@ fn render_section_navigation(frame: &mut Frame, app: &App, area: Rect) {
         }
         NavigationSection::Activity => {
             let selected = match (app.screen, app.history_view) {
+                (Screen::Storage, _) => 3,
                 (Screen::History, HistoryView::Generations) => 1,
                 (Screen::History, HistoryView::Operations) | (Screen::Journal, _) => 2,
                 _ => 0,
             };
             (
                 "Activity",
-                ["Health", "Generations", "Operations"].as_slice(),
+                ["Health", "Generations", "Operations", "Storage"].as_slice(),
                 selected,
             )
         }
@@ -299,7 +304,10 @@ fn render_body(frame: &mut Frame, app: &App, area: Rect) {
         render_section_navigation(frame, app, navigation);
         content
     };
-    if let Some(error) = app.current_error().filter(|_| !app.current_has_content()) {
+    if let Some(error) = app
+        .current_error()
+        .filter(|_| !app.current_has_content() && app.screen != Screen::Storage)
+    {
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(Span::styled(
@@ -323,6 +331,26 @@ fn render_body(frame: &mut Frame, app: &App, area: Rect) {
     }
     match app.screen {
         Screen::Home => render_home(frame, app, content_area),
+        Screen::Storage => storage::render_storage(
+            frame,
+            content_area,
+            storage::StoragePage {
+                view: app.storage_view,
+                report: app.storage_report(),
+                selected: app.storage_selected,
+                scroll: app.scroll,
+                loading: app.loading(),
+                error: app.current_error(),
+                projects: &app.storage_projects,
+                project_input: (app.input_mode == InputMode::StorageProject)
+                    .then_some(app.storage_project_input.as_str()),
+                timing: storage::StorageTiming {
+                    received_at: app.current_state().and_then(|state| state.received_at),
+                    saved_at: app.current_state().and_then(|state| state.saved_at),
+                    now: app.now(),
+                },
+            },
+        ),
         Screen::Sources => render_sources(frame, app, content_area),
         Screen::Software => render_software(frame, app, content_area),
         Screen::Search => render_search(frame, app, content_area),
@@ -334,7 +362,10 @@ fn render_body(frame: &mut Frame, app: &App, area: Rect) {
         // History/Operations view and Hosts feeds the Settings host selector.
         Screen::Journal | Screen::Hosts => {}
     }
-    if app.loading() && !app.current_has_content() && app.screen != Screen::Search {
+    if app.loading()
+        && !app.current_has_content()
+        && !matches!(app.screen, Screen::Search | Screen::Storage)
+    {
         frame.render_widget(Clear, content_area);
         frame.render_widget(
             Paragraph::new(format!("  {} Loading complete envY data…", spinner()))
@@ -367,6 +398,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     ])
     .areas(frame.area());
     render_top_bar(frame, app, top_bar);
+    if app.storage_actions.open {
+        storage::render_actions(frame, body, &mut app.storage_actions);
+        render_footer(frame, app, footer);
+        return;
+    }
     render_body(frame, app, body);
     render_footer(frame, app, footer);
     render_overlays(frame, app);

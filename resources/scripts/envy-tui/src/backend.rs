@@ -1,7 +1,5 @@
 use std::{
-    env,
     io::{BufRead, BufReader},
-    path::Path,
     process::{Command, Stdio},
     sync::mpsc::Sender,
     thread,
@@ -11,54 +9,90 @@ use serde_json::{json, Value};
 
 use crate::model::{
     LoadTarget, Message, MirrorSource, MutationIntent, MutationStage, Screen, SearchEntry,
-    SettingKey, SoftwareAction, WorkflowAction,
+    SettingKey, SettingSetter, SoftwareAction, WorkflowAction,
 };
 
 pub fn envy_binary() -> String {
-    env::var("ENVY_BIN").unwrap_or_else(|_| "envy".to_string())
+    // UI state-machine tests must never launch the installed CLI or inspect
+    // personal machine state. Transport tests launch isolated synthetic commands.
+    #[cfg(test)]
+    { "/synthetic-envy-unit-test-no-cli".into() }
+    #[cfg(not(test))]
+    { std::env::var("ENVY_BIN").unwrap_or_else(|_| "envy".to_string()) }
 }
 
-pub fn run_json(args: &[&str]) -> Result<Value, String> {
-    let binary = envy_binary();
-    let command = if Path::new(&binary).is_file() {
-        binary
-    } else {
-        "envy".to_string()
-    };
-    let output = Command::new(command)
-        .args(args)
-        .output()
-        .map_err(|error| format!("could not start envy: {error}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    match serde_json::from_str::<Value>(&stdout) {
-        Ok(value) => Ok(value),
-        Err(error) => {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            if stderr.is_empty() {
-                Err(format!("envy returned invalid JSON: {error}"))
-            } else {
-                Err(stderr)
-            }
-        }
+/// Lossless entry point for report consumers, including Storage. A valid business
+/// failure remains a response with its original payload and exit status. Call
+/// `into_success` before treating a response as an applied mutation.
+pub fn run_json_response(
+    args: &[&str],
+) -> Result<crate::transport::JsonResponse, crate::transport::TransportError> {
+    crate::transport::run_json(
+        Command::new(envy_binary()).args(args),
+        &json_command(args),
+        crate::transport::Limits::default(),
+    )
+}
+
+fn json_command(args: &[&str]) -> String {
+    if args.first() == Some(&"log") && args.contains(&"--retry") {
+        return "log.retry".into();
     }
+    let root = args.first().copied().unwrap_or("");
+    let subcommand = args.get(1).copied().filter(|arg| !arg.starts_with('-'));
+    match (root, subcommand) {
+        ("sw" | "software", Some("source")) => {
+            format!("software.source.{}", args.get(2).copied().unwrap_or(""))
+        }
+        ("sw" | "software", Some(subcommand)) => format!("software.{subcommand}"),
+        ("storage", Some(subcommand)) => format!("storage {subcommand}"),
+        ("mirror" | "config" | "agent" | "host", Some(subcommand)) => {
+            format!("{root}.{subcommand}")
+        }
+        ("history", Some("diff")) => "history.diff".into(),
+        _ => root.to_string(),
+    }
+}
+
+/// Read-only reports retain valid nonzero JSON, including Doctor summaries.
+/// Business failure envelopes are still rejected by the compatibility path.
+fn run_report_json(args: &[&str]) -> Result<Value, String> {
+    run_json_response(args)
+        .map_err(|error| error.to_string())
+        .and_then(|response| envelope_result(response.payload, "envy report failed"))
+}
+
+/// Compatibility path for existing consumers. Structured failures remain
+/// available through `run_json_response` instead of being reduced to a string.
+pub fn run_json(args: &[&str]) -> Result<Value, String> {
+    run_json_response(args)
+        .and_then(|response| response.into_success("envy request failed"))
+        .map_err(|error| error.to_string())
 }
 
 fn load_target(target: &LoadTarget) -> Result<Value, String> {
     match target {
-        LoadTarget::Screen(Screen::Home) => run_json(&["status", "--json"]),
+        LoadTarget::Storage(_) | LoadTarget::Screen(Screen::Storage) => {
+            Err("Storage requires its lossless report loader".into())
+        }
+        LoadTarget::Screen(Screen::Home) => run_report_json(&["status", "--json"]),
         LoadTarget::Screen(Screen::Sources) => {
-            let response = run_json(&["sw", "source", "ls", "--json"])?;
+            let response = run_report_json(&["sw", "source", "ls", "--json"])?;
             let response = envelope_result(response, "source catalog failed")?;
             Ok(response.get("data").cloned().unwrap_or(Value::Null))
         }
-        LoadTarget::Screen(Screen::Software) => run_json(&["sw", "ls", "--details", "--json"]),
-        LoadTarget::Search(query) => run_json(&["sw", "search", query, "--json"]),
-        LoadTarget::Screen(Screen::Doctor) => run_json(&["doctor", "--json"]),
-        LoadTarget::Screen(Screen::History) => run_json(&["history", "--json"]),
-        LoadTarget::Screen(Screen::Journal) => run_json(&["log", "--json", "--limit", "200"]),
-        LoadTarget::Screen(Screen::Hosts) => run_json(&["host", "list", "--json"]),
-        LoadTarget::Screen(Screen::Mirror) => run_json(&["mirror", "targets", "--json"]),
-        LoadTarget::Screen(Screen::Config) => run_json(&["config", "show", "--json"]),
+        LoadTarget::Screen(Screen::Software) => {
+            run_report_json(&["sw", "ls", "--details", "--json"])
+        }
+        LoadTarget::Search(query) => run_report_json(&["sw", "search", query, "--json"]),
+        LoadTarget::Screen(Screen::Doctor) => run_report_json(&["doctor", "--json"]),
+        LoadTarget::Screen(Screen::History) => run_report_json(&["history", "--json"]),
+        LoadTarget::Screen(Screen::Journal) => {
+            run_report_json(&["log", "--json", "--limit", "200"])
+        }
+        LoadTarget::Screen(Screen::Hosts) => run_report_json(&["host", "list", "--json"]),
+        LoadTarget::Screen(Screen::Mirror) => run_report_json(&["mirror", "targets", "--json"]),
+        LoadTarget::Screen(Screen::Config) => run_report_json(&["config", "show", "--json"]),
         LoadTarget::Screen(Screen::Search) => {
             Ok(json!({"query": "", "results": [], "providers": []}))
         }
@@ -86,14 +120,9 @@ pub fn spawn_mirror_measure(tx: Sender<Message>, request: u64, target: String, r
         args.push("--json");
         // `mirror measure` intentionally exits non-zero when every endpoint
         // fails, but still returns a valid JSON report the UI can render.
-        let result = run_json(&args).and_then(|payload| {
-            let payload = envelope_result(payload, "mirror measurement failed")?;
-            if payload.get("command").and_then(Value::as_str) != Some("mirror.measure") {
-                Err("mirror measurement command does not match the request".to_string())
-            } else {
-                Ok(payload)
-            }
-        });
+        let result = run_json_response(&args)
+            .map_err(|error| error.to_string())
+            .and_then(|response| envelope_result(response.payload, "mirror measurement failed"));
         let _ = tx.send(Message::MirrorMeasureFinished {
             request,
             target,
@@ -123,13 +152,9 @@ fn validate_mirror_response(
     source: &MirrorSource,
     payload: Value,
 ) -> Result<Value, String> {
+    crate::transport::validate_envelope(&payload, "mirror.set")
+        .map_err(|error| error.to_string())?;
     let payload = envelope_result(payload, "mirror mutation failed")?;
-    if payload.get("schemaVersion").and_then(Value::as_u64) != Some(1) {
-        return Err("unsupported mirror mutation schema".to_string());
-    }
-    if payload.get("command").and_then(Value::as_str) != Some("mirror.set") {
-        return Err("mirror mutation command does not match the request".to_string());
-    }
     let data = payload.get("data").unwrap_or(&Value::Null);
     let plan = data.get("plan").unwrap_or(&Value::Null);
     if plan.get("target").and_then(Value::as_str) != Some(target)
@@ -179,6 +204,27 @@ pub fn spawn_mirror_mutation(
 }
 
 pub fn spawn_request(tx: Sender<Message>, request: u64, target: LoadTarget) {
+    if let LoadTarget::Storage(target) = target {
+        thread::spawn(move || {
+            let result = crate::storage::StorageReport::load(&target);
+            let _ = tx.send(Message::StorageFinished {
+                request,
+                target,
+                result,
+            });
+        });
+        return;
+    }
+    if matches!(target, LoadTarget::Screen(Screen::History | Screen::Journal)) {
+        thread::spawn(move || {
+            let args = if target == LoadTarget::Screen(Screen::History) {
+                vec!["history", "--json"]
+            } else { vec!["log", "--json", "--limit", "200"] };
+            let result = run_json_response(&args);
+            let _ = tx.send(Message::ReportFinished { request, target, result });
+        });
+        return;
+    }
     thread::spawn(move || match load_target(&target) {
         Ok(payload) => {
             let _ = tx.send(Message::Loaded {
@@ -199,12 +245,7 @@ pub fn spawn_request(tx: Sender<Message>, request: u64, target: LoadTarget) {
 
 fn envelope_result(payload: Value, fallback: &str) -> Result<Value, String> {
     if payload.get("ok").and_then(Value::as_bool) == Some(false) {
-        let message = payload
-            .get("error")
-            .and_then(|error| error.get("message"))
-            .and_then(Value::as_str)
-            .unwrap_or(fallback);
-        Err(message.to_string())
+        Err(crate::transport::failure_message(&payload, fallback))
     } else {
         Ok(payload)
     }
@@ -242,10 +283,6 @@ pub fn validate_mutation_response(
     intent: &MutationIntent,
     payload: Value,
 ) -> Result<Value, String> {
-    let payload = envelope_result(payload, "software mutation failed")?;
-    if payload.get("schemaVersion").and_then(Value::as_u64) != Some(1) {
-        return Err("unsupported software mutation schema".to_string());
-    }
     let expected_command = format!(
         "software.{}{}",
         if intent.source_operation {
@@ -255,9 +292,9 @@ pub fn validate_mutation_response(
         },
         intent.action.command()
     );
-    if payload.get("command").and_then(Value::as_str) != Some(expected_command.as_str()) {
-        return Err("software mutation command does not match the request".to_string());
-    }
+    crate::transport::validate_envelope(&payload, &expected_command)
+        .map_err(|error| error.to_string())?;
+    let payload = envelope_result(payload, "software mutation failed")?;
     let data = payload.get("data").unwrap_or(&Value::Null);
     let plan = data.get("plan").unwrap_or(&Value::Null);
     let group = plan
@@ -315,7 +352,7 @@ pub fn spawn_mutation(
 
 pub fn spawn_software_why(tx: Sender<Message>, request: u64, group: String, item: String) {
     thread::spawn(move || {
-        let result = run_json(&["sw", "why", &item, "--group", &group, "--json"])
+        let result = run_report_json(&["sw", "why", &item, "--group", &group, "--json"])
             .and_then(|payload| envelope_result(payload, "software explanation failed"));
         let _ = tx.send(Message::SoftwareWhyFinished { request, result });
     });
@@ -323,7 +360,7 @@ pub fn spawn_software_why(tx: Sender<Message>, request: u64, group: String, item
 
 pub fn spawn_search_groups(tx: Sender<Message>, request: u64, entry: SearchEntry) {
     thread::spawn(move || {
-        let software = run_json(&["sw", "ls", "--details", "--json"]);
+        let software = run_report_json(&["sw", "ls", "--details", "--json"]);
         let _ = tx.send(Message::SearchGroupsFinished {
             request,
             entry,
@@ -336,45 +373,40 @@ pub fn spawn_history_diff(tx: Sender<Message>, request: u64, before: u64, after:
     thread::spawn(move || {
         let before = before.to_string();
         let after = after.to_string();
-        let result = run_json(&["history", "diff", &before, &after, "--json"])
-            .and_then(|payload| envelope_result(payload, "generation diff failed"));
+        let result = run_json_response(&["history", "diff", &before, &after, "--json"]);
         let _ = tx.send(Message::HistoryDiffFinished { request, result });
     });
 }
 
-/// Apply a Configure/Settings value through the unified, non-interactive CLI:
-/// `host select … --json --yes` or `config set … --json --yes`.
-pub fn spawn_setting(tx: Sender<Message>, request: u64, key: SettingKey, value: String) {
+/// Build argv from backend metadata, preserving the original SettingKey path.
+pub fn setting_args(key: &SettingKey, setter: &SettingSetter, value: &str) -> Result<Vec<String>, String> {
+    let (command, path) = match key {
+        SettingKey::Host => ("host", "select"),
+        SettingKey::Config(path) => {
+            let command = match setter {
+                SettingSetter::Config => "config",
+                SettingSetter::Agent => "agent",
+                SettingSetter::Legacy => {
+                    if ["envy.agents.", "envy.agentProfiles.", "envy.llm.endpoints.", "envy.llm.credentials."]
+                        .iter().any(|prefix| path.starts_with(prefix)) { "agent" } else { "config" }
+                }
+                SettingSetter::Disabled | SettingSetter::Unknown(_) =>
+                    return Err("Unsupported or disabled backend setter; reload Settings".into()),
+            };
+            return Ok([command, "set", path, value, "--json", "--yes"]
+                .into_iter().map(str::to_string).collect());
+        }
+    };
+    Ok([command, path, value, "--json", "--yes"].into_iter().map(str::to_string).collect())
+}
+
+pub fn spawn_setting(tx: Sender<Message>, request: u64, key: SettingKey, setter: SettingSetter, value: String) {
     thread::spawn(move || {
-        let result = match &key {
-            SettingKey::Host => run_json(&["host", "select", &value, "--json", "--yes"])
-                .and_then(|payload| envelope_result(payload, "host select failed")),
-            SettingKey::Config(path) => {
-                let command = if path.starts_with("envy.agents.")
-                    || path.starts_with("envy.llm.endpoints.")
-                    || path.starts_with("envy.llm.credentials.")
-                {
-                    "agent"
-                } else {
-                    "config"
-                };
-                let args = [
-                    command,
-                    "set",
-                    path.as_str(),
-                    value.as_str(),
-                    "--json",
-                    "--yes",
-                ];
-                run_json(&args)
-                    .and_then(|payload| envelope_result(payload, "configuration update failed"))
-            }
-        };
-        let _ = tx.send(Message::SettingApplied {
-            request,
-            key,
-            result,
+        let result = setting_args(&key, &setter, &value).and_then(|args| {
+            let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+            run_json(&args).and_then(|payload| envelope_result(payload, "configuration update failed"))
         });
+        let _ = tx.send(Message::SettingApplied { request, key, result });
     });
 }
 
@@ -430,6 +462,44 @@ pub fn strip_ansi(input: &str) -> String {
     } else {
         out
     }
+}
+
+/// Plan builds can take up to two hours, with separate finite output bounds.
+/// The ordinary read-only transport deadline remains 120 seconds.
+pub fn spawn_json_workflow(
+    tx: Sender<Message>, request: u64, action: WorkflowAction,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    thread::spawn(move || {
+        let (program, args) = action.command(envy_binary());
+        let expected = json_command(&args.iter().map(String::as_str).collect::<Vec<_>>());
+        let result = crate::transport::run_json_controlled(
+            Command::new(program).args(args).env("NO_COLOR", "1").env("TERM", "dumb"),
+            &expected,
+            crate::transport::Limits {
+                timeout: std::time::Duration::from_secs(if action == WorkflowAction::Plan { 2 * 60 * 60 } else { 120 }),
+                stdout_bytes: 16 * 1024 * 1024,
+                stderr_bytes: 4 * 1024 * 1024,
+            },
+            &cancelled,
+            |chunk| {
+                // One bounded message per capture batch avoids a channel entry
+                // for every newline emitted by a verbose build.
+                let _ = tx.send(Message::WorkflowOutput { request, line: chunk.to_string() });
+            },
+        );
+        let result = result.and_then(|response| {
+            if matches!(action, WorkflowAction::RetryVerification(_)) {
+                if let Err(mut error) = crate::transport::validate_envelope(&response.payload, "log.retry") {
+                    error.stderr = response.stderr.clone();
+                    error.response = Some(Box::new(response));
+                    return Err(error);
+                }
+            }
+            Ok(response)
+        });
+        let _ = tx.send(Message::JsonWorkflowFinished { request, result });
+    });
 }
 
 /// Stream a full-configuration workflow (`envy plan`/`apply`/`doctor`) into the
@@ -526,6 +596,104 @@ mod tests {
     }
 
     #[test]
+    fn setter_metadata_is_authoritative_and_legacy_profiles_keep_the_agent_route() {
+        let profile = SettingKey::Config("envy.agentProfiles.fixture.model".into());
+        let ordinary = SettingKey::Config("envy.some.future.setting".into());
+        for (key, setter, command) in [
+            (&profile, SettingSetter::Agent, "agent"),
+            (&profile, SettingSetter::Config, "config"),
+            (&ordinary, SettingSetter::Agent, "agent"),
+            (&profile, SettingSetter::Legacy, "agent"),
+            (&ordinary, SettingSetter::Legacy, "config"),
+        ] {
+            let args = setting_args(key, &setter, "literal; $(never-execute)").unwrap();
+            assert_eq!(args[0], command);
+            assert_eq!(args[2], key.label());
+            assert_eq!(args[3], "literal; $(never-execute)");
+        }
+        for setter in [SettingSetter::Disabled, SettingSetter::Unknown("other.set".into())] {
+            assert!(setting_args(&ordinary, &setter, "value").is_err());
+        }
+        let (_, args) = WorkflowAction::RetryVerification("fixture".into()).command("envy".into());
+        assert_eq!(json_command(&args.iter().map(String::as_str).collect::<Vec<_>>()), "log.retry");
+        assert_eq!(WorkflowAction::Plan.command("envy".into()).1, ["plan", "--json"]);
+    }
+
+    #[test]
+    fn wire_commands_are_canonical_and_storage_uses_spaces() {
+        for (args, expected) in [
+            (vec!["sw", "source", "ls", "--json"], "software.source.ls"),
+            (
+                vec!["software", "add", "group", "item", "--json"],
+                "software.add",
+            ),
+            (vec!["storage", "inspect", "--json"], "storage inspect"),
+            (vec!["config", "show", "--json"], "config.show"),
+            (vec!["history", "diff", "1", "2", "--json"], "history.diff"),
+            (vec!["doctor", "--json"], "doctor"),
+        ] {
+            assert_eq!(json_command(&args), expected);
+        }
+    }
+
+    #[test]
+    fn failed_partial_payload_never_becomes_a_mutation_preview_or_commit() {
+        for stage in [MutationStage::Preview, MutationStage::Apply] {
+            let result = match stage {
+                MutationStage::Preview => "dry-run",
+                MutationStage::Apply => "applied",
+            };
+            let payload = json!({
+                "schemaVersion": 1, "command": "software.add", "ok": false,
+                "data": {"result": result, "plan": {
+                    "action": "add", "group": {"id": "homebrew.system.formula"},
+                    "item": "git", "expected": {"effective": true}
+                }, "errors": ["partial change"]},
+                "error": {"code": "partial_failure", "message": "inspect results"}
+            });
+            let error = validate_mutation_response(stage, &intent("git"), payload).unwrap_err();
+            assert!(error.contains("partial_failure"));
+            assert!(error.contains("inspect results"));
+        }
+    }
+
+    #[test]
+    fn mutation_requires_an_explicit_success_envelope() {
+        let legacy = json!({"schemaVersion": 1, "data": {"result": "dry-run", "plan": {
+            "action": "add", "group": {"id": "homebrew.system.formula"},
+            "item": "git", "expected": {"effective": true}
+        }}});
+        assert!(
+            validate_mutation_response(MutationStage::Preview, &intent("git"), legacy).is_err()
+        );
+    }
+
+    #[test]
+    fn failed_mirror_payload_never_becomes_an_applied_change() {
+        let source = MirrorSource {
+            code: "synthetic".into(),
+            url: "https://synthetic.invalid".into(),
+            label: "Synthetic".into(),
+            provider: "synthetic".into(),
+            ok: None,
+            http_status: None,
+            throughput_bps: None,
+            detail: None,
+            stale: false,
+            measurement_stale: false,
+            fetched_at: None,
+            current: false,
+            selection_origin: None,
+        };
+        let payload = json!({"schemaVersion":1,"command":"mirror.set","ok":false,
+            "data":{"result":"applied"},
+            "error":{"code":"partial_failure","message":"failed"}});
+        let error =
+            validate_mirror_response(MutationStage::Apply, "target", &source, payload).unwrap_err();
+        assert!(error.contains("partial_failure"));
+    }
+
+    #[test]
     fn canonical_search_operand_is_kept_separate_from_verified_item() {
         assert_eq!(
             mutation_args(MutationStage::Preview, &intent("homebrew:formula/git")),
@@ -614,4 +782,38 @@ mod tests {
             ]
         );
     }
+}
+
+/// Storage mutations always use the token protocol; never route to the legacy
+/// success-only loader. Valid failures retain the complete response and stderr.
+pub fn spawn_storage_action(
+    tx: Sender<Message>, request: u64, task: crate::storage::actions::Task,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    thread::spawn(move || {
+        let result = match task.argv() {
+            Err(message) => Err(crate::transport::TransportError {
+                kind: crate::transport::ErrorKind::Protocol, message,
+                response: None, stderr: String::new(),
+            }),
+            Ok(args) => crate::transport::run_json_controlled(
+                Command::new(envy_binary()).args(args).env("NO_COLOR", "1").env("TERM", "dumb"),
+                &task.command(),
+                crate::transport::Limits {
+                    timeout: std::time::Duration::from_secs(if task.mutating() { 2 * 60 * 60 } else { 120 }),
+                    stdout_bytes: 16 * 1024 * 1024, stderr_bytes: 4 * 1024 * 1024,
+                },
+                &cancelled,
+                |chunk| { let _ = tx.send(Message::StorageActionOutput { request, chunk: chunk.into() }); },
+            ).and_then(|response| {
+                if let Err(mut error) = crate::transport::validate_envelope(&response.payload, &task.command()) {
+                    error.stderr = response.stderr.clone();
+                    error.response = Some(Box::new(response));
+                    return Err(error);
+                }
+                Ok(response)
+            }),
+        };
+        let _ = tx.send(Message::StorageActionFinished { request, result });
+    });
 }

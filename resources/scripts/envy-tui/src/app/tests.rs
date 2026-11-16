@@ -172,6 +172,38 @@ fn health_filter_and_details_follow_the_displayed_order() {
 }
 
 #[test]
+fn stale_loaded_reply_keeps_the_newer_refresh_and_cached_payload() {
+    let mut app = app();
+    app.screen = Screen::Doctor;
+    app.pages.insert(
+        Screen::Doctor,
+        PageState {
+            payload: Some(json!({"results": [{"name": "cached"}]})),
+            loading: true,
+            request: Some(9),
+            ..PageState::default()
+        },
+    );
+    for (request, name) in [(8, "outdated"), (9, "current")] {
+        app.tx
+            .send(Message::Loaded {
+                request,
+                target: LoadTarget::Screen(Screen::Doctor),
+                payload: json!({"results": [{"name": name}]}),
+            })
+            .unwrap();
+        app.receive_messages();
+        let expected = if request == 8 { "cached" } else { "current" };
+        assert_eq!(app.payload().unwrap()["results"][0]["name"], expected);
+        assert_eq!(app.loading(), request == 8);
+        assert_eq!(
+            app.current_state().unwrap().request,
+            if request == 8 { Some(9) } else { None }
+        );
+    }
+}
+
+#[test]
 fn cached_page_does_not_start_another_request() {
     let mut app = app();
     app.pages.insert(
@@ -208,14 +240,24 @@ fn history_operations_subview_reads_journal_payload() {
 }
 
 #[test]
-fn activity_subview_v_cycles_health_generations_and_operations() {
+fn activity_subview_v_cycles_health_generations_operations_and_storage() {
     let mut app = app();
     app.screen = Screen::History;
     app.activity_screen = Screen::History;
+    app.storage_cache.insert(
+        StorageRequest::default(),
+        PageState {
+            loading: true,
+            ..Default::default()
+        },
+    );
     assert_eq!(app.history_view, HistoryView::Generations);
 
     app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
     assert_eq!(app.history_view, HistoryView::Operations);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+    assert_eq!(app.screen, Screen::Storage);
 
     app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
     assert_eq!(app.screen, Screen::Doctor);
@@ -337,7 +379,7 @@ fn search_result_only_offers_compatible_manifest_groups() {
         {"id": "homebrew.system.cask", "label": "Casks", "ecosystem": "homebrew", "scope": "system", "kind": "cask"}
     ]});
     app.open_group_chooser(entry, Some(&payload));
-    assert_eq!(app.group_chooser.unwrap().groups.len(), 1);
+    assert_eq!(app.group_chooser.as_ref().unwrap().groups.len(), 1);
 }
 
 #[test]
@@ -364,7 +406,7 @@ fn saved_policy_offers_a_follow_up_workflow() {
     // alternate screen, so no leave-screen workflow action is queued.
     assert!(app.take_workflow_action().is_none());
     let log = app
-        .workflow_log
+        .workflow_log.as_ref()
         .expect("plan should open a streamed log popup");
     assert!(log.running);
     assert_eq!(log.title, WorkflowAction::Plan.title());
@@ -704,4 +746,472 @@ fn source_sync_shortcut_preserves_source_screen_and_requests_confirmation() {
         app.workflow_confirmation,
         Some(WorkflowAction::SyncSource("native:vendor".into()))
     );
+}
+
+fn storage_report(view: StorageView, marker: &str) -> StorageReport {
+    use crate::storage::StorageProcess;
+    let data = match view {
+        StorageView::Inspect => {
+            json!({"items": [{"id": marker, "status": "partial", "logicalBytes": null,
+            "allocatedBytes": 0, "nativeReclaimableBytes": null, "policyEligibleBytes": null}], "reports": {}})
+        }
+        StorageView::Status => {
+            json!({"mode": "report", "rules": [], "ruleDetails": [], "runs": []})
+        }
+        StorageView::Validate => json!({"ok": true, "rules": []}),
+    };
+    let mut report = StorageReport::from_payload(
+        view,
+        json!({"schemaVersion":1,
+        "command":format!("storage {}", view.command()), "ok":true,"data":data,"warnings":[]}),
+    );
+    report.process = Some(StorageProcess {
+        exit_code: Some(0),
+        success: true,
+        stderr: String::new(),
+    });
+    report
+}
+
+fn cache_storage(app: &mut App, request: StorageRequest) {
+    let report = storage_report(request.view, "cached");
+    app.prepare_target(&LoadTarget::Storage(request.clone()));
+    app.storage_cache.insert(
+        request,
+        PageState {
+            storage_report: Some(report),
+            received_at: Some(100),
+            ..Default::default()
+        },
+    );
+}
+
+#[test]
+fn storage_home_entry_defaults_to_inspection_without_other_views_or_rescan() {
+    let mut app = app();
+    cache_storage(&mut app, StorageRequest::default());
+    let request_id = app.request_id;
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert_eq!(app.screen, Screen::Storage);
+    assert_eq!(
+        app.current_target(),
+        Some(LoadTarget::Storage(StorageRequest::default()))
+    );
+    assert_eq!(app.storage_cache.len(), 1);
+    assert_eq!(app.request_id, request_id);
+    app.load_current(false);
+    assert_eq!(
+        app.request_id, request_id,
+        "cached navigation must not rescan"
+    );
+    app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+    assert_eq!(app.screen, Screen::Search);
+    assert_eq!(app.input_mode, InputMode::Search);
+    assert_eq!(app.storage_cache.len(), 1);
+}
+
+#[test]
+fn storage_report_keys_explicitly_select_read_commands_and_preserve_activity_v() {
+    let mut app = app();
+    app.screen = Screen::Storage;
+    app.activity_screen = Screen::Storage;
+    for view in StorageView::ALL {
+        cache_storage(
+            &mut app,
+            StorageRequest {
+                view,
+                projects: vec![],
+            },
+        );
+    }
+    app.pages.insert(
+        Screen::Doctor,
+        PageState {
+            payload: Some(json!({})),
+            ..Default::default()
+        },
+    );
+    let request_id = app.request_id;
+    for (key, view) in [
+        (']', StorageView::Status),
+        (']', StorageView::Validate),
+        (']', StorageView::Inspect),
+        ('[', StorageView::Validate),
+    ] {
+        app.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
+        assert_eq!(app.storage_view, view);
+        assert_eq!(app.storage_request().argv().unwrap()[1], view.command());
+    }
+    assert_eq!(app.request_id, request_id);
+    app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+    assert_eq!(app.screen, Screen::Doctor);
+    assert!(app.workflow_confirmation.is_none());
+    assert!(app.take_workflow_action().is_none());
+}
+
+#[test]
+fn storage_project_input_preserves_spaces_unicode_and_shell_characters_as_one_path() {
+    let mut app = app();
+    app.screen = Screen::Storage;
+    let first = "/tmp/a  project/子目录".to_string();
+    let second = "/tmp/$(touch never);`echo literal`".to_string();
+    for projects in [
+        vec![],
+        vec![first.clone()],
+        vec![first.clone(), second.clone()],
+    ] {
+        cache_storage(
+            &mut app,
+            StorageRequest {
+                view: StorageView::Inspect,
+                projects,
+            },
+        );
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+    assert_eq!(app.input_mode, InputMode::StorageProject);
+    app.handle_paste(&format!("{first}\n"));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.storage_projects, [first.clone()]);
+    app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+    app.handle_paste(&second);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.storage_projects, [first.clone(), second.clone()]);
+    assert_eq!(
+        app.storage_request().argv().unwrap(),
+        [
+            "storage",
+            "inspect",
+            "--json",
+            "--project=/tmp/a  project/子目录",
+            "--project=/tmp/$(touch never);`echo literal`"
+        ]
+    );
+    app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+    app.handle_paste(&first);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        app.storage_projects.len(),
+        2,
+        "duplicate scope is unchanged"
+    );
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    assert_eq!(app.storage_projects, [first]);
+    app.handle_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::NONE));
+    assert!(app.storage_projects.is_empty());
+    assert_eq!(
+        app.request_id, 0,
+        "all combinations were cached; no real inspect is run"
+    );
+}
+
+#[test]
+fn storage_project_input_cancel_and_invalid_paths_do_not_change_scope() {
+    let mut app = app();
+    app.screen = Screen::Storage;
+    app.begin_storage_project();
+    app.handle_paste("/one\n/two");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.input_mode, InputMode::StorageProject);
+    assert!(app.storage_projects.is_empty());
+    app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    assert!(app.storage_project_input.is_empty());
+    app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+    assert_eq!(app.storage_project_input, "s");
+    assert_eq!(
+        app.screen,
+        Screen::Storage,
+        "input consumes the global search key"
+    );
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.input_mode, InputMode::Normal);
+    app.storage_view = StorageView::Status;
+    app.begin_storage_project();
+    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.storage_projects.is_empty());
+}
+
+#[test]
+fn storage_cache_is_bounded_and_evicted_responses_cannot_recreate_entries() {
+    let mut app = app();
+    for index in 0..STORAGE_CACHE_LIMIT + 2 {
+        let target = StorageRequest {
+            projects: vec![format!("/project/{index}")],
+            ..Default::default()
+        };
+        app.prepare_target(&LoadTarget::Storage(target.clone()));
+        app.storage_cache.get_mut(&target).unwrap().request = Some(index as u64 + 1);
+    }
+    assert_eq!(app.storage_cache.len(), STORAGE_CACHE_LIMIT);
+    assert_eq!(app.storage_order.len(), STORAGE_CACHE_LIMIT);
+    let evicted = StorageRequest {
+        projects: vec!["/project/0".into()],
+        ..Default::default()
+    };
+    app.tx
+        .send(Message::StorageFinished {
+            request: 1,
+            target: evicted.clone(),
+            result: Ok(storage_report(StorageView::Inspect, "evicted")),
+        })
+        .unwrap();
+    app.receive_messages();
+    assert!(!app.storage_cache.contains_key(&evicted));
+    let recent = app.storage_order.front().unwrap().clone();
+    app.prepare_target(&LoadTarget::Storage(recent.clone()));
+    assert_eq!(app.storage_order.back(), Some(&recent));
+    assert_eq!(app.storage_cache.len(), STORAGE_CACHE_LIMIT);
+}
+
+#[test]
+fn storage_old_request_and_other_project_replies_never_overwrite_current_report() {
+    let mut app = app();
+    app.screen = Screen::Storage;
+    app.fixed_now = Some(1000);
+    let target = StorageRequest::default();
+    cache_storage(&mut app, target.clone());
+    app.storage_cache.get_mut(&target).unwrap().request = Some(20);
+    app.storage_cache.get_mut(&target).unwrap().loading = true;
+    let other = StorageRequest {
+        projects: vec!["/different".into()],
+        ..Default::default()
+    };
+    cache_storage(&mut app, other.clone());
+    app.storage_cache.get_mut(&other).unwrap().request = Some(19);
+    app.tx
+        .send(Message::StorageFinished {
+            request: 19,
+            target: target.clone(),
+            result: Ok(storage_report(StorageView::Inspect, "stale")),
+        })
+        .unwrap();
+    app.tx
+        .send(Message::StorageFinished {
+            request: 19,
+            target: other.clone(),
+            result: Ok(storage_report(StorageView::Inspect, "offscreen")),
+        })
+        .unwrap();
+    app.receive_messages();
+    assert_eq!(
+        app.storage_report().unwrap().payload["data"]["items"][0]["id"],
+        "cached"
+    );
+    assert_eq!(app.current_state().unwrap().request, Some(20));
+    assert_eq!(app.current_state().unwrap().received_at, Some(100));
+    assert_eq!(app.storage_cache[&other].received_at, Some(1000));
+    app.tx
+        .send(Message::StorageFinished {
+            request: 20,
+            target,
+            result: Ok(storage_report(StorageView::Inspect, "new")),
+        })
+        .unwrap();
+    app.receive_messages();
+    assert_eq!(
+        app.storage_report().unwrap().payload["data"]["items"][0]["id"],
+        "new"
+    );
+    assert_eq!(app.current_state().unwrap().received_at, Some(1000));
+}
+
+#[test]
+fn storage_failed_refresh_preserves_data_receipt_time_and_requires_explicit_retry() {
+    let mut app = app();
+    app.screen = Screen::Storage;
+    let target = StorageRequest::default();
+    cache_storage(&mut app, target.clone());
+    app.storage_cache.get_mut(&target).unwrap().request = Some(20);
+    app.tx
+        .send(Message::StorageFinished {
+            request: 20,
+            target: target.clone(),
+            result: Err("Timeout: inspect".into()),
+        })
+        .unwrap();
+    app.receive_messages();
+    assert_eq!(app.current_state().unwrap().received_at, Some(100));
+    assert_eq!(app.current_error(), Some("Timeout: inspect"));
+    assert!(app.current_has_content());
+    assert!(app.status.contains("refresh failed"));
+    app.set_screen(Screen::Storage);
+    assert_eq!(app.request_id, 0);
+    assert!(app.current_error().is_some());
+    app.storage_cache.get_mut(&target).unwrap().storage_report = None;
+    app.load_current(false);
+    assert_eq!(
+        app.request_id, 0,
+        "navigation does not retry a failed scan without r"
+    );
+}
+
+#[test]
+fn storage_partial_nonzero_reports_and_details_never_become_ready_or_mutations() {
+    let mut app = app();
+    app.screen = Screen::Storage;
+    let target = StorageRequest::default();
+    cache_storage(&mut app, target.clone());
+    app.storage_cache.get_mut(&target).unwrap().request = Some(20);
+    let mut report = storage_report(StorageView::Inspect, "partial item");
+    report.payload["ok"] = json!(false);
+    report.payload["warnings"] = json!(["warning evidence"]);
+    report.payload["data"]["errors"] = json!(["partial error"]);
+    report.payload["error"] = json!({"code":"partial_failure","message":"inspect errors"});
+    report.process.as_mut().unwrap().exit_code = Some(7);
+    report.process.as_mut().unwrap().success = false;
+    app.tx
+        .send(Message::StorageFinished {
+            request: 20,
+            target,
+            result: Ok(report),
+        })
+        .unwrap();
+    app.receive_messages();
+    assert!(app.status.contains("partial / failed"));
+    assert!(app.status.contains("exit 7"));
+    assert!(!app.status.contains("ready"));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    match app.detail.as_ref().unwrap() {
+        DetailView::Storage { report, row } => {
+            let detail = report.detail_text(row);
+            for evidence in [
+                "partial item",
+                "warning evidence",
+                "partial error",
+                "partial_failure",
+                "Process exit: 7",
+            ] {
+                assert!(detail.contains(evidence));
+            }
+        }
+        _ => panic!("expected Storage detail"),
+    }
+    app.detail_scroll_max = 100;
+    app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+    assert_eq!(app.detail_scroll, 100);
+    app.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+    assert_eq!(app.detail_scroll, 0);
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    assert!(app.workflow_confirmation.is_none());
+    assert!(app.take_workflow_action().is_none());
+    assert!(app.pending_mutation.is_none());
+}
+
+#[test]
+fn storage_strict_envelope_failure_retains_previous_valid_report() {
+    let mut app = app();
+    app.screen = Screen::Storage;
+    let target = StorageRequest::default();
+    cache_storage(&mut app, target.clone());
+    for (index, payload) in [
+        json!({"data":{"items":[]}}),
+        json!({"schemaVersion":1,"command":"storage status","ok":true,"data":{},"warnings":[]}),
+        json!({"schemaVersion":1,"command":"storage inspect","ok":"true","data":{}}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        app.storage_cache.get_mut(&target).unwrap().request = Some(index as u64);
+        app.tx
+            .send(Message::StorageFinished {
+                request: index as u64,
+                target: target.clone(),
+                result: Ok(StorageReport::from_payload(StorageView::Inspect, payload)),
+            })
+            .unwrap();
+        app.receive_messages();
+        assert!(app.current_error().unwrap().contains("Protocol"));
+        assert_eq!(
+            app.storage_report().unwrap().payload["data"]["items"][0]["id"],
+            "cached"
+        );
+        assert_eq!(app.current_state().unwrap().received_at, Some(100));
+    }
+}
+
+#[test]
+fn successful_host_or_config_edits_discard_storage_reports_and_in_flight_replies() {
+    for key in [SettingKey::Host, SettingKey::Config("storage.mode".into())] {
+        let mut app = app();
+        app.request_id = 1000;
+        for (index, view) in StorageView::ALL.into_iter().enumerate() {
+            let target = StorageRequest {
+                view,
+                projects: vec![],
+            };
+            cache_storage(&mut app, target.clone());
+            let state = app.storage_cache.get_mut(&target).unwrap();
+            state.loading = true;
+            state.request = Some(700 + index as u64);
+        }
+        app.screen = Screen::Storage;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(app.detail, Some(DetailView::Storage { .. })));
+        // An empty Search page has no request, keeping this regression isolated.
+        app.screen = Screen::Search;
+        app.query.clear();
+        app.setting_request = Some(999);
+        app.setting_loading = true;
+        app.tx
+            .send(Message::SettingApplied {
+                request: 999,
+                key,
+                result: Ok(json!({})),
+            })
+            .unwrap();
+        app.receive_messages();
+        assert!(app.storage_cache.is_empty());
+        assert!(app.storage_order.is_empty());
+        assert!(app.detail.is_none());
+        assert_eq!(app.request_id, 1000, "no off-tab scan after a setting edit");
+        for (index, view) in StorageView::ALL.into_iter().enumerate() {
+            app.tx
+                .send(Message::StorageFinished {
+                    request: 700 + index as u64,
+                    target: StorageRequest {
+                        view,
+                        projects: vec![],
+                    },
+                    result: Ok(storage_report(view, "old host")),
+                })
+                .unwrap();
+        }
+        app.receive_messages();
+        assert!(
+            app.storage_cache.is_empty(),
+            "old host replies cannot revive cache"
+        );
+        let target = StorageRequest::default();
+        app.prepare_target(&LoadTarget::Storage(target.clone()));
+        let state = app.storage_cache.get_mut(&target).unwrap();
+        state.request = Some(1001);
+        state.loading = true;
+        app.tx
+            .send(Message::StorageFinished {
+                request: 700,
+                target: target.clone(),
+                result: Ok(storage_report(StorageView::Inspect, "old host")),
+            })
+            .unwrap();
+        app.receive_messages();
+        assert!(app.storage_cache[&target].loading);
+        assert!(!app.storage_cache[&target].has_content());
+        app.tx
+            .send(Message::StorageFinished {
+                request: 1001,
+                target: target.clone(),
+                result: Ok(storage_report(StorageView::Inspect, "new host")),
+            })
+            .unwrap();
+        app.receive_messages();
+        assert!(!app.storage_cache[&target].loading);
+        assert_eq!(
+            app.storage_cache[&target]
+                .storage_report
+                .as_ref()
+                .unwrap()
+                .payload["data"]["items"][0]["id"],
+            "new host"
+        );
+    }
 }

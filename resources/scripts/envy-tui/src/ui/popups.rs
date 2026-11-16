@@ -177,7 +177,40 @@ fn render_mutation(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn render_help(frame: &mut Frame, area: Rect) {
+fn render_help(frame: &mut Frame, app: &App, area: Rect) {
+    if app.screen == crate::model::Screen::Storage {
+        popup(
+            frame,
+            centered_size(92, 26, area),
+            "STORAGE · READ REPORTS",
+            vec![
+                Line::from("[ / ]     Inspection / Policy & records / Rule validation"),
+                Line::from("p         add one complete project directory (Inspection only)"),
+                Line::from("x / X     remove last project / clear all explicit projects"),
+                Line::from("Enter     full details and original backend JSON"),
+                Line::from("a         explicit actions: save plan / preview / review / confirm"),
+                Line::from("          native maintenance starts empty; init/check/gc are CLI handoffs"),
+                Line::from("↑↓ / j k  select rows or scroll details; PgUp/PgDn, Home/End"),
+                Line::from(
+                    "r         request fresh data; cached reports never rescan on navigation",
+                ),
+                Line::from("s         search software; v cycles Activity; Tab changes section"),
+                Line::from(""),
+                Line::from("Inspection: known hotspots and explicit project directories only."),
+                Line::from("Status: may initialize and lock local metadata."),
+                Line::from("Validation: writes and removes temporary organize rule configuration."),
+                Line::from(
+                    "Logical / allocated / native / policy bytes are independent estimates.",
+                ),
+                Line::from("Rows overlap; unknown is not zero. Quarantine still occupies storage."),
+                Line::from("Docker associations and application/project evidence remain in JSON."),
+                Line::from(""),
+                Line::from("? / Esc close help; Esc cancels input; q quits"),
+            ],
+            0,
+        );
+        return;
+    }
     popup(
         frame,
         centered_size(80, 34, area),
@@ -193,7 +226,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
             Line::from("Esc         cancel or clear context; q quits"),
             Line::from(""),
             Line::from(Span::styled("Home", theme::heading())),
-            Line::from("Status, recommendations, and setup / repair guidance"),
+            Line::from("Status and setup / repair guidance; t opens Storage reports"),
             Line::from(""),
             Line::from(Span::styled("Configure", theme::heading())),
             Line::from("Software / Search / Mirrors / Settings are secondary views"),
@@ -206,7 +239,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
             Line::from("Mirror Enter  choose a target, then a chsrc/catalog source"),
             Line::from(""),
             Line::from(Span::styled("Activity", theme::heading())),
-            Line::from("Health / Generations / Operations are secondary views"),
+            Line::from("Health / Generations / Operations / Storage are secondary views"),
             Line::from("Health Enter opens details; x runs an allow-listed safe action"),
             Line::from("Health f shows only warnings and errors"),
             Line::from("v cycles Activity views; Space marks generations, d compares"),
@@ -218,7 +251,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
     );
 }
 
-fn render_workflow_log(frame: &mut Frame, area: Rect, log: &WorkflowLog) {
+fn render_workflow_log(frame: &mut Frame, area: Rect, log: &mut WorkflowLog) {
     let region = centered_size(area.width, area.height, area);
     // Mirror popup()'s inset (1-cell border + 1-row vertical inset per side) so
     // the follow offset keeps the newest line pinned to the bottom.
@@ -230,7 +263,9 @@ fn render_workflow_log(frame: &mut Frame, area: Rect, log: &WorkflowLog) {
         (false, Some(false)) => "failed ✗".to_string(),
         (false, None) => "finished".to_string(),
     };
-    let hint = if log.running {
+    let hint = if log.running && log.json {
+        "↑↓ scroll · End follow · Esc cancel"
+    } else if log.running {
         "↑↓ scroll · End follow"
     } else {
         "↑↓ scroll · Enter/Esc close"
@@ -242,24 +277,26 @@ fn render_workflow_log(frame: &mut Frame, area: Rect, log: &WorkflowLog) {
         .iter()
         .map(|line| Line::from(Span::styled(line.clone(), Style::new())))
         .collect();
-    if lines.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "Waiting for output…",
-            theme::muted(),
-        )));
+    if let Some(report) = &log.report {
+        lines = super::detail::workflow_report_lines(report, None);
     }
-
-    let scroll = if log.follow {
-        lines.len().saturating_sub(viewport)
-    } else {
-        log.scroll.min(lines.len().saturating_sub(1))
-    };
-    popup(frame, region, &title, lines, scroll);
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled("Waiting for stderr stage progress…", theme::muted())));
+    }
+    let block = dialog_block(&title);
+    let inner = inset_rect(block.inner(region), 2, 1);
+    let requested = if log.follow { usize::MAX } else { log.scroll };
+    let (visible, maximum, scroll) = super::detail::report_window(lines, inner.width, viewport as u16, requested);
+    log.scroll_max = maximum;
+    log.scroll = scroll;
+    frame.render_widget(Clear, region);
+    frame.render_widget(block, region);
+    frame.render_widget(Paragraph::new(visible), inner);
 }
 
 pub(super) fn render_overlays(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
-    if let Some(log) = &app.workflow_log {
+    if let Some(log) = &mut app.workflow_log {
         render_workflow_log(frame, area, log);
         return;
     }
@@ -287,7 +324,7 @@ pub(super) fn render_overlays(frame: &mut Frame, app: &mut App) {
                 Line::from(""),
                 Line::from(format!("Command  {}", action.display_command())),
                 Line::from(""),
-                Line::from("The TUI will pause and show the complete command output."),
+                Line::from(if action.is_json() { "The backend revalidates this fixed read-only step; its complete result stays visible." } else { "The TUI will pause and show the complete command output." }),
                 Line::from(""),
                 Line::from("Enter/y confirms; Esc/n cancels."),
             ],
@@ -351,7 +388,7 @@ pub(super) fn render_overlays(frame: &mut Frame, app: &mut App) {
     } else if let Some(detail) = app.detail.clone() {
         render_detail(frame, app, area, &detail);
     } else if app.show_help {
-        render_help(frame, area);
+        render_help(frame, app, area);
     }
 }
 

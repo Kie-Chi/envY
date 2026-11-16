@@ -274,7 +274,12 @@ pub(super) fn render_home(frame: &mut Frame, app: &App, area: Rect) {
         "Software",
         software_lines(payload.get("software").unwrap_or(&Value::Null)),
     );
-    let next_lines = recommendation_lines(payload);
+    let mut next_lines = recommendation_lines(payload);
+    next_lines.push(Line::from(vec![
+        Span::raw(" "),
+        theme::key("t"),
+        Span::raw(" Storage · local reports and explicit projects"),
+    ]));
     let next_rows = next_lines.len() as u16;
     let next = home_card("Recommended", next_lines);
     let attention_area = if area.width >= 110 {

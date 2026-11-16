@@ -118,6 +118,150 @@ fn configure_settings_renders_editable_values() {
     assert!(text.contains("envy.mirrors.mode"));
 }
 
+fn settings_app(payload: Value, selected: usize) -> App {
+    let mut app = test_app();
+    app.screen = Screen::Config;
+    app.settings_selected = selected;
+    app.pages.insert(
+        Screen::Config,
+        crate::model::PageState {
+            payload: Some(payload),
+            ..Default::default()
+        },
+    );
+    app
+}
+
+#[test]
+fn settings_show_backend_metadata_and_distinguish_same_labels() {
+    let mut app = settings_app(
+        json!({"fields": [
+            {"path": "envy.agents.first.model", "prompt": "Model", "value": "first"},
+            {"path": "envy.agents.second.model", "prompt": "Model", "value": "second",
+             "group": "AGENTS", "nixType": "string", "required": true,
+             "active": null, "conditionState": "unknown", "changeKind": "live",
+             "activationHint": "Backend applicability explanation", "choices": ["second", "third"]}
+        ]}),
+        2,
+    );
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal
+        .draw(|frame| configure::render_settings(frame, &app, frame.area()))
+        .unwrap();
+    let text = buffer_text(terminal.backend().buffer());
+    for expected in [
+        "envy.agents.second.model",
+        "AGENTS",
+        "string",
+        "required",
+        "unknown",
+        "live",
+        "Backend applicability explanation",
+        "Options: second · third",
+    ] {
+        assert!(text.contains(expected), "Missing {expected}:\n{text}");
+    }
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let chooser = app.setting_chooser.as_ref().unwrap();
+    assert_eq!(
+        chooser.key,
+        crate::model::SettingKey::Config("envy.agents.second.model".into())
+    );
+    assert!(chooser.title.contains("envy.agents.second.model"));
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.pending_setting.as_ref().unwrap().value, "third");
+}
+
+#[test]
+fn settings_keep_selection_above_help_at_narrow_sizes_and_end_of_list() {
+    let fields = (0..35)
+        .map(|index| {
+            json!({
+                "path": format!("envy.test.field{index}"),
+                "prompt": if index == 34 { "Last visible field".to_string() }
+                          else { "Long 中文 label with no short alternative ".repeat(8) },
+                "value": format!("v{index}"),
+                "active": false, "conditionState": "inactive",
+                "activationHint": "Backend says retained"
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut app = settings_app(json!({"fields": fields}), 35);
+    // The page scroll was calculated using a larger viewport than the table.
+    app.scroll = 5;
+    for (width, height) in [(48, 18), (80, 24), (120, 30)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| configure::render_settings(frame, &app, frame.area()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let selected =
+            row_containing(buffer, "Last visible field").expect("selected label visible");
+        let help = row_containing(buffer, "Selected setting").expect("help panel visible");
+        assert!(selected < help, "selected row must remain in the table");
+        assert!(buffer_text(buffer).contains("v34"));
+    }
+    for (width, height) in [(1, 1), (10, 4), (20, 8)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| configure::render_settings(frame, &app, frame.area()))
+            .unwrap();
+    }
+}
+
+#[test]
+fn settings_secrets_render_only_status_and_cannot_open_an_editor() {
+    let mut app = settings_app(
+        json!({"secretFields": [
+            {"path": "proxy/url", "prompt": "Proxy credential", "set": true,
+             "value": "never-render-this-secret", "choices": ["never-render-this-secret"]},
+            {"path": "other/token", "set": false}
+        ]}),
+        1,
+    );
+    let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+    terminal
+        .draw(|frame| configure::render_settings(frame, &app, frame.area()))
+        .unwrap();
+    let text = buffer_text(terminal.backend().buffer());
+    assert!(text.contains("Proxy credential [secret]"));
+    assert!(text.contains("unset"));
+    assert!(text.contains("Secret status only"));
+    assert!(!text.contains("never-render-this-secret"));
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.setting_edit.is_none());
+    assert!(app.setting_chooser.is_none());
+    assert!(app.pending_setting.is_none());
+    assert_eq!(app.input_mode, crate::app::InputMode::Normal);
+}
+
+#[test]
+fn settings_legacy_text_fields_and_host_help_still_work() {
+    let mut app = settings_app(
+        json!({"fields": [
+            {"path": "envy.user.name", "value": "old-name"}
+        ]}),
+        0,
+    );
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    terminal
+        .draw(|frame| configure::render_settings(frame, &app, frame.area()))
+        .unwrap();
+    assert!(buffer_text(terminal.backend().buffer()).contains("Select the local machine target"));
+    app.settings_selected = 1;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let edit = app.setting_edit.as_ref().unwrap();
+    assert_eq!(edit.buffer, "old-name");
+    assert_eq!(
+        edit.key,
+        crate::model::SettingKey::Config("envy.user.name".into())
+    );
+}
+
 #[test]
 fn software_detail_that_fits_cannot_scroll_into_blank_space() {
     let mut app = test_app();
@@ -508,7 +652,7 @@ const WIDE_HOME: &str = r#"
 ╭ Software ────────────────────────────╮╭ Recommended ─────────────────────────────────────────────────────────────────╮
 │ effective  82                        ││ ▸ envy plan  3 repository path(s) changed                                    │
 │ included   91                        ││   envy push  2 commit(s) are ahead of origin/master                          │
-│ excluded   9                         ││                                                                              │
+│ excluded   9                         ││  t  Storage · local reports and explicit projects                            │
 │ groups     8                         ││                                                                              │
 ╰──────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────────────────╯
 ╭ Needs attention · 1 ─────────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -519,7 +663,7 @@ const WIDE_HOME: &str = r#"
 │ ● push   ok      11.4s  2 h ago     branch=master  remote=all                                                        │
 │ ● sync   fail   3m 32s  2 d ago     error=merge conflict in flake.lock                                               │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- NORMAL   Home ready               2 Configure  3 Activity  │  ↑↓ select  Tab section  v view  r refresh  ? help  q quit"#;
+ NORMAL   Home ready    t Storage  2 Configure  3 Activity  │  ↑↓ select  Tab section  v view  r refresh  ? help  q quit"#;
 const NARROW_HEALTHY_HOME: &str = r#"
  envY   1 Home   2 Configure   3 Activity              mac · master ● 3 changed
 ╭ Machine ─────────────────────────────╮╭ Repository ──────────────────────────╮
@@ -539,7 +683,7 @@ const NARROW_HEALTHY_HOME: &str = r#"
 │                                                                              │
 │ 2 Configure software, mirrors, settings  3 Activity health and history       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
- NORMAL   Home ready                  2 Configure  3 Activity  │  ? help  q quit"#;
+ NORMAL   Home ready       t Storage  2 Configure  3 Activity  │  ? help  q quit"#;
 const SOFTWARE_TABLE: &str = r#"
  envY   1 Home   2 Configure   3 Activity
  Configure ›  Software   Search   Sources   Mirrors   Settings              v switch view
@@ -553,26 +697,26 @@ const SOFTWARE_TABLE: &str = r#"
  NORMAL   Software ready                      ↵ toggle  w why  / filter  │  ? help  q quit"#;
 const GENERATIONS_TABLE: &str = r#"
  envY   1 Home   2 Configure   3 Activity
- Activity ›  Health   Generations   Operations                                                            v switch view
-╭ Generations · Space mark · d diff ──────────────────────────────────────────────────────────────────────────── 1 / 2 ╮
+ Activity ›  Health   Generations   Operations   Storage                                                  v switch view
+╭ Generations · Enter details · Space mark · d diff ──────────────────────────────────────────────────────────── 1 / 2 ╮
 │  GENERATION STATE            CREATED                  STORE TARGET                                                   │
 │▸ 113        current          10-29 03:40  10 min ago  darwin-system-26.05.56c666e  ypk8n1d1                          │
 │  112                         10-27 00:48  2 d ago     darwin-system-26.05.0246b24  01234567                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- NORMAL   History ready         v view  Space mark  d diff  │  ↑↓ select  Tab section  v view  r refresh  ? help  q quit"#;
+ NORMAL   History ready                Enter details  v view  Space mark  d diff  │  Tab section  v view  ? help  q quit"#;
 const JOURNAL_TABLE: &str = r#"
  envY   1 Home   2 Configure   3 Activity
- Activity ›  Health   Generations   Operations                                        v switch view
-╭ Operation journal ──────────────────────────────────────────────────────────────────────── 1 / 3 ╮
+ Activity ›  Health   Generations   Operations   Storage                              v switch view
+╭ Operation journal · Enter receipt ──────────────────────────────────────────────────────── 1 / 3 ╮
 │  TIME                     OPERATION      RESULT   DURATION  DETAIL                               │
 │▸ 10-29 03:40  10 min ago  apply          ok       34.3s     —                                    │
 │  10-29 01:12  2 h ago     push           ok       11.4s     branch=master  remote=all            │
 │  10-26 22:00  2 d ago     sync           fail     3m 32s    error=merge conflict in flake.lock   │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
- NORMAL   History ready           v view  Space mark  d diff  │  Tab section  v view  ? help  q quit"#;
+ NORMAL   History ready                 Enter details  v view  Space mark  d diff  │  ? help  q quit"#;
 const DOCTOR_TABLE: &str = r#"
  envY   1 Home   2 Configure   3 Activity
- Activity ›  Health 2   Generations   Operations                                      v switch view
+ Activity ›  Health 2   Generations   Operations   Storage                            v switch view
 ╭ Doctor · problems first ────────────────────────────────────────────────────────────────── 1 / 3 ╮
 │  STATUS    SECTION  CHECK                          RESULT                                        │
 │▸ ● error   secr     decrypt                        sops decrypt failed                           │
@@ -580,3 +724,154 @@ const DOCTOR_TABLE: &str = r#"
 │  ● ok      conf     machine file                   found                                         │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
  NORMAL   Doctor ready                   ↵ details  f filter  │  Tab section  v view  ? help  q quit"#;
+
+fn storage_app() -> App {
+    let mut app = test_app();
+    app.screen = Screen::Storage;
+    let payload: Value =
+        serde_json::from_str(include_str!("../storage/fixtures/inspect-darwin.json")).unwrap();
+    let report =
+        crate::storage::StorageReport::from_payload(crate::storage::StorageView::Inspect, payload);
+    app.status = report.summary();
+    app.storage_cache.insert(
+        app.storage_request(),
+        crate::model::PageState {
+            storage_report: Some(report),
+            received_at: Some(NOW - 600),
+            ..Default::default()
+        },
+    );
+    app
+}
+
+#[test]
+fn storage_entry_report_age_and_scope_are_visible_in_the_integrated_page() {
+    let mut app = storage_app();
+    app.storage_projects = vec!["/explicit/a  project/子目录".into()];
+    let state = app
+        .storage_cache
+        .remove(&crate::storage::StorageRequest::default())
+        .unwrap();
+    app.storage_cache.insert(app.storage_request(), state);
+    let (screen, buffer) = render(&mut app, 180, 28);
+    for text in [
+        "Activity",
+        "Storage",
+        "Inspection",
+        "Policy & records",
+        "Rule validation",
+        "Stale",
+        "received 10 min ago",
+        "/explicit/a  project/",
+        "codex-data",
+        "unknown",
+    ] {
+        assert!(screen.contains(text), "missing {text}");
+    }
+    assert_terminal_palette(&buffer);
+    assert_eq!(app.current_state().unwrap().received_at, Some(NOW - 600));
+    assert!(!screen.contains("--yes"));
+    assert!(!screen.contains("plan/run"));
+}
+
+#[test]
+fn storage_project_input_and_context_help_keep_read_effects_and_keys_visible() {
+    let mut app = storage_app();
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('p'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    app.handle_paste("/tmp/a  path/中文");
+    let (screen, _) = render(&mut app, 120, 24);
+    assert!(screen.contains("PROJECT DIRECTORY"));
+    assert!(screen.contains("/tmp/a  path/"));
+    assert!(screen.contains('中') && screen.contains('文'));
+    assert_eq!(app.storage_project_input, "/tmp/a  path/中文");
+    assert!(screen.contains("Enter add"));
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Esc,
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    app.show_help = true;
+    let (help, _) = render(&mut app, 110, 32);
+    for text in [
+        "STORAGE",
+        "remove last project",
+        "initialize and lock",
+        "temporary organize",
+        "Quarantine still occupies",
+        "cached reports never rescan",
+    ] {
+        assert!(help.contains(text), "missing help: {text}");
+    }
+}
+
+#[test]
+fn storage_resize_selection_and_full_json_detail_stay_scrollable() {
+    let mut app = storage_app();
+    app.storage_selected = app.row_count() - 1;
+    for (width, height) in [(180, 28), (80, 15), (38, 10)] {
+        let table_height = page_height(&app, height);
+        app.clamp_scroll(table_height);
+        let (_, buffer) = render(&mut app, width, height);
+        assert!(app.storage_selected >= app.scroll);
+        assert!(app.storage_selected < app.scroll + app.visible_rows);
+        assert_terminal_palette(&buffer);
+    }
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Enter,
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    let (screen, _) = render(&mut app, 100, 22);
+    assert!(screen.contains("STORAGE DETAILS"));
+    assert!(app.detail_scroll_max > 0);
+    app.detail_scroll = usize::MAX;
+    let (_, _) = render(&mut app, 80, 18);
+    assert_eq!(app.detail_scroll, app.detail_scroll_max);
+}
+
+
+fn workflow_report(payload: Value) -> crate::model::WorkflowReport {
+    use std::os::unix::process::ExitStatusExt;
+    crate::model::WorkflowReport::from_result(Ok(crate::transport::JsonResponse {
+        payload, status: std::process::ExitStatus::from_raw(0), stderr: "freeze\nbuild\ncompare\n".into(),
+    }))
+}
+
+#[test]
+fn workflow_details_wrap_long_paths_and_keep_full_json_reachable_at_narrow_sizes() {
+    let mut payload: Value = serde_json::from_str(include_str!("../workflow/fixtures/plan-v1.json")).unwrap();
+    payload["data"]["source"]["frozenPath"] = json!(format!("/nix/store/{}-fixture-source", "long-path-".repeat(25)));
+    payload["z"] = json!("END");
+    for (width, height) in [(28,12),(50,18),(100,30)] {
+        let mut app = test_app();
+        app.detail = Some(DetailView::Report { title:"PLAN".into(),report:workflow_report(payload.clone()),selected:None });
+        render(&mut app,width,height);
+        let maximum = app.detail_scroll_max;
+        assert!(maximum > 100);
+        app.detail_scroll = usize::MAX;
+        let (text,_) = render(&mut app,width,height);
+        assert_eq!(app.detail_scroll,maximum);
+        assert!(text.contains(r#""z": "END""#), "{width}x{height}: {text}");
+        assert!(text.contains("ENTER"));
+    }
+    for (width,height) in [(1,1),(2,2),(8,5)] {
+        let mut app = test_app();
+        app.detail = Some(DetailView::Report {title:"PLAN".into(),report:workflow_report(payload.clone()),selected:None});
+        render(&mut app,width,height);
+    }
+}
+
+#[test]
+fn completed_plan_report_scroll_uses_wrapped_lines_instead_of_progress_line_count() {
+    let mut payload: Value = serde_json::from_str(include_str!("../workflow/fixtures/plan-v1.json")).unwrap();
+    payload["z"] = json!("END");
+    let mut app = test_app();
+    app.workflow_log = Some(crate::model::WorkflowLog {title:"PLAN".into(),lines:vec![],running:false,
+        success:Some(true),scroll:usize::MAX,follow:false,json:true,scroll_max:0,report:Some(workflow_report(payload))});
+    let (text,_) = render(&mut app,50,18);
+    let log = app.workflow_log.as_ref().unwrap();
+    assert!(log.scroll_max > 100);
+    assert_eq!(log.scroll,log.scroll_max);
+    assert!(text.contains(r#""z": "END""#));
+}

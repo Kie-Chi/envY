@@ -1,15 +1,15 @@
 //! Configure pages: software, sources, search, mirrors, and settings.
 
-use ratatui::{prelude::*, widgets::Paragraph};
+use ratatui::{prelude::*, widgets::{Paragraph, Wrap}};
 use serde_json::Value;
 
 use crate::{
     app::{App, InputMode},
     model::{
         filtered_software_entries, mirror_mode, mirror_target_rows, search_entries, text,
-        SoftwareEntry,
+        SettingKey, SettingRow, SoftwareEntry,
     },
-    theme::{self, ACCENT, ERROR, OK, WARN},
+    theme::{self, ERROR, OK, WARN},
 };
 
 use super::table::{
@@ -18,58 +18,126 @@ use super::table::{
 };
 use super::{row_offset, spinner};
 
-const SETTINGS_COLUMNS: [Column; 3] = [
-    column("TYPE", Constraint::Length(8)),
-    column("SETTING", Constraint::Length(30)),
-    column("VALUE", Constraint::Min(20)),
-];
+fn setting_state(row: &SettingRow) -> &str {
+    if !row.condition_state.is_empty() {
+        &row.condition_state
+    } else {
+        match row.active {
+            Some(true) => "active",
+            Some(false) => "inactive",
+            None => "—",
+        }
+    }
+}
+
+fn setting_type(row: &SettingRow) -> String {
+    let kind = if row.secret {
+        "secret · read only"
+    } else if row.key == SettingKey::Host {
+        "host"
+    } else if !row.nix_type.is_empty() {
+        &row.nix_type
+    } else if row.freeform() {
+        "text"
+    } else {
+        "select"
+    };
+    if row.required == Some(true) {
+        format!("{kind} · required")
+    } else {
+        kind.to_string()
+    }
+}
 
 pub(super) fn render_settings(frame: &mut Frame, app: &App, area: Rect) {
     let settings = app.settings_rows();
-    if settings.is_empty() {
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(""),
-                Line::from(Span::styled(
-                    "  Loading host and config values…",
-                    theme::muted(),
-                )),
-            ])
-            .block(theme::panel()),
-            area,
-        );
+    let selected = app.settings_selected.min(settings.len().saturating_sub(1));
+    let Some(row) = settings.get(selected) else {
         return;
+    };
+    let mut help = vec![
+        Line::from(row.key.label()),
+        Line::styled(
+            format!("{} · {} · {}{}", row.group, setting_type(row), setting_state(row),
+                if row.change_kind.is_empty() { String::new() }
+                else { format!(" · {}", row.change_kind) }),
+            theme::muted(),
+        ),
+    ];
+    if row.secret {
+        help.push(Line::from("Secret status only; edit using envy config secret-set."));
+    } else if !row.setter.editable() {
+        help.push(Line::from("Read only: the backend setter is unavailable or unsupported. Reload Settings."));
     }
-    let rows = settings
-        .iter()
-        .map(|row| {
-            let kind = if row.key == crate::model::SettingKey::Host {
-                TableCell::styled("host", Style::new().fg(WARN))
-            } else if row.freeform() {
-                TableCell::styled("text", theme::faint())
-            } else {
-                TableCell::styled("select", Style::new().fg(ACCENT))
-            };
-            let value = if row.value.is_empty() {
-                TableCell::styled("—", theme::faint())
-            } else {
-                TableCell::new(row.value.clone())
-            };
-            vec![kind, TableCell::new(row.label.clone()), value]
-        })
-        .collect();
-    render_table(
-        frame,
-        area,
-        DataTable {
-            title: "Settings · Enter edit".to_string(),
-            position: Some(app.selection_position().unwrap_or((0, settings.len()))),
-            columns: &SETTINGS_COLUMNS,
-            rows,
-            selected: app.settings_selected,
-            scroll: app.scroll,
-        },
-    );
+    if !row.activation_hint.is_empty() {
+        help.push(Line::from(row.activation_hint.clone()));
+    }
+    if !row.choices.is_empty() {
+        help.push(Line::styled(format!("Options: {}", row.choices.join(" · ")), theme::muted()));
+    }
+    // Preserve the full prompt in the help text when the table ellipsizes it.
+    if row.label != row.key.label() {
+        help.push(Line::from(row.label.clone()));
+    }
+    let help = Paragraph::new(help).wrap(Wrap { trim: false });
+    let help_height = (help.line_count(area.width.saturating_sub(2)) as u16)
+        .saturating_add(2)
+        .min(area.height.saturating_sub(4) / 2);
+    let [table_area, help_area] = Layout::vertical([
+        Constraint::Min(4), Constraint::Length(help_height),
+    ]).areas(area);
+    frame.render_widget(help.block(theme::panel().title(" Selected setting ")), help_area);
+
+    // The shared page viewport includes the help area. Keep the selected row
+    // visible within this smaller table without changing shared navigation.
+    let visible = usize::from(table_area.height.saturating_sub(3)).max(1);
+    let scroll = app.scroll.min(selected).max(selected.saturating_add(1).saturating_sub(visible));
+    let wide = area.width >= 110;
+    let columns = if wide {
+        vec![
+            column("GROUP", Constraint::Length(12)),
+            column("SETTING", Constraint::Fill(2)),
+            column("VALUE", Constraint::Fill(1)),
+            column("TYPE", Constraint::Length(22)),
+            column("STATE", Constraint::Length(9)),
+        ]
+    } else {
+        vec![
+            column("SETTING", Constraint::Fill(2)),
+            column("VALUE", Constraint::Fill(1)),
+        ]
+    };
+    let rows = settings.iter().map(|row| {
+        let label = if row.secret {
+            TableCell::styled(format!("{} [secret]", row.label), theme::muted())
+        } else {
+            TableCell::new(row.label.clone())
+        };
+        let value = if row.value.is_empty() {
+            TableCell::styled("—", theme::faint())
+        } else {
+            TableCell::new(row.value.clone())
+        };
+        if wide {
+            vec![TableCell::new(row.group.clone()), label, value,
+                TableCell::new(setting_type(row)),
+                TableCell::styled(setting_state(row), match row.active {
+                    Some(true) => Style::new().fg(OK),
+                    Some(false) => Style::new().fg(WARN),
+                    None => theme::muted(),
+                })]
+        } else {
+            vec![label, value]
+        }
+    }).collect();
+    render_table(frame, table_area, DataTable {
+        title: "Settings · Enter edit · secrets read only".to_string(),
+        position: Some((selected + 1, settings.len())),
+        columns: &columns,
+        rows,
+        selected,
+        scroll,
+    });
 }
 
 const SOURCE_COLUMNS: [Column; 6] = [

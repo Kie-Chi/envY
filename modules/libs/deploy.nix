@@ -75,11 +75,15 @@ rec {
       inherit target owner group mode;
     };
 
+  # Keep the JSON declaration shared by activation and read-only merge metadata.
+  mergeWritableSource = { name, data }:
+    renderedFile { inherit name data; format = "json"; };
+
   # Merge declarations into application-owned files after Home Manager has
   # generated its links, leaving a writable user-owned result.
   mergeWritable = { name, format ? "json", data, target, managedKeyPrefixes ? {}, managedKeys ? [] }:
     let
-      source = renderedFile { inherit name data; format = "json"; };
+      source = mergeWritableSource { inherit name data; };
       python = pkgs.python3.withPackages (ps: [ ps.pyyaml ps.tomli-w ]);
     in lib.hm.dag.entryAfter [ "linkGeneration" ] ''
       _LOG_CTX="${name}"

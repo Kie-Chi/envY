@@ -36,6 +36,78 @@ in
         readOnly = true;
         description = "Normalized evaluated machine policy for envY tooling.";
       };
+      activationActions = mkOption {
+        type = types.listOf (types.submodule {
+          options = {
+            id = mkOption {
+              type = types.nonEmptyStr;
+              description = "Stable identifier for an owning feature's activation action.";
+            };
+            owner = mkOption {
+              type = types.nonEmptyStr;
+              description = "Module that declares the actual activation behavior.";
+            };
+            manager = mkOption {
+              type = types.nonEmptyStr;
+              description = "Backend responsible for the action; never an executable command.";
+            };
+            summary = mkOption {
+              type = types.nonEmptyStr;
+              description = "Description derived from the evaluated activation policy.";
+            };
+            effects = mkOption {
+              type = types.listOf types.str;
+              description = "Known categories of activation side effects.";
+            };
+            verification = mkOption {
+              type = types.nonEmptyStr;
+              description = "Read-only verification guidance; inspection does not execute the action.";
+            };
+            repeatability = mkOption {
+              type = types.nonEmptyStr;
+              description = "Repeatability limits, without granting permission to retry.";
+            };
+            rollbackBoundary = mkOption {
+              type = types.nonEmptyStr;
+              description = "State a generation rollback does not guarantee to restore.";
+            };
+            merge = mkOption {
+              type = types.nullOr (types.submodule {
+                options = {
+                  target = mkOption {
+                    type = types.nonEmptyStr;
+                    description = "Absolute path of the writable application configuration.";
+                  };
+                  format = mkOption {
+                    type = types.enum [ "json" "toml" "yaml" ];
+                    description = "Writable target format.";
+                  };
+                  source = mkOption {
+                    type = types.nonEmptyStr;
+                    description = "Declared JSON store artifact also consumed by activation.";
+                  };
+                  managedKeys = mkOption {
+                    type = types.listOf types.str;
+                    description = "Top-level keys managed by the existing merge declaration.";
+                  };
+                  managedKeyPrefixes = mkOption {
+                    type = types.attrsOf types.str;
+                    description = "Object key namespaces managed by the existing merge declaration.";
+                  };
+                };
+              });
+              default = null;
+              description = "Existing structured merge inputs for read-only preview.";
+            };
+          };
+        });
+        default = [ ];
+        internal = true;
+        description = ''
+          Module-owned facts about existing activation actions. These contributions
+          describe behavior for inspection; they are not commands or retry authorization.
+        '';
+      };
       habits = mkOption {
         type = types.listOf (types.submodule {
           options = {

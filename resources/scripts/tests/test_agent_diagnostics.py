@@ -194,14 +194,14 @@ class ExternalDiagnosticTests(unittest.TestCase):
             self.assertNotIn("[envy-config]", output.getvalue())
             output.seek(0)
             output.truncate()
-            with patch.object(plan, "run_process", return_value=failed), \
+            with patch("envy.provenance.run_process", return_value=failed), \
                  patch.object(plan, "current_machine_id", return_value="test"):
                 result = CliRunner().invoke(cli, ["plan", "--json"])
                 self.assertEqual(result.exit_code, 7)
                 payload = json.loads(result.output)
                 self.assertEqual(payload["schemaVersion"], 1)
                 self.assertFalse(payload["ok"])
-                self.assertIn("envy.llm.credentials.missing.secretPath", payload["error"])
+                self.assertIn("envy.llm.credentials.missing.secretPath", payload["error"]["message"])
             with tempfile.TemporaryDirectory() as directory:
                 machine = Path(directory) / "test.nix"
                 machine.touch()
@@ -237,12 +237,16 @@ class ExternalDiagnosticTests(unittest.TestCase):
                      patch.object(process.log, "hint") as hint:
                     self.assertEqual(check.run_machine_checks([("linux", "test")]), [("linux", "test", False)])
                     hint.assert_called_once_with(stderr)
-                with patch.object(plan, "run_process", return_value=failed), \
+                with patch("envy.provenance.run_process", return_value=failed), \
                      patch.object(plan, "current_machine_id", return_value="test"):
                     result = CliRunner().invoke(cli, ["plan", "--json"])
                     self.assertEqual(result.exit_code, 7)
-                    self.assertEqual(json.loads(result.output), {
-                        "schemaVersion": 1, "machine": "test", "ok": False, "error": stderr})
+                    payload = json.loads(result.output)
+                    self.assertEqual(payload["command"], "plan")
+                    self.assertEqual(payload["machine"], "test")
+                    self.assertFalse(payload["ok"])
+                    self.assertEqual(payload["error"]["message"], stderr)
+                    self.assertEqual(payload["data"]["sections"]["closure"]["status"], "unavailable")
                     with patch.object(process.log, "hint") as hint:
                         result = CliRunner().invoke(cli, ["plan"])
                         self.assertEqual(result.exit_code, 7)

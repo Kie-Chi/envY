@@ -1,0 +1,316 @@
+{
+  "reportVersion": 1,
+  "machine": "fixture",
+  "platform": "linux",
+  "current": {
+    "number": 1,
+    "path": "/fixture/profiles/home-manager-1-link",
+    "target": "/nix/store/fixture-old",
+    "createdAt": "2000-01-01T00:00:00+00:00",
+    "current": true
+  },
+  "target": "/nix/store/fixture-output",
+  "changed": true,
+  "closureDiff": "fixture: 1 → 2",
+  "sections": {
+    "settings": {
+      "status": "unknown",
+      "reason": "No verified semantic baseline is bound to this generation",
+      "after": {
+        "envy.vscode.mode": "local"
+      }
+    },
+    "software": {
+      "status": "unknown",
+      "reason": "No verified semantic baseline is bound to this generation",
+      "after": {
+        "npm.user.tool": {
+          "include": [
+            {
+              "id": "tool",
+              "ref": "npm:tool",
+              "sourceId": "npm:npmjs"
+            }
+          ],
+          "exclude": [],
+          "effective": [
+            {
+              "id": "tool",
+              "version": "1"
+            }
+          ]
+        }
+      }
+    },
+    "sources": {
+      "status": "unknown",
+      "reason": "No verified semantic baseline is bound to this generation",
+      "after": {
+        "npm:npmjs": {
+          "type": "registry",
+          "ecosystem": "npm",
+          "owner": "module",
+          "platforms": [
+            "darwin",
+            "linux"
+          ],
+          "scope": "user",
+          "parameters": {
+            "registry": "https://registry.npmjs.org"
+          }
+        }
+      }
+    },
+    "behavior": {
+      "status": "unknown",
+      "reason": "No verified semantic baseline is bound to this generation",
+      "after": {
+        "actions": [
+          {
+            "id": "agents.fixture-settings",
+            "owner": "agents",
+            "manager": "writable-merge",
+            "summary": "Merge declared fixture settings",
+            "verification": "Preview managed keys only",
+            "repeatability": "Revalidate concurrent writes before merging",
+            "rollbackBoundary": "Writable application state is outside the generation rollback boundary",
+            "effects": [
+              "managed application keys"
+            ],
+            "merge": {
+              "target": "/fixture/home/.config/fixture/settings.json",
+              "format": "json",
+              "source": "/nix/store/fixture-settings.json",
+              "managedKeys": [
+                "managed"
+              ],
+              "managedKeyPrefixes": {}
+            }
+          }
+        ],
+        "coverage": "partial",
+        "unknowns": [
+          "External effects are not simulated"
+        ]
+      }
+    },
+    "closure": {
+      "status": "compared",
+      "reason": null,
+      "diff": "fixture: 1 → 2",
+      "changed": true
+    }
+  },
+  "rollbackBoundary": "Generation rollback restores a Nix/Home Manager generation; it does not generally undo Homebrew, npm, uv, native installations, system preferences, or external and writable application state.",
+  "source": {
+    "frozenPath": "/nix/store/fixture-source",
+    "narHash": "sha256-fixture",
+    "gitRevision": "0000000000000000000000000000000000000000",
+    "dirty": true,
+    "dirtyFingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+    "lockFingerprint": "2222222222222222222222222222222222222222222222222222222222222222",
+    "coverage": "path flake archive, including ignored files",
+    "gitCoverage": "tracked content and untracked names; frozen NAR identifies all archived content",
+    "reason": null,
+    "verified": true,
+    "drvPath": "/nix/store/fixture.drv",
+    "outputPath": "/nix/store/fixture-output"
+  },
+  "activation": {
+    "status": "compared",
+    "reason": "Declared actions are not proof of installation or activation",
+    "coverage": "partial",
+    "actions": [
+      {
+        "id": "agents.fixture-settings",
+        "owner": "agents",
+        "manager": "writable-merge",
+        "summary": "Merge declared fixture settings",
+        "verification": "Preview managed keys only",
+        "repeatability": "Revalidate concurrent writes before merging",
+        "rollbackBoundary": "Writable application state is outside the generation rollback boundary",
+        "effects": [
+          "managed application keys"
+        ],
+        "merge": {
+          "target": "/fixture/home/.config/fixture/settings.json",
+          "format": "json",
+          "source": "/nix/store/fixture-settings.json",
+          "managedKeys": [
+            "managed"
+          ],
+          "managedKeyPrefixes": {}
+        },
+        "realized": "unknown",
+        "mergePreview": {
+          "status": "unknown",
+          "reason": "Runtime inspection was not requested"
+        }
+      }
+    ],
+    "unknowns": [
+      "External effects are not simulated"
+    ],
+    "rollbackBoundary": "Generation rollback restores a Nix/Home Manager generation; it does not generally undo Homebrew, npm, uv, native installations, system preferences, or external and writable application state."
+  },
+  "schemaVersion": 1,
+  "command": "plan",
+  "ok": true,
+  "data": {
+    "reportVersion": 1,
+    "machine": "fixture",
+    "platform": "linux",
+    "current": {
+      "number": 1,
+      "path": "/fixture/profiles/home-manager-1-link",
+      "target": "/nix/store/fixture-old",
+      "createdAt": "2000-01-01T00:00:00+00:00",
+      "current": true
+    },
+    "target": "/nix/store/fixture-output",
+    "changed": true,
+    "closureDiff": "fixture: 1 → 2",
+    "sections": {
+      "settings": {
+        "status": "unknown",
+        "reason": "No verified semantic baseline is bound to this generation",
+        "after": {
+          "envy.vscode.mode": "local"
+        }
+      },
+      "software": {
+        "status": "unknown",
+        "reason": "No verified semantic baseline is bound to this generation",
+        "after": {
+          "npm.user.tool": {
+            "include": [
+              {
+                "id": "tool",
+                "ref": "npm:tool",
+                "sourceId": "npm:npmjs"
+              }
+            ],
+            "exclude": [],
+            "effective": [
+              {
+                "id": "tool",
+                "version": "1"
+              }
+            ]
+          }
+        }
+      },
+      "sources": {
+        "status": "unknown",
+        "reason": "No verified semantic baseline is bound to this generation",
+        "after": {
+          "npm:npmjs": {
+            "type": "registry",
+            "ecosystem": "npm",
+            "owner": "module",
+            "platforms": [
+              "darwin",
+              "linux"
+            ],
+            "scope": "user",
+            "parameters": {
+              "registry": "https://registry.npmjs.org"
+            }
+          }
+        }
+      },
+      "behavior": {
+        "status": "unknown",
+        "reason": "No verified semantic baseline is bound to this generation",
+        "after": {
+          "actions": [
+            {
+              "id": "agents.fixture-settings",
+              "owner": "agents",
+              "manager": "writable-merge",
+              "summary": "Merge declared fixture settings",
+              "verification": "Preview managed keys only",
+              "repeatability": "Revalidate concurrent writes before merging",
+              "rollbackBoundary": "Writable application state is outside the generation rollback boundary",
+              "effects": [
+                "managed application keys"
+              ],
+              "merge": {
+                "target": "/fixture/home/.config/fixture/settings.json",
+                "format": "json",
+                "source": "/nix/store/fixture-settings.json",
+                "managedKeys": [
+                  "managed"
+                ],
+                "managedKeyPrefixes": {}
+              }
+            }
+          ],
+          "coverage": "partial",
+          "unknowns": [
+            "External effects are not simulated"
+          ]
+        }
+      },
+      "closure": {
+        "status": "compared",
+        "reason": null,
+        "diff": "fixture: 1 → 2",
+        "changed": true
+      }
+    },
+    "rollbackBoundary": "Generation rollback restores a Nix/Home Manager generation; it does not generally undo Homebrew, npm, uv, native installations, system preferences, or external and writable application state.",
+    "source": {
+      "frozenPath": "/nix/store/fixture-source",
+      "narHash": "sha256-fixture",
+      "gitRevision": "0000000000000000000000000000000000000000",
+      "dirty": true,
+      "dirtyFingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+      "lockFingerprint": "2222222222222222222222222222222222222222222222222222222222222222",
+      "coverage": "path flake archive, including ignored files",
+      "gitCoverage": "tracked content and untracked names; frozen NAR identifies all archived content",
+      "reason": null,
+      "verified": true,
+      "drvPath": "/nix/store/fixture.drv",
+      "outputPath": "/nix/store/fixture-output"
+    },
+    "activation": {
+      "status": "compared",
+      "reason": "Declared actions are not proof of installation or activation",
+      "coverage": "partial",
+      "actions": [
+        {
+          "id": "agents.fixture-settings",
+          "owner": "agents",
+          "manager": "writable-merge",
+          "summary": "Merge declared fixture settings",
+          "verification": "Preview managed keys only",
+          "repeatability": "Revalidate concurrent writes before merging",
+          "rollbackBoundary": "Writable application state is outside the generation rollback boundary",
+          "effects": [
+            "managed application keys"
+          ],
+          "merge": {
+            "target": "/fixture/home/.config/fixture/settings.json",
+            "format": "json",
+            "source": "/nix/store/fixture-settings.json",
+            "managedKeys": [
+              "managed"
+            ],
+            "managedKeyPrefixes": {}
+          },
+          "realized": "unknown",
+          "mergePreview": {
+            "status": "unknown",
+            "reason": "Runtime inspection was not requested"
+          }
+        }
+      ],
+      "unknowns": [
+        "External effects are not simulated"
+      ],
+      "rollbackBoundary": "Generation rollback restores a Nix/Home Manager generation; it does not generally undo Homebrew, npm, uv, native installations, system preferences, or external and writable application state."
+    }
+  },
+  "warnings": []
+}

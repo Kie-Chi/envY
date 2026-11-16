@@ -14,7 +14,7 @@ from envy.evaluation import machine_manifest, manifest_settings
 from envy.keys.storage import device_public_keys, read_sops_yaml_keys
 from envy.utils import AGE_KEY_FILE, SECRETS_FILE, age_key_file_for_home, run_cmd
 from envy.host import current_machine_file, initialize_machine, require_current_machine_file
-from envy.journal import record_operation
+from envy.journal import operation_stage, record_operation
 from envy.nix_trust import ensure_nix_daemon_trust
 from envy.process import CommandError, run_process
 from envy.utils import (
@@ -22,8 +22,10 @@ from envy.utils import (
     PLATFORM,
     SETUP_SCRIPT,
     SYSTEM_PROFILE,
+    current_machine_id,
+    platform_name,
+    run_darwin_switch,
     esudo,
-    flake_target,
     run_apply,
     run_hm,
 )
@@ -74,6 +76,71 @@ def refine_before_apply() -> None:
             raise typer.Exit(code=1) from exc
 
 
+def apply_frozen_configuration() -> None:
+    """Apply one frozen source and bind semantics only after target verification."""
+    from envy.behavior import semantic_snapshot
+    from envy.provenance import SnapshotError, build_snapshot
+    from envy.workflows.generations import current_generation
+
+    machine = current_machine_id()
+    before = current_generation()
+    operation_stage("build", "started", before=before.to_dict() if before else None)
+    try:
+        source, manifest, target = build_snapshot(machine)
+    except BaseException as exc:
+        partial = getattr(exc, "partial", {})
+        operation_stage("build", "failed", **partial)
+        if isinstance(exc, SnapshotError):
+            log.error("build", str(exc))
+            raise typer.Exit(exc.code) from exc
+        raise
+    operation_stage("build", "ok", source=source)
+    if machine != current_machine_id():
+        operation_stage("activate", "blocked", followUp="Selected host changed during build; activation was not started")
+        log.error("activate", "selected host changed during the frozen build")
+        raise typer.Exit(1)
+    operation_stage("activate", "started", followUp="Verify generation identity; external manager effects require separate checks")
+    try:
+        if PLATFORM == "darwin":
+            run_darwin_switch(source=Path(source["frozenPath"]), machine=machine)
+        else:
+            run_process([str(target / "activate")], check=True, activity="activate frozen Home Manager generation")
+    except BaseException:
+        try:
+            observed = current_generation()
+        except (OSError, RuntimeError, ValueError):
+            observed = None
+        operation_stage("activate", "partial", conflict=True, after=observed.to_dict() if observed else None,
+                        followUp="Activation may have partially completed; resolve failures before retrying")
+        raise
+    operation_stage("activate", "ok")
+    operation_stage("verify", "started")
+    try:
+        after = current_generation()
+    except (OSError, RuntimeError, ValueError) as exc:
+        operation_stage("verify", "unavailable", after=None,
+                        followUp="Cannot inspect active generation; semantic baseline is unbound")
+        log.error("verify", "cannot inspect the active generation; semantic baseline is unbound")
+        raise typer.Exit(1) from exc
+    if after is None or after.target != target:
+        operation_stage("verify", "failed", after=after.to_dict() if after else None,
+                        followUp="Active generation did not match built output; semantic baseline is unbound")
+        log.error("verify", "active generation does not match the frozen build output")
+        raise typer.Exit(1)
+    if machine != current_machine_id() or not manifest or manifest.get("platform") != platform_name():
+        operation_stage("verify", "unavailable", after=after.to_dict(), followUp="Manifest or selected host identity could not be verified; baseline is unbound")
+        log.warn("verify", "generation target matched; manifest or host evidence is incomplete and semantic baseline is unbound")
+        return
+    if not source.get("verified"):
+        operation_stage("verify", "unavailable", after=after.to_dict(), followUp="Frozen source evidence is incomplete; baseline is unbound")
+        log.warn("verify", "generation target matched; source evidence is incomplete and semantic baseline is unbound")
+        return
+    binding = {**after.to_dict(), "host": machine, "platform": platform_name(),
+               "profile": str(after.path.parent / after.path.name.rsplit("-", 2)[0])}
+    operation_stage("verify", "ok", after=after.to_dict(), binding=binding, semanticBaseline=semantic_snapshot(manifest),
+                    followUp="Generation identity verified; declared external actions are not proof of realized state")
+
+
 @record_operation("apply")
 def apply_configuration() -> None:
     refine_before_apply()
@@ -85,11 +152,7 @@ def apply_configuration() -> None:
 def bootstrap_configuration() -> None:
     refine_before_apply()
     require_current_machine_file()
-    if PLATFORM == "darwin":
-        run_apply()
-    else:
-        log.step("hm", "bootstrapping Home Manager from flake")
-        run_hm("switch", "--flake", flake_target(), "--impure")
+    run_apply()
     log.ok("bootstrap", "bootstrap completed successfully")
 
 
@@ -101,6 +164,10 @@ def bootstrap_configuration() -> None:
     skip=lambda target=None, *, dry_run=False, **_: dry_run or target == "list",
 )
 def rollback_configuration(target: str | None = None, *, dry_run: bool = False) -> None:
+    from envy.behavior import ROLLBACK_BOUNDARY
+
+    if target != "list":
+        log.hint(ROLLBACK_BOUNDARY)
     if dry_run and target != "list":
         preview_rollback(target)
         return

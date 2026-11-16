@@ -77,6 +77,41 @@ in
     envy.darwin.software.homebrew.casks.effective = casks;
     envy.darwin.software.homebrew.repositories.effective = taps;
 
+    envy.machine.activationActions = [
+      {
+        id = "nix-darwin-activation";
+        owner = "modules/envy/darwin.nix";
+        manager = "nix-darwin";
+        summary = "Activate the Darwin system generation with ${toString (builtins.length systemPackages)} system packages and ${toString (builtins.length fontPackages)} fonts.";
+        effects = [ "Switch system generation links and run nix-darwin activation, including declared system preferences and services." ];
+        verification = "Inspect the target system derivation and active generation; metadata inspection does not switch generations or run activation hooks.";
+        repeatability = "Activation may reapply preferences and restart services. This description does not authorize a retry.";
+        rollbackBoundary = "A generation rollback can restore declarative links but does not guarantee restoration of external installations, service state, preferences, or writable application data.";
+      }
+      {
+        id = "home-manager-activation";
+        owner = "modules/envy/darwin.nix";
+        manager = "home-manager";
+        summary = "Activate the managed home generation for ${config.envy.user.name}.";
+        effects = [ "Switch Home Manager links and run the selected user's activation hooks." ];
+        verification = "Inspect the Home Manager generation and evaluated activation declarations; inspection does not activate the generation or execute hooks.";
+        repeatability = "Hooks can affect writable files and external managers on each activation. This description does not authorize a retry.";
+        rollbackBoundary = "A generation rollback does not guarantee restoration of external packages, preferences, or files changed by activation hooks.";
+      }
+    ] ++ lib.optional config.homebrew.enable {
+      id = "homebrew-activation";
+      owner = "modules/envy/darwin.nix";
+      manager = "homebrew";
+      summary = "Reconcile ${toString (builtins.length config.homebrew.brews)} formulae, ${toString (builtins.length config.homebrew.casks)} casks, and ${toString (builtins.length config.homebrew.taps)} taps using the final Homebrew policy.";
+      effects = [
+        "Run Homebrew bundle against the final selected formulae, casks, and taps."
+        "Activation policy: autoUpdate=${builtins.toJSON config.homebrew.onActivation.autoUpdate}, upgrade=${builtins.toJSON config.homebrew.onActivation.upgrade}, cleanup=${config.homebrew.onActivation.cleanup}."
+      ];
+      verification = "Compare final Homebrew selections and activation policy with installed state; metadata inspection does not run brew or reconcile packages.";
+      repeatability = "Homebrew behavior depends on installed state, upstream metadata, and the final update/upgrade/cleanup policy. This description does not authorize a retry.";
+      rollbackBoundary = "A generation rollback does not undo Homebrew installs, upgrades, cleanup, cask side effects, or application preferences.";
+    };
+
     envy.machine.manifest = {
       schemaVersion = 3;
       id = config.envy.machine.id;
@@ -135,6 +170,16 @@ in
         probes = mirrorProfile.probes.common ++ mirrorProfile.probes.darwin;
       };
       habits = systemHabits ++ homeHabits;
+      behavior = {
+        actions = config.envy.machine.activationActions
+          ++ config.home-manager.users.${config.envy.user.name}.envy.machine.activationActions;
+        coverage = "partial";
+        unknowns = [
+          "Other feature activation hooks, secret deployment, and application-specific migrations have no action declarations yet."
+          "Service restarts, system preference changes, package-manager scripts, network responses, and concurrent application writes cannot be simulated by this metadata."
+          "Generation rollback does not guarantee reversal of external installations, preferences, or writable application data."
+        ];
+      };
       software.sources = config.envy.software.sources;
       software.groups = {
         "nix.user.package" = manifestLib.group {

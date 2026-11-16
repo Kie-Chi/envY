@@ -12,6 +12,16 @@ let
     '';
   };
 in {
+  envy.machine.activationActions = [ {
+    id = "native-repositories";
+    owner = "modules/software/linux/repositories.nix";
+    manager = "native-repository";
+    summary = "Reconcile ${toString (builtins.length selected)} selected native repositories and remove stale envY-owned repository declarations, including when the selection is empty.";
+    effects = [ "On supported Linux managers, verify selected repository signing keys, write envY-owned repository/keyring files, and remove deselected envY-owned repository files; retain external declarations." ];
+    verification = "Inspect effective source selection and envY-owned repository files; metadata inspection does not fetch keys, write files, or run repository activation.";
+    repeatability = "The backend reconciles owned repository files with the effective selection, subject to host manager support and network/key verification. This description does not authorize a retry.";
+    rollbackBoundary = "A generation rollback does not immediately restore repository or keyring files; later activation may reconcile repository declarations but cannot undo packages already installed from them.";
+  } ];
   assertions = [{
     assertion = lib.all (id: builtins.hasAttr id sources) selected;
     message = "Every selected native repository must have a source definition";

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from dataclasses import dataclass
@@ -13,6 +12,8 @@ import typer
 from rich.table import Table
 
 from envy import log
+from envy.behavior import REPORT_VERSION, ROLLBACK_BOUNDARY, comparison_report, emit_report, section
+from envy.journal import baseline_for_generation
 from envy.process import run_process
 from envy.utils import PLATFORM
 
@@ -139,13 +140,19 @@ def cmd_history(
     """List known configuration generations."""
     if ctx.invoked_subcommand is not None:
         return
-    rows = generations()
+    payload = {"reportVersion": REPORT_VERSION, "platform": PLATFORM, "generations": [],
+               "rollbackBoundary": ROLLBACK_BOUNDARY}
+    try:
+        rows = generations()
+        payload["generations"] = [dict(row.to_dict(), semanticStatus="bound" if baseline_for_generation(row) is not None else "unknown") for row in rows]
+    except (OSError, RuntimeError, ValueError) as exc:
+        if json_output:
+            emit_report("history", payload, ok=False, error=str(exc))
+        else:
+            log.error("history", str(exc))
+        raise typer.Exit(1) from exc
     if json_output:
-        log.console.print_json(json.dumps({
-            "schemaVersion": 1,
-            "platform": PLATFORM,
-            "generations": [row.to_dict() for row in rows],
-        }, ensure_ascii=False))
+        emit_report("history", payload)
         return
     if not rows:
         log.warn("history", "no configuration generations were found")
@@ -176,19 +183,33 @@ def cmd_diff(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ):
     """Compare the Nix closures of two generations."""
-    left = require_generation(before)
-    right = require_generation(after)
+    payload = {"reportVersion": REPORT_VERSION, "before": None, "after": None,
+               "closureDiff": None,
+               "sections": {name: section("unknown", "Generation semantic evidence is not available")
+                            for name in ("settings", "software", "sources", "behavior")},
+               "rollbackBoundary": ROLLBACK_BOUNDARY}
     try:
+        left = require_generation(before)
+        payload["before"] = left.to_dict()
+        right = require_generation(after)
+        payload["after"] = right.to_dict()
+        payload["sections"] = comparison_report(baseline_for_generation(left), baseline_for_generation(right))
+        # Missing history is unknown, not a failed current-source evaluation.
+        for item in payload["sections"].values():
+            if item["status"] == "unavailable":
+                item.update(status="unknown", reason="No verified semantic baseline is bound to this generation")
         diff = closure_diff(left.target, right.target)
-    except RuntimeError as exc:
-        log.error("history", str(exc))
+        payload["closureDiff"] = diff
+        payload["sections"]["closure"] = section("compared", diff=diff, changed=bool(diff))
+    except (RuntimeError, OSError, ValueError, typer.BadParameter) as exc:
+        payload["sections"]["closure"] = section("unavailable", "Generation closure comparison did not complete")
+        if json_output:
+            emit_report("history.diff", payload, ok=False, error=str(exc))
+        else:
+            log.error("history", str(exc))
         raise typer.Exit(code=1) from exc
     if json_output:
-        log.console.print_json(json.dumps({
-            "schemaVersion": 1,
-            "before": left.to_dict(),
-            "after": right.to_dict(),
-            "closureDiff": diff,
-        }, ensure_ascii=False))
+        emit_report("history.diff", payload)
         return
     log.console.print(diff or "[green]No closure differences.[/green]")
+    log.hint(ROLLBACK_BOUNDARY)

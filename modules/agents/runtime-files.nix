@@ -90,6 +90,22 @@ in
   };
 
   config = {
+    envy.machine.activationActions = map (file: {
+      id = "agent-runtime-${file.name}";
+      owner = "modules/agents/runtime-files.nix";
+      manager = "structured-merge";
+      summary = "Merge declared agent configuration into ${file.target}.";
+      effects = [ "Update a writable application-owned ${file.format} file while retaining unmanaged keys." ];
+      verification = "Compare the declared JSON artifact with the target using the existing structured merge rules; inspection does not write the target or run activation.";
+      repeatability = "The existing merge reapplies declared keys; concurrent application edits may change the result. This description does not authorize a retry.";
+      rollbackBoundary = "A generation rollback does not restore the previous writable file or application preferences; removed declarations do not restore overwritten values.";
+      merge = {
+        target = "${config.home.homeDirectory}/${file.target}";
+        inherit (file) format managedKeyPrefixes;
+        source = toString (sys.config.mergeWritableSource { inherit (file) name data; });
+        managedKeys = file.managedKeys or [];
+      };
+    }) runtimeFiles;
     home.activation = lib.listToAttrs (map (file:
       lib.nameValuePair "mergeAgentRuntime-${file.name}" (sys.mergeWritable {
         inherit (file) name target format data managedKeyPrefixes;

@@ -46,6 +46,16 @@ let
   '';
 in
 {
+  envy.machine.activationActions = lib.optional (packages != []) {
+    id = "native-packages";
+    owner = "modules/software/linux/native.nix";
+    manager = "native-package-manager";
+    summary = "Ensure ${toString (builtins.length packages)} selected native packages are installed with the detected Linux package manager.";
+    effects = [ "Query installed packages, refresh package metadata when needed, and install missing system or source-constrained packages with elevated privileges; package scripts may run." ];
+    verification = "Compare effective package selections with installed package state; metadata inspection does not run package installation or refresh repositories.";
+    repeatability = "Installed packages are skipped; package names and current-kernel headers may resolve differently on the running host. This description does not authorize a retry.";
+    rollbackBoundary = "A generation rollback does not remove native packages, restore package versions or dependencies, or undo package scripts and service changes.";
+  };
   home.activation.installNativePackages = sys.task.activation {
     name = "native-packages";
     after = [ "configureNativeRepositories" ];

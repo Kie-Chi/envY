@@ -21,6 +21,16 @@ let
 in
 {
   config = lib.mkIf (tools != [ ]) {
+    envy.machine.activationActions = [ {
+      id = "uv-tools";
+      owner = "modules/software/pypi.nix";
+      manager = "uv";
+      summary = "Ensure ${toString (builtins.length tools)} selected PyPI tools exist in the uv tool environment.";
+      effects = [ "Install missing selected tools and declared companion dependencies into user uv tool environments; downloads and package builds may occur." ];
+      verification = "Inspect selected tools and their uv environment directories; metadata inspection does not invoke uv or install packages.";
+      repeatability = "Existing tool directories are skipped; activation does not reconcile their versions or remove deselected tools. This description does not authorize a retry.";
+      rollbackBoundary = "A generation rollback does not uninstall uv tools or restore their environments, caches, and package build side effects.";
+    } ];
     home.activation.installPypiTools = sys.task.activation {
       name = "pypi-tools";
       script = lib.concatMapStringsSep "\n" installTool tools;

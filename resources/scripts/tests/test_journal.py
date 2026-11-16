@@ -146,6 +146,44 @@ class JournalTests(unittest.TestCase):
         op(dry_run=False)
         self.assertEqual(len(journal.read()), 1)
 
+    def test_terminal_confirmation_requires_causal_order_matching_identity_and_complete_prior_events(self):
+        start = {"event": "started", "operationId": "fixture", "operation": "apply"}
+        terminal = {"event": "terminal", "operationId": "fixture", "operation": "apply", "result": "ok",
+                    "terminalId": "terminal-one", "priorEventsPersisted": True, "journalPersisted": True}
+        confirm = {"event": "terminal-confirmed", "operationId": "fixture", "terminalId": "terminal-one"}
+        cases = [
+            ([start, terminal], False),
+            ([confirm, start, terminal], False),
+            ([start, terminal, {**confirm, "terminalId": "other-terminal"}], False),
+            ([start, terminal, {**confirm, "operationId": "other-operation"}], False),
+            ([terminal, confirm], False),
+            ([start, {**terminal, "priorEventsPersisted": False}, confirm], False),
+            ([start, terminal, {**terminal, "terminalId": "terminal-two"}, confirm], False),
+            ([start, terminal, confirm], True),
+        ]
+        for index, (records, expected) in enumerate(cases):
+            with self.subTest(case=index), patch.object(journal, "state_dir", return_value=self.state / str(index)):
+                for record in records:
+                    self.assertTrue(journal.append(record))
+                entries = journal.read()
+                self.assertEqual(len(entries), 1)
+                self.assertEqual(entries[0]["journalPersisted"], expected)
+                self.assertNotIn("terminalId", entries[0])
+                self.assertNotIn("priorEventsPersisted", entries[0])
+
+    def test_interleaved_operations_confirm_only_their_own_terminal(self):
+        for operation_id in ("one", "two"):
+            self.assertTrue(journal.append({"event": "started", "operationId": operation_id, "operation": "apply"}))
+        for operation_id in ("one", "two"):
+            self.assertTrue(journal.append({"event": "terminal", "operationId": operation_id, "operation": "apply",
+                "result": "ok", "priorEventsPersisted": True, "terminalId": f"terminal-{operation_id}"}))
+        self.assertTrue(journal.append({"event": "terminal-confirmed", "operationId": "two", "terminalId": "terminal-two"}))
+        entries = {entry["operationId"]: entry for entry in journal.read()}
+        self.assertFalse(entries["one"]["journalPersisted"])
+        self.assertTrue(entries["two"]["journalPersisted"])
+        self.assertTrue(journal.append({"event": "terminal-confirmed", "operationId": "one", "terminalId": "terminal-one"}))
+        self.assertTrue(all(entry["journalPersisted"] for entry in journal.read()))
+
     def test_snapshot_shape(self):
         journal.append({"operation": "apply", "result": "ok"})
         payload = journal.snapshot(limit=10)

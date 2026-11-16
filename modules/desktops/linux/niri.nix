@@ -58,6 +58,11 @@ let
       "org.freedesktop.impl.portal.Secrets" = "gnome-keyring;";
     };
   };
+  keyboardLayout = {
+    layoutCode = "us";
+    nativeExpectedNames = [ "English (US)" ];
+    current_idx = 0;
+  };
   terminalScratchpad = {
     binding = config.envy.habits.terminalScratchpad.gesture;
     backend = "nscratch + Alacritty quake-term";
@@ -69,82 +74,7 @@ let
     backend = "Fuzzel";
     command = "${pkgs.fuzzel}/bin/fuzzel";
   };
-in
-{
-  config = lib.mkMerge [
-    (lib.mkIf selected {
-      envy.software.nix.packages.include = [ pkgs.niri ];
-      envy.software.nix.packages.references.niri = "nix:niri";
-    })
-    (lib.mkIf enabled {
-  envy.software.nix.packages.include = (with pkgs; [
-    nemo
-    fuzzel
-    alacritty
-    swaybg
-    xwayland-satellite
-    wl-clipboard
-    dex
-    noctalia-shell
-  ]) ++ [
-    screenshotHelper
-    fixPipewireHelper
-  ];
-  envy.software.nix.packages.references = {
-    nemo = "nix:nemo";
-    fuzzel = "nix:fuzzel";
-    alacritty = "nix:alacritty";
-    swaybg = "nix:swaybg";
-    "xwayland-satellite" = "nix:xwayland-satellite";
-    "wl-clipboard" = "nix:wl-clipboard";
-    dex = "nix:dex";
-    "noctalia-shell" = "nix:noctalia-shell";
-    screenshot = "local:modules/desktops/linux/niri.nix#screenshotHelper";
-    "fix-pipewire" = "local:modules/desktops/linux/niri.nix#fixPipewireHelper";
-  };
-
-  envy.machine.habits = [
-    {
-      id = "terminal-scratchpad";
-      label = "Terminal scratchpad";
-      gesture = terminalScratchpad.binding;
-      semantic = "Toggle a reusable Quake-style terminal overlay.";
-      context = "niri";
-      backend = terminalScratchpad.backend;
-      binding = terminalScratchpad.binding;
-      ownership = "declarative";
-      note = "nscratch reuses quake-term, moves it to the focused monitor, and returns it to the scratch workspace when hidden.";
-      requirements = [
-        {
-          group = "nix.user.package";
-          item = "niri-scratchpad";
-        }
-        {
-          group = "nix.user.package";
-          item = "alacritty";
-        }
-      ];
-    }
-    {
-      id = "global-launcher";
-      label = "Global launcher";
-      gesture = globalLauncher.gesture;
-      semantic = "Open the global launcher and search surface.";
-      context = "niri";
-      backend = globalLauncher.backend;
-      binding = globalLauncher.binding;
-      ownership = "declarative";
-      note = "The Niri binding uses the logical Super key; the contract preserves the user's Option+Space gesture.";
-      requirements = [
-        {
-          group = "nix.user.package";
-          item = "fuzzel";
-        }
-      ];
-    }
-  ];
-
-  xdg.configFile."niri/config.kdl".text = ''
+  generatedNiriConfig = ''
 
     spawn-at-startup "${pkgs.noctalia-shell}/bin/noctalia-shell"
     spawn-at-startup "${pkgs.xwayland-satellite}/bin/xwayland-satellite"
@@ -165,7 +95,7 @@ in
       mod-key-nested "Super"
       keyboard {
         xkb {
-          layout "us"
+          layout "${keyboardLayout.layoutCode}"
         }
       }
       touchpad {
@@ -281,6 +211,121 @@ in
       focus-at-startup
     }
   '';
+  niriConfig = config.xdg.configFile."niri/config.kdl";
+  # Match Home Manager's generated source without changing its mkDefault priority.
+  generatedNiriSource = pkgs.writeTextFile {
+    name = lib.hm.strings.storeFileName "niri/config.kdl";
+    text = generatedNiriConfig;
+    executable = niriConfig.executable == true;
+  };
+  ownsKeyboardLayout = niriConfig.enable
+    && niriConfig.target == lib.removePrefix (config.home.homeDirectory + "/")
+      "${config.xdg.configHome}/niri/config.kdl"
+    && niriConfig.text == generatedNiriConfig
+    && toString niriConfig.source == toString generatedNiriSource;
+in
+{
+  config = lib.mkMerge [
+    (lib.mkIf selected {
+      envy.software.nix.packages.include = [ pkgs.niri ];
+      envy.software.nix.packages.references.niri = "nix:niri";
+    })
+    (lib.mkIf enabled {
+  envy.software.nix.packages.include = (with pkgs; [
+    nemo
+    fuzzel
+    alacritty
+    swaybg
+    xwayland-satellite
+    wl-clipboard
+    dex
+    noctalia-shell
+  ]) ++ [
+    screenshotHelper
+    fixPipewireHelper
+  ];
+  envy.software.nix.packages.references = {
+    nemo = "nix:nemo";
+    fuzzel = "nix:fuzzel";
+    alacritty = "nix:alacritty";
+    swaybg = "nix:swaybg";
+    "xwayland-satellite" = "nix:xwayland-satellite";
+    "wl-clipboard" = "nix:wl-clipboard";
+    dex = "nix:dex";
+    "noctalia-shell" = "nix:noctalia-shell";
+    screenshot = "local:modules/desktops/linux/niri.nix#screenshotHelper";
+    "fix-pipewire" = "local:modules/desktops/linux/niri.nix#fixPipewireHelper";
+  };
+
+  envy.machine.habits = [
+    {
+      kind = "preference";
+      id = "keyboard-layout";
+      label = "Keyboard layout";
+      semantic = if ownsKeyboardLayout then "Use the English (US) keyboard layout."
+        else "Use the keyboard layout of the active Niri configuration.";
+      context = "niri";
+      backend = "Niri";
+      binding = "input.keyboard.xkb.layout";
+      ownership = "declarative";
+      note = if ownsKeyboardLayout then
+        "Readback verifies the running compositor's layout names and active index; it does not verify key behavior or shortcut bindings."
+        else "The generated Niri configuration is overridden, disabled, or redirected; layout identity requires manual verification.";
+      readback = if ownsKeyboardLayout then {
+        adapter = "linux.niri-keyboard-layout";
+        expected = {
+          names = keyboardLayout.nativeExpectedNames;
+          current_idx = keyboardLayout.current_idx;
+        };
+      } else null;
+      requirements = [
+        {
+          group = "nix.user.package";
+          item = "niri";
+        }
+      ];
+    }
+    {
+      id = "terminal-scratchpad";
+      label = "Terminal scratchpad";
+      gesture = terminalScratchpad.binding;
+      semantic = "Toggle a reusable Quake-style terminal overlay.";
+      context = "niri";
+      backend = terminalScratchpad.backend;
+      binding = terminalScratchpad.binding;
+      ownership = "declarative";
+      note = "nscratch reuses quake-term, moves it to the focused monitor, and returns it to the scratch workspace when hidden.";
+      requirements = [
+        {
+          group = "nix.user.package";
+          item = "niri-scratchpad";
+        }
+        {
+          group = "nix.user.package";
+          item = "alacritty";
+        }
+      ];
+    }
+    {
+      id = "global-launcher";
+      label = "Global launcher";
+      gesture = globalLauncher.gesture;
+      semantic = "Open the global launcher and search surface.";
+      context = "niri";
+      backend = globalLauncher.backend;
+      binding = globalLauncher.binding;
+      ownership = "declarative";
+      note = "The Niri binding uses the logical Super key; the contract preserves the user's Option+Space gesture.";
+      requirements = [
+        {
+          group = "nix.user.package";
+          item = "fuzzel";
+        }
+      ];
+    }
+  ];
+
+  xdg.configFile."niri/config.kdl".text = generatedNiriConfig;
   gtk = {
     enable = true;
     theme = {

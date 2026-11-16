@@ -109,8 +109,13 @@ in
         '';
       };
       habits = mkOption {
-        type = types.listOf (types.submodule {
+        type = types.listOf (types.submodule ({ config, ... }: {
           options = {
+            kind = mkOption {
+              type = types.enum [ "binding" "preference" ];
+              default = "binding";
+              description = "Whether this implementation declares an interaction binding or a stored preference.";
+            };
             id = mkOption {
               type = types.strMatching "[a-z][a-z0-9-]*";
               description = "Stable semantic habit identifier.";
@@ -119,10 +124,10 @@ in
               type = types.nonEmptyStr;
               description = "Human-readable habit label.";
             };
-            gesture = mkOption {
-              type = types.nonEmptyStr;
-              description = "Canonical user gesture, independent of platform key syntax.";
-            };
+            gesture = mkOption ({
+              type = if config.kind == "binding" then types.nonEmptyStr else types.nullOr types.nonEmptyStr;
+              description = "Canonical user gesture for a binding; preferences need no gesture.";
+            } // lib.optionalAttrs (config.kind == "preference") { default = null; });
             semantic = mkOption {
               type = types.nonEmptyStr;
               description = "User-facing action semantics, such as toggling a scratchpad.";
@@ -137,7 +142,7 @@ in
             };
             binding = mkOption {
               type = types.nonEmptyStr;
-              description = "Platform-native key binding or hotkey representation.";
+              description = "Platform-native key binding or preference key representation.";
             };
             ownership = mkOption {
               type = types.enum [ "declarative" "application" ];
@@ -147,6 +152,38 @@ in
               type = types.str;
               default = "";
               description = "Short implementation note shown by envY inspection commands.";
+            };
+            readback = mkOption {
+              type = types.nullOr (types.submodule {
+                options = {
+                  adapter = mkOption {
+                    type = types.nonEmptyStr;
+                    description = "Identifier of a fixed read-only adapter; never an executable command.";
+                  };
+                  expected = mkOption {
+                    type = types.oneOf [
+                      types.bool
+                      types.int
+                      types.str
+                      (types.addCheck (types.submodule {
+                        options = {
+                          names = mkOption {
+                            type = types.listOf types.nonEmptyStr;
+                            description = "Native keyboard layout names expected from the compositor.";
+                          };
+                          current_idx = mkOption {
+                            type = types.ints.u8;
+                            description = "Expected active keyboard layout index in the native IPC response.";
+                          };
+                        };
+                      }) (value: builtins.isAttrs value && value ? names && value ? current_idx))
+                    ];
+                    description = "Expected native value derived from the owning module's actual configuration.";
+                  };
+                };
+              });
+              default = null;
+              description = "Optional native-state verification contract for an allowlisted adapter.";
             };
             requirements = mkOption {
               type = types.listOf (types.submodule {
@@ -165,13 +202,13 @@ in
               description = "Software selected by the machine policy for this implementation.";
             };
           };
-        });
+        }));
         default = [ ];
         internal = true;
         description = ''
-          Module-owned implementations of stable personal interaction habits.
-          Their gestures come from envy.habits machine policy; this option only
-          aggregates implementation facts for the evaluated manifest.
+          Module-owned implementations of stable personal interaction habits
+          and preferences. Binding gestures come from envy.habits machine policy;
+          this option aggregates implementation and readback facts for the manifest.
         '';
       };
     };

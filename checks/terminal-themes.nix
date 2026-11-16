@@ -4,12 +4,12 @@ let
   hasPackage = name: config: builtins.elem name (map lib.getName config.home.packages);
   homeUser = config: config.home-manager.users.${config.envy.user.name};
   hasConfig = name: config: builtins.hasAttr name config.xdg.configFile;
-  profileNames = config:
+  profiles = config:
     if builtins.hasAttr "iterm2-tokyo-night-profile" config.home.file then
-      map (profile: profile.Name)
-        (builtins.fromJSON (builtins.unsafeDiscardStringContext
-          config.home.file.iterm2-tokyo-night-profile.text)).Profiles
+      (builtins.fromJSON (builtins.unsafeDiscardStringContext
+        config.home.file.iterm2-tokyo-night-profile.text)).Profiles
     else [ ];
+  profileNames = config: map (profile: profile.Name) (profiles config);
   checkShell = config:
     let
       init = config.programs.zsh.initContent;
@@ -109,6 +109,12 @@ let
       && !hasPackage "atuin" excluded
       && !(builtins.hasAttr ".tmux.conf.local" excluded.home.file)
       && profileNames excluded == builtins.filter (name: name != "BtopDashboard") (profileNames home)
+      && lib.all (profile:
+        !(builtins.elem profile.Name [ "Tokyo Night" "Quake" ]) || (
+          (profile."Keyboard Map"."0xf702-0x300000" or { }) == { Action = 11; Text = "0x1"; }
+          && (profile."Keyboard Map"."0xf703-0x300000" or { }) == { Action = 11; Text = "0x5"; }
+        )
+      ) (profiles home)
       && (home.envy.vscode.mode != "remote"
         || !(builtins.hasAttr "default" home.programs.vscode.profiles))
       && (!local.programs.vscode.enable || (

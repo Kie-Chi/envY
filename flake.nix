@@ -322,7 +322,7 @@
           ]);
         in pkgs.runCommand "envy-python-tests" {
           passthru.completionFixtures = completionFixtures;
-          nativeBuildInputs = [ python pkgs.git pkgs.tmux pkgs.perl pkgs.zsh pkgs.fzf pkgs.zoxide ];
+          nativeBuildInputs = [ python pkgs.git pkgs.tmux pkgs.neovim-unwrapped pkgs.perl pkgs.zsh pkgs.fzf pkgs.zoxide ];
         } ''
           export HOME="$TMPDIR/home"
           mkdir -p "$HOME"

@@ -16,6 +16,13 @@ let
     name = "Ansi ${toString index} Color";
     value = itermColor hex;
   }) palette.ansi);
+  # Send line navigation to nested terminals instead of switching iTerm2 tabs.
+  terminalNavigation = {
+    "Keyboard Map" = {
+      "0xf702-0x300000" = { Action = 11; Text = "0x1"; };
+      "0xf703-0x300000" = { Action = 11; Text = "0x5"; };
+    };
+  };
   terminalScratchpadGesture = config.envy.habits.terminalScratchpad.gesture;
   quakeHotkeys = {
     F2 = { keyCode = 120; character = 63237; };
@@ -102,7 +109,7 @@ in
             "Blur" = true;
             "Blur Radius" = 20;
 
-          } // terminalColors)
+          } // terminalColors // terminalNavigation)
           ({
             Name = "Quake";
             Guid = "E5926B63-798B-4B6B-B6B1-D181D39D377B";
@@ -127,7 +134,7 @@ in
             "HotKey Character" = quakeHotkey.character;         # F12 的 Unicode 字符码
             "HotKey Character (Native)" = quakeHotkey.character;
             "HotKey Modifier" = quakeHotkey.modifier;           # Function 键掩码
-          } // terminalColors)
+          } // terminalColors // terminalNavigation)
         ] ++ lib.optional btopSelected ({
           Name = "BtopDashboard";
           Guid = "F6A1C2D3-E4B5-4C6D-A7B8-D9E0F1A2B3C4";

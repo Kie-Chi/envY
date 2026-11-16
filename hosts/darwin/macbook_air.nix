@@ -36,7 +36,7 @@
   envy.mirrors.mode = "china";
 
   # --- STORAGE CONFIG ---
-  envy.storage.mode = "report";
+  envy.storage.mode = "manual";
   envy.storage.archive.repository = "sftp:xikai@192.168.255.139:/vol1/1000/share/envY/archive/macbook_air";
   envy.storage.archive.mountSource = "";
 

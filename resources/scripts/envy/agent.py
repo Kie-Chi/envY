@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import sys
+from contextlib import nullcontext, redirect_stdout
 from pathlib import Path
 from typing import Any, Optional
 
@@ -39,12 +41,12 @@ from envy.config.secret_store import read_secrets_data
 from envy.config.updates import set_secret_value
 from envy.errno import ErrorCode
 from envy.evaluation import invalidate_machine_manifest, machine_manifest
-from envy.jsonio import emit, emit_error
+from envy.jsonio import emit, emit_error, write_document
 from envy.mutation import offer_mutation_commit
 from envy.nix_literals import LiteralError, LiteralReader, escape_string
 from envy.secure_io import atomic_write_text, ensure_private_directory
 from envy.transaction import FileTransaction
-from envy.structured_config import merge, update_file
+from envy.structured_config import ConflictError, merge, update_file
 from envy.utils import SECRETS_FILE, current_machine_id
 
 
@@ -762,8 +764,20 @@ def _codex_runtime(values: dict[str, Any], agents: dict[str, Any]) -> tuple[dict
     )
     return data, str(secret_path or "")
 
+
+class RuntimeRefreshConflict(RuntimeError):
+    """A runtime merge conflicted; current files were preserved without rollback."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Configuration changed concurrently. Close the application and retry. "
+            "Runtime refresh failed; current runtime files were retained without rollback. "
+            "Earlier writes may remain (partial refresh)."
+        )
+
+
 def refresh_runtime(*, values: dict[str, Any] | None = None) -> list[str]:
-    """Refresh private overrides; keep Pi's non-envY providers and roll back failures."""
+    """Refresh private overrides; roll back failures except concurrent application writes."""
     values = values if values is not None else _read_values()
     issues = _validate_issues(values)
     if issues:
@@ -803,25 +817,45 @@ def refresh_runtime(*, values: dict[str, Any] | None = None) -> list[str]:
         targets.extend([codex_config_target, codex_auth_target])
     ensure_private_directory(_RUNTIME_DIR)
     with FileTransaction(targets) as transaction:
-        if pi_data is not None:
-            ensure_private_directory(pi_models.parent)
-            update_file(pi_models, pi_data, managed_key_prefixes={"providers": "envy-pi"})
-            pi_models.chmod(0o600)
-        if codex_config:
-            ensure_private_directory(codex_config_target.parent)
-            if codex_catalog is not None:
-                atomic_write_text(codex_catalog_target, json.dumps(codex_catalog, ensure_ascii=False, indent=2) + "\n", mode=0o600)
-            update_file(
-                codex_config_target, codex_config, format="toml",
-                managed_key_prefixes={"model_providers": "envy"},
-                managed_keys=["model_catalog_json", "model_context_window", "model_max_output_tokens"],
-            )
+        try:
+            if pi_data is not None:
+                ensure_private_directory(pi_models.parent)
+                update_file(pi_models, pi_data, managed_key_prefixes={"providers": "envy-pi"})
+                pi_models.chmod(0o600)
+            if codex_config:
+                ensure_private_directory(codex_config_target.parent)
+                if codex_catalog is not None:
+                    atomic_write_text(codex_catalog_target, json.dumps(codex_catalog, ensure_ascii=False, indent=2) + "\n", mode=0o600)
+                update_file(
+                    codex_config_target, codex_config, format="toml",
+                    managed_key_prefixes={"model_providers": "envy"},
+                    managed_keys=["model_catalog_json", "model_context_window", "model_max_output_tokens"],
+                )
+        except ConflictError as exc:
+            # Any snapshot can be stale, including targets written earlier in this refresh.
+            transaction.preserve_current()
+            raise RuntimeRefreshConflict() from exc
         if codex_key:
             update_auth(codex_auth_target, codex_key)
         for name, env in rendered.items():
             atomic_write_text(_RUNTIME_DIR / f"{name}.env", env, mode=0o600, private_parent=True)
         transaction.commit()
     return list(rendered)
+
+
+def _refresh_runtime_or_exit(
+    command: str, *, json_output: bool, values: dict[str, Any] | None = None,
+) -> list[str]:
+    """Report partial refresh conflicts through the caller's output contract."""
+    try:
+        return refresh_runtime(values=values)
+    except RuntimeRefreshConflict as exc:
+        if json_output:
+            emit_error(command, str(exc), code="conflict")
+        else:
+            log.error("agents", str(exc))
+        raise typer.Exit(code=1) from exc
+
 
 def _profile_values(values: dict[str, Any]) -> dict[str, dict[str, Any]]:
     profiles: dict[str, dict[str, Any]] = {}
@@ -1077,7 +1111,7 @@ def cmd_profile_use(
     if issues:
         raise typer.BadParameter(error.summary(issues, prefix="profile cannot be applied"))
     target = _write_values(values)
-    refreshed = refresh_runtime(values=values)
+    refreshed = _refresh_runtime_or_exit("agent.profile.use", json_output=json_output, values=values)
     offer_mutation_commit([target], f"chore(agent): use profile {profile_name} for {agent_name}", quiet=json_output or yes)
     if json_output:
         emit("agent.profile.use", data={"agent": agent_name, "profile": profile_name, "runtimeRefreshed": bool(refreshed)})
@@ -1092,7 +1126,7 @@ def cmd_profile_use(
 def cmd_refresh(json_output: bool = typer.Option(False, "--json")):
     """Refresh private runtime overrides without running Nix apply."""
     try:
-        refreshed = refresh_runtime()
+        refreshed = _refresh_runtime_or_exit("agent.refresh", json_output=json_output)
     except error.ConfigValidationError as exc:
         if json_output:
             emit_error("agent.refresh", str(exc), code=exc.issue.code.value)
@@ -1153,7 +1187,7 @@ def cmd_show(
                 for field in fields
                 if field in selected and selected[field] is not None and selected[field] != []
             }
-        log.console.print_json(json.dumps({"name": name, "agent": selected}, ensure_ascii=False))
+        write_document({"name": name, "agent": selected})
 
 
 @app.command(name="set")
@@ -1172,7 +1206,7 @@ def cmd_set(
             raise typer.Exit(code=1) from exc
         raise
     changed_kind = _runtime_change_kind(path)
-    refreshed = refresh_runtime() if changed_kind == "live" else []
+    refreshed = _refresh_runtime_or_exit("agent.set", json_output=json_output) if changed_kind == "live" else []
     if changed_kind == "live" and not json_output:
         log.ok("agents", "runtime configuration refreshed", agents=", ".join(refreshed) or "none")
         log.hint("Changes apply to newly started agent processes.")
@@ -1264,13 +1298,14 @@ def cmd_credential_set(
                 "expected slash-separated letters, digits, '_' or '-'",
             )
         ]))
-    value = __import__("sys").stdin.read().rstrip("\r\n")
+    value = sys.stdin.read().rstrip("\r\n")
     machine_path = machine_config_file()
     with FileTransaction([machine_path, SECRETS_FILE]) as transaction:
-        set_secret_value(secret_path, value)
+        with redirect_stdout(sys.stderr) if json_output else nullcontext():
+            set_secret_value(secret_path, value)
         _set(f"envy.llm.credentials.{name}.secretPath", secret_path)
         transaction.commit()
-    refreshed = refresh_runtime()
+    refreshed = _refresh_runtime_or_exit("agent.credential-set", json_output=json_output)
     if not json_output:
         log.ok("agents", "credential runtime configuration refreshed", agents=", ".join(refreshed) or "none")
         log.hint("Changes apply to newly started agent processes.")

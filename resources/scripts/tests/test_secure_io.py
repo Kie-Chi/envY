@@ -1,5 +1,7 @@
+import os
 import stat
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -88,6 +90,157 @@ class SecureIoTests(unittest.TestCase):
         self.assertFalse(prepared.exists())
         self.assertEqual((destination.read_text(), mode(destination)), ("data", 0o644))
 
+
+    def test_default_writer_supports_a_directory_without_read_permission(self):
+        parent = self.root / "write-only"
+        parent.mkdir()
+        parent.chmod(0o300)
+        try:
+            target = parent / "file"
+            secure_io.atomic_write_text(target, "written")
+            self.assertEqual(target.read_text(), "written")
+        finally:
+            parent.chmod(0o700)
+        self.assertEqual(self.leftovers(parent), [])
+
+    def test_guard_runs_after_content_fsync_and_before_replace(self):
+        target = self.root / "guarded"
+        target.write_bytes(b"original")
+        events = []
+        original_fsync = os.fsync
+        original_replace = os.replace
+
+        def fsync(descriptor):
+            original_fsync(descriptor)
+            if stat.S_ISREG(os.fstat(descriptor).st_mode):
+                events.append("fsync")
+
+        def guard():
+            self.assertEqual(events, ["fsync"])
+            self.assertEqual(target.read_bytes(), b"original")
+            temporary = next(self.root.glob(".guarded.envy-*"))
+            self.assertEqual(temporary.read_bytes(), b"updated")
+            self.assertEqual(mode(temporary), 0o600)
+            events.append("guard")
+
+        def replace(source, destination, **kwargs):
+            self.assertEqual(events, ["fsync", "guard"])
+            events.append("replace")
+            return original_replace(source, destination, **kwargs)
+
+        with patch.object(secure_io.os, "fsync", side_effect=fsync), \
+                patch.object(secure_io.os, "replace", side_effect=replace):
+            secure_io.atomic_write_bytes(target, b"updated", mode=0o600, pre_replace=guard)
+        self.assertEqual(events, ["fsync", "guard", "replace"])
+        self.assertEqual(target.read_bytes(), b"updated")
+        self.assertEqual(self.leftovers(self.root), [])
+
+    def test_guard_failure_preserves_competitor_and_cleans_temporary(self):
+        for use_text in [False, True]:
+            with self.subTest(use_text=use_text):
+                target = self.root / "guarded"
+                if target.exists():
+                    target.chmod(0o600)
+                target.write_text("original")
+
+                def reject():
+                    target.write_text("competitor")
+                    target.chmod(0o440)
+                    raise RuntimeError("conflict")
+
+                writer = secure_io.atomic_write_text if use_text else secure_io.atomic_write_bytes
+                with self.assertRaisesRegex(RuntimeError, "conflict"):
+                    writer(target, "updated" if use_text else b"updated", mode=0o600, pre_replace=reject)
+                self.assertEqual((target.read_text(), mode(target)), ("competitor", 0o440))
+                self.assertEqual(self.leftovers(self.root), [])
+
+    def test_parent_binding_races_never_write_payload_or_leave_orphan_temporaries(self):
+        for moment in ("parent_open", "temporary_open"):
+            with self.subTest(moment=moment):
+                root = self.root / moment
+                parent = root / "parent"
+                parent.mkdir(parents=True)
+                target = parent / "file"
+                target.write_text("original")
+                target.chmod(0o640)
+                moved = root / "moved"
+                opened, changed = threading.Event(), threading.Event()
+                original_open = os.open
+                temporary_names, competitor_files, errors = [], [], []
+
+                def competitor():
+                    try:
+                        if not opened.wait(5):
+                            raise AssertionError("writer did not reach creation boundary")
+                        parent.rename(moved)
+                        parent.mkdir()
+                        target.write_text("competitor target")
+                        target.chmod(0o440)
+                        if temporary_names:
+                            competitor_file = parent / temporary_names[0]
+                            competitor_file.write_text("competitor temporary name")
+                            competitor_file.chmod(0o440)
+                            competitor_files.append(competitor_file)
+                    except BaseException as error:
+                        errors.append(error)
+                    finally:
+                        changed.set()
+
+                def open_then_race(path, flags, *args, **kwargs):
+                    descriptor = original_open(path, flags, *args, **kwargs)
+                    boundary = (
+                        moment == "parent_open" and path == parent and flags & os.O_DIRECTORY
+                        or moment == "temporary_open" and flags & os.O_CREAT
+                    )
+                    if boundary:
+                        if flags & os.O_CREAT:
+                            temporary_names.append(Path(path).name)
+                        opened.set()
+                        if not changed.wait(5):
+                            os.close(descriptor)
+                            raise AssertionError("competitor timed out")
+                    return descriptor
+
+                def guard():
+                    self.fail("directory binding drift must be rejected before writing payload")
+
+                thread = threading.Thread(target=competitor, daemon=True)
+                thread.start()
+                try:
+                    with patch.object(secure_io.os, "open", side_effect=open_then_race):
+                        with self.assertRaises(OSError):
+                            secure_io.atomic_write_text(target, "DECLARED_SECRET", mode=0o600, pre_replace=guard)
+                finally:
+                    opened.set()
+                    thread.join(5)
+                self.assertFalse(thread.is_alive())
+                self.assertEqual(errors, [])
+                self.assertEqual(((moved / "file").read_text(), mode(moved / "file")), ("original", 0o640))
+                self.assertEqual((target.read_text(), mode(target)), ("competitor target", 0o440))
+                self.assertEqual(sorted(path.name for path in moved.iterdir()), ["file"])
+                self.assertEqual(set(parent.iterdir()), {target, *competitor_files})
+                for competitor_file in competitor_files:
+                    self.assertEqual((competitor_file.read_text(), mode(competitor_file)),
+                                     ("competitor temporary name", 0o440))
+
+    def test_guard_failure_cleans_temporary_even_after_parent_rename(self):
+        parent = self.root / "parent"
+        parent.mkdir()
+        target = parent / "file"
+        target.write_text("original")
+        moved = self.root / "moved"
+
+        def reject():
+            parent.rename(moved)
+            parent.mkdir()
+            target.write_text("competitor")
+            raise RuntimeError("conflict")
+
+        with self.assertRaisesRegex(RuntimeError, "conflict"):
+            secure_io.atomic_write_text(target, "updated", pre_replace=reject)
+        self.assertEqual(target.read_text(), "competitor")
+        self.assertEqual((moved / "file").read_text(), "original")
+        self.assertEqual(self.leftovers(parent) + self.leftovers(moved), [])
 
 if __name__ == "__main__":
     unittest.main()

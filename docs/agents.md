@@ -18,6 +18,18 @@ envY 的 modules/agents 管理 agent 安装、provider wrapper、skill catalog �
 - linux/：Codex wrapper（Darwin 用 cask 安装 Codex）、rtk 与桌面机的 Cursor。
 - files/agents/：非 Nix 静态文件，包括 provider prompt（prompts/）和 Pi 补丁（patches/）。
 
+## 可写配置预览与冲突保护
+
+`sys.mergeWritable` 继续调用 `envy.structured_config`，仅合并 feature 声明的键及命名空间。独立预览可在开发环境运行 `python -m envy.structured_config --source /path/to/declared.json --target /path/to/settings.json --dry-run --json`；TOML/YAML 目标需要对应的 `--format`，托管键参数与 activation 一致。dry-run 不创建目录、临时文件或修改权限。
+
+预览只列最终变化的键路径及 add/change/remove，以及 create/write/replace_symlink/chmod 操作，不输出旧值、新值、正文或内容摘要。JSON envelope 的 command 为 `structured-config.merge`，并明确提示并发限制。普通 activation 保持成功时静默及原有 bool 返回语义。
+
+准备阶段读取文件与父路径身份，写入前在临时文件 fsync 后复核；内容、身份、权限或链接发生变化时以 conflict 停止并保留当前文件。有效链接读取源内容后替换链接自身，悬空链接、特殊文件或无法解析的配置不会覆盖。幂等返回和仅权限调整也进行检查；私密模式及非托管字段继续保留。
+
+即时 agent 刷新检测到冲突时会保留整个运行态文件事务，不再用旧快照自动回滚；此前已完成的写入可能保留，CLI 以 conflict 失败说明 partial 状态。其他错误继续使用原有回滚流程。
+
+这属于乐观复核，复核与替换之间仍有窗口，无法代替应用配合的原子锁。冲突后应关闭相关应用、重新预览再执行；接口不自动覆盖竞争者写入，也不为应用会话、历史或数据库增加托管范围。
+
 ## Codex 配置与凭据
 
 `providers/codex.nix` 把 `envy.agents.codex`（先经 `envy.agentProfiles` 解析）渲染成 Codex 自己的 `~/.codex/config.toml`：托管 `model`、`model_context_window`、`model_max_output_tokens`、`model_provider` 和 `model_providers.envy-<endpoint>`。Codex 只允许 OpenAI 兼容 endpoint 上的 `openai-responses`，未设置 api 时也使用 Responses；Chat Completions 和 Anthropic 在写入前报错。`runtime-files.nix` 按 adapter 聚合所有 codex 实例后只写一次，机器 `additionalSettings` 仍覆盖生成值；`managedKeyPrefixes.model_providers = "envy"` 只替换 envY 命名的 provider，保留 Codex 的 `projects`、`tui`、`plugins` 等键。

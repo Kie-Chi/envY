@@ -829,6 +829,7 @@
           ++ map (configuration: configuration.config) (builtins.attrValues homeConfigurations));
       mkPlatformOptionCheck = system:
         assert import ./checks/agent-skills.nix { inherit inputs; };
+        assert import ./checks/agent-tools.nix { inherit lib; };
         assert platformOptionBoundaries;
         assert import ./checks/terminal-themes.nix { inherit lib darwinConfigurations homeConfigurations; };
         nixpkgs.legacyPackages.${system}.runCommand "envy-platform-option-boundaries" { } ''

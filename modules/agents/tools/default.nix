@@ -1,5 +1,10 @@
-{ pkgs, sys, ... }:
+{ config, lib, pkgs, sys, ... }:
 
+let
+  codegraphSelected = lib.any
+    (tool: tool.id == "codegraph")
+    config.envy.software.npm.tools.effective;
+in
 {
   imports = [ ./obelisk.nix ./web.nix ];
 
@@ -24,7 +29,7 @@
     }
   ];
 
-  home.activation.installCodegraphMCP = sys.task.activation {
+  home.activation.installCodegraphMCP = lib.mkIf codegraphSelected (sys.task.activation {
     name = "codegraph-install";
     after = [ "installNpmTools" ];
     script = ''
@@ -49,5 +54,5 @@
       ${pkgs.python3}/bin/python "$CODEGRAPH_NORMALIZER" "$CODEX_CONFIG"
       test "$CODEGRAPH_STATUS" -eq 0
     '';
-  };
+  });
 }

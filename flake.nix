@@ -302,6 +302,7 @@
             suggestions = "${pkgs.zsh-autosuggestions}/share/zsh-autosuggestions/zsh-autosuggestions.zsh";
             syntax = "${pkgs.zsh-syntax-highlighting}/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh";
             fzfTab = "${pkgs.zsh-fzf-tab}/share/fzf-tab/fzf-tab.plugin.zsh";
+            systemctlCompletion = "${pkgs.callPackage ./modules/cores/packages/systemd-completions.nix { }}/share/zsh/site-functions";
             omzPlugins = completionHome.programs.zsh.oh-my-zsh.plugins;
             # Limit this fixture to completion integrations, excluding prompt and history UIs.
             initLines = builtins.filter (line: lib.any (text: lib.hasInfix text line) [
@@ -320,6 +321,7 @@
             ps.tomli-w
           ]);
         in pkgs.runCommand "envy-python-tests" {
+          passthru.completionFixtures = completionFixtures;
           nativeBuildInputs = [ python pkgs.git pkgs.tmux pkgs.perl pkgs.zsh pkgs.fzf pkgs.zoxide ];
         } ''
           export HOME="$TMPDIR/home"

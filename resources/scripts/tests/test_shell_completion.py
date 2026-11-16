@@ -250,8 +250,17 @@ class CompletionRuntimeTests(unittest.TestCase):
                 else:
                     self.assertNotIn("ENVY_SYNTHETIC_PREVIEW", screen)
             finally:
-                subprocess.run([tmux, "-S", socket, "kill-server"], env=environment,
-                               capture_output=True, timeout=5, check=False)
+                try:
+                    # Let fzf finish its temporary-file writes before removing HOME.
+                    closed = subprocess.run(
+                        [tmux, "-S", socket, "send-keys", "-t", "fixture:0.0", "Escape"],
+                        env=environment, capture_output=True, timeout=5, check=False,
+                    )
+                    if closed.returncode == 0:
+                        screen_until(lambda screen: not re.search(r"option-\d{2}", screen))
+                finally:
+                    subprocess.run([tmux, "-S", socket, "kill-server"], env=environment,
+                                   capture_output=True, timeout=5, check=False)
 
     def test_preview_fallback_handles_chinese_spaces_and_leading_dashes(self):
         with tempfile.TemporaryDirectory(prefix="envy-preview-content-") as directory:
@@ -270,6 +279,63 @@ class CompletionRuntimeTests(unittest.TestCase):
                 cwd=home, env=env, check=True, capture_output=True, text=True, timeout=10,
             )
             self.assertIn(file.name, result.stdout)
+
+    def test_real_systemctl_completion_expands_system_and_user_service_names(self):
+        with tempfile.TemporaryDirectory(prefix="envy-systemctl-tab-") as directory:
+            home = Path(directory).resolve()
+            binary = home / "bin"
+            binary.mkdir()
+            systemctl = binary / "systemctl"
+            systemctl.write_text(
+                "#!" + self.fixture["zsh"] + "\n"
+                'print -r -- "$*" >> "$HOME/systemctl-calls"\n'
+                'case " $* " in\n'
+                '  *" list-units "*|*" list-unit-files "*) '
+                "print -r -- 'envy-fixture.service loaded active running' ;;\n"
+                '  *" show "*) print -rl -- "Id=envy-fixture.service" "CanStop=yes" ;;\n'
+                '  *) print -u2 UNEXPECTED_SYSTEMCTL_EXECUTION; exit 99 ;;\nesac\n'
+            )
+            systemctl.chmod(0o755)
+            path = os.pathsep.join([str(binary), str(Path(self.fixture["zsh"]).parent), "/usr/bin"])
+            rc = home / "fixture.zsh"
+            rc.write_text("\n".join([
+                "export PATH=" + shlex.quote(path),
+                "bindkey -e",
+                "fpath=(" + shlex.quote(self.fixture["systemctlCompletion"]) + " $fpath)",
+                "autoload -Uz compinit; compinit -D -i",
+                "source " + shlex.quote(str(ROOT / "files/zsh/func.zsh")),
+                'sudo() { print -u2 UNEXPECTED_SUDO_EXECUTION; return 99; }',
+                '_fixture_inspect() { print -r -- "BUFFER=$BUFFER"; zle reset-prompt; }',
+                "zle -N _fixture_inspect; bindkey '^X' _fixture_inspect",
+                "PROMPT='SERVICE> '", "print -r -- ENVY_SERVICE_READY",
+            ]))
+            process, master = self.launch([self.fixture["zsh"], "-dfi"], home, extra={"PATH": path})
+            try:
+                os.write(master, ("source " + shlex.quote(str(rc)) + "\r").encode())
+                startup = self.read_until(master, b"SERVICE> ")
+                self.assertNotIn("command not found", startup)
+                for wrapper, action in (("sc", "st"), ("usc", "st"), ("sc", "stop")):
+                    command = wrapper + " " + action
+                    os.write(master, (command + " envy-fixt\t").encode())
+                    completed = self.read_until(master, b"envy-fixture.service")
+                    self.assertIn("envy-fixture.service", completed)
+                    os.write(master, b"\x18")
+                    inspected = self.read_until(master, b"BUFFER=" + command.encode() + b" envy-fixture.service")
+                    self.assertIn("BUFFER=" + command + " envy-fixture.service", inspected)
+                    self.assertNotIn("function definition file not found", completed + inspected)
+                    self.assertNotIn("UNEXPECTED_SYSTEMCTL_EXECUTION", completed + inspected)
+                    self.assertNotIn("UNEXPECTED_SUDO_EXECUTION", completed + inspected)
+                    os.write(master, b"\x15")
+                queries = (home / "systemctl-calls").read_text().splitlines()
+                self.assertTrue(any("--user" in query for query in queries))
+                self.assertTrue(any("--system" in query for query in queries))
+                self.assertTrue(any(" show " in query for query in queries))
+                os.write(master, b"exit\r")
+                self.read_until(master, None, timeout=2)
+                process.wait(timeout=3)
+                self.assertEqual(process.returncode, 0)
+            finally:
+                self.close(process, master)
 
     def test_tty_cat_falls_back_when_bat_is_excluded(self):
         with tempfile.TemporaryDirectory(prefix="envy-cat-fallback-") as directory:

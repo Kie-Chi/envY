@@ -1,6 +1,7 @@
 { pkgs, lib, config, machinePlatform, sys, ... }:
 
 let
+  systemdCompletions = pkgs.callPackage ./packages/systemd-completions.nix { };
   machineEnvironment = config.envy.environment;
   machineZsh = config.envy.shell.zsh;
   selectedPackage = name: lib.findFirst
@@ -80,6 +81,9 @@ in
 
 
     initContent = lib.mkMerge [
+      (lib.mkIf (machinePlatform == "linux") (lib.mkOrder 550 ''
+        fpath=(${systemdCompletions}/share/zsh/site-functions $fpath)
+      ''))
       (lib.mkIf zoxideSelected (lib.mkOrder 851 ''
         eval "$(${lib.getExe zoxidePackage} init zsh)"
       ''))
@@ -121,7 +125,7 @@ in
         ''}
 
         ${builtins.readFile ../../files/zsh/opt.zsh}
-        ${builtins.readFile ../../files/zsh/func.zsh}
+        source ${../../files/zsh}/func.zsh
       ''
       (lib.mkOrder 2000 machineZsh.initContent)
     ];

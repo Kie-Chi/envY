@@ -67,6 +67,7 @@ in
         "envy.linux.option" = policy.option;
         "envy.mirrors.mode" = config.envy.mirrors.mode;
         "envy.storage.mode" = config.envy.storage.mode;
+        "envy.storage.maintenance.go-modcache" = config.envy.storage.maintenance.go-modcache;
         "envy.storage.archive.repository" = config.envy.storage.archive.repository;
         "envy.amux.skipPermissions" = config.envy.amux.skipPermissions;
       };

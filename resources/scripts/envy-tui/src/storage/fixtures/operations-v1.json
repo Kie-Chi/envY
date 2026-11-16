@@ -1,0 +1,1103 @@
+{
+  "contractVersion": 1,
+  "capabilities": {
+    "contractVersion": 1,
+    "actions": [
+      {
+        "id": "nix",
+        "flag": "--nix",
+        "policyKey": "envy.storage.maintenance.nix",
+        "policyDefault": false,
+        "policyEnabled": false,
+        "requiresPolicyOptIn": true,
+        "scheduled": false,
+        "preview": {
+          "supported": true,
+          "writes": false,
+          "probes": false
+        },
+        "sideEffects": "Collect unreferenced store paths; retain all generations and GC roots."
+      },
+      {
+        "id": "docker",
+        "flag": "--docker",
+        "policyKey": "envy.storage.maintenance.docker",
+        "policyDefault": false,
+        "policyEnabled": false,
+        "requiresPolicyOptIn": true,
+        "scheduled": false,
+        "preview": {
+          "supported": true,
+          "writes": false,
+          "probes": true
+        },
+        "sideEffects": "Prune unused builder cache and dangling images older than 336h; retain volumes."
+      },
+      {
+        "id": "go",
+        "flag": "--go",
+        "policyKey": "envy.storage.maintenance.go",
+        "policyDefault": false,
+        "policyEnabled": true,
+        "requiresPolicyOptIn": true,
+        "scheduled": false,
+        "preview": {
+          "supported": true,
+          "writes": false,
+          "probes": false
+        },
+        "sideEffects": "Remove the entire Go build cache, without an age cutoff; retain module source downloads."
+      },
+      {
+        "id": "go-modcache",
+        "flag": "--go-modcache",
+        "policyKey": "envy.storage.maintenance.go-modcache",
+        "policyDefault": false,
+        "policyEnabled": false,
+        "requiresPolicyOptIn": true,
+        "scheduled": false,
+        "preview": {
+          "supported": true,
+          "writes": false,
+          "probes": true
+        },
+        "sideEffects": "Remove the entire Go module download cache without an age cutoff; future builds may require network access to download dependencies again."
+      },
+      {
+        "id": "uv",
+        "flag": "--uv",
+        "policyKey": "envy.storage.maintenance.uv",
+        "policyDefault": false,
+        "policyEnabled": false,
+        "requiresPolicyOptIn": true,
+        "scheduled": false,
+        "preview": {
+          "supported": true,
+          "writes": false,
+          "probes": false
+        },
+        "sideEffects": "Prune unreachable cache objects using native in-use checks; no --force or --ci."
+      },
+      {
+        "id": "npm",
+        "flag": "--npm",
+        "policyKey": "envy.storage.maintenance.npm",
+        "policyDefault": false,
+        "policyEnabled": true,
+        "requiresPolicyOptIn": true,
+        "scheduled": false,
+        "preview": {
+          "supported": true,
+          "writes": false,
+          "probes": false
+        },
+        "sideEffects": "Verify cache integrity and garbage-collect unneeded data; verify writes to the cache."
+      },
+      {
+        "id": "pip",
+        "flag": "--pip",
+        "policyKey": "envy.storage.maintenance.pip",
+        "policyDefault": false,
+        "policyEnabled": false,
+        "requiresPolicyOptIn": true,
+        "scheduled": false,
+        "preview": {
+          "supported": true,
+          "writes": false,
+          "probes": true
+        },
+        "sideEffects": "Purge the entire pip cache, without an age cutoff; explicit maintenance only."
+      },
+      {
+        "id": "brew",
+        "flag": "--brew",
+        "policyKey": "envy.storage.maintenance.brew",
+        "policyDefault": false,
+        "policyEnabled": false,
+        "requiresPolicyOptIn": true,
+        "scheduled": false,
+        "preview": {
+          "supported": true,
+          "writes": false,
+          "probes": false
+        },
+        "sideEffects": "Cleanup includes old installed kegs, stale locks and downloads, not just download cache. --prune=30 applies to cache files, not a uniform age cutoff for every object. Autoremove and auto-update are disabled."
+      }
+    ],
+    "commands": [
+      {
+        "id": "capabilities",
+        "argv": [
+          "storage",
+          "capabilities"
+        ],
+        "json": true,
+        "tui": "native",
+        "internal": false,
+        "preview": false,
+        "sideEffects": "Read evaluated maintenance policy only; no scan or tool probe.",
+        "arguments": [],
+        "flags": [
+          {
+            "flag": "--json",
+            "effect": "Emit one envY JSON envelope."
+          }
+        ]
+      },
+      {
+        "id": "inspect",
+        "argv": [
+          "storage",
+          "inspect"
+        ],
+        "json": true,
+        "tui": "native",
+        "internal": false,
+        "preview": false,
+        "sideEffects": "Read local storage and native reports; no plan or cleanup.",
+        "arguments": [],
+        "flags": [
+          {
+            "flag": "--project",
+            "effect": "Repeatable explicit Git project to inspect."
+          },
+          {
+            "flag": "--json",
+            "effect": "Emit one envY JSON envelope."
+          }
+        ]
+      },
+      {
+        "id": "status",
+        "argv": [
+          "storage",
+          "status"
+        ],
+        "json": true,
+        "tui": "native",
+        "internal": false,
+        "preview": false,
+        "sideEffects": "Read rules and saved records; may initialize and lock local state.",
+        "arguments": [],
+        "flags": [
+          {
+            "flag": "--json",
+            "effect": "Emit one envY JSON envelope."
+          }
+        ]
+      },
+      {
+        "id": "plan",
+        "argv": [
+          "storage",
+          "plan"
+        ],
+        "json": true,
+        "tui": "native",
+        "internal": false,
+        "preview": false,
+        "sideEffects": "Scan candidates and save a plan in local state; no move or deletion.",
+        "arguments": [],
+        "flags": [
+          {
+            "flag": "--json",
+            "effect": "Emit one envY JSON envelope."
+          }
+        ]
+      },
+      {
+        "id": "run",
+        "argv": [
+          "storage",
+          "run"
+        ],
+        "json": true,
+        "tui": "native",
+        "internal": false,
+        "preview": true,
+        "sideEffects": "Without --yes, read or save a plan; execution may quarantine or archive files.",
+        "arguments": [
+          "plan_id?"
+        ],
+        "flags": [
+          {
+            "flag": "--yes",
+            "effect": "Execute the saved or freshly created plan on the legacy path."
+          },
+          {
+            "flag": "--preview",
+            "effect": "Create a bound preview of an explicitly saved, trusted plan; never create a plan implicitly."
+          },
+          {
+            "flag": "--preview-token",
+            "effect": "Confirm the same request with --yes before expiry; one claim only."
+          },
+          {
+            "flag": "--scheduled",
+            "effect": "Internal scheduler only: use machine mode; reject plan_id and --yes. Auto mode executes and purges; report mode saves a plan; manual mode rejects."
+          },
+          {
+            "flag": "--json",
+            "effect": "Emit one envY JSON envelope."
+          }
+        ]
+      },
+      {
+        "id": "purge",
+        "argv": [
+          "storage",
+          "purge"
+        ],
+        "json": true,
+        "tui": "native",
+        "internal": false,
+        "preview": true,
+        "sideEffects": "Preview expired quarantine; execution deletes unchanged expired files.",
+        "arguments": [],
+        "flags": [
+          {
+            "flag": "--yes",
+            "effect": "Execute quarantine deletion; retain archive snapshots."
+          },
+          {
+            "flag": "--preview",
+            "effect": "Save a bound, metadata-only preview of selected expired runs."
+          },
+          {
+            "flag": "--preview-token",
+            "effect": "Confirm the same request with --yes before expiry."
+          },
+          {
+            "flag": "--json",
+            "effect": "Emit one envY JSON envelope."
+          }
+        ]
+      },
+      {
+        "id": "restore",
+        "argv": [
+          "storage",
+          "restore"
+        ],
+        "json": true,
+        "tui": "native",
+        "internal": false,
+        "preview": true,
+        "sideEffects": "Immediately write recovered files on the legacy path; --preview may perform read-only archive verification and never creates the recovery target.",
+        "arguments": [
+          "run_id"
+        ],
+        "flags": [
+          {
+            "flag": "--target",
+            "effect": "Required new absolute recovery directory; never overwrite an existing target."
+          },
+          {
+            "flag": "--preview",
+            "effect": "Save a bound recovery preview without creating the target; may perform read-only archive identity/content verification, require credentials and take substantial time."
+          },
+          {
+            "flag": "--preview-token",
+            "effect": "Confirm the same run and target with --yes before expiry."
+          },
+          {
+            "flag": "--yes",
+            "effect": "Confirm only with --preview-token."
+          },
+          {
+            "flag": "--json",
+            "effect": "Emit one envY JSON envelope."
+          }
+        ]
+      },
+      {
+        "id": "maintain",
+        "argv": [
+          "storage",
+          "maintain"
+        ],
+        "json": true,
+        "tui": "native",
+        "internal": false,
+        "preview": true,
+        "sideEffects": "Preview native actions; --yes executes policy-enabled maintenance. Never scheduled.",
+        "arguments": [],
+        "flags": [
+          {
+            "flag": "--nix",
+            "effect": "Select nix; requires policy opt-in."
+          },
+          {
+            "flag": "--docker",
+            "effect": "Select docker; requires policy opt-in."
+          },
+          {
+            "flag": "--go",
+            "effect": "Select go; requires policy opt-in."
+          },
+          {
+            "flag": "--go-modcache",
+            "effect": "Select go-modcache; requires policy opt-in."
+          },
+          {
+            "flag": "--uv",
+            "effect": "Select uv; requires policy opt-in."
+          },
+          {
+            "flag": "--npm",
+            "effect": "Select npm; requires policy opt-in."
+          },
+          {
+            "flag": "--pip",
+            "effect": "Select pip; requires policy opt-in."
+          },
+          {
+            "flag": "--brew",
+            "effect": "Select brew; requires policy opt-in."
+          },
+          {
+            "flag": "--yes",
+            "effect": "Execute selected native actions."
+          },
+          {
+            "flag": "--preview",
+            "effect": "Save a bound native target preview; require explicit nonempty action flags."
+          },
+          {
+            "flag": "--preview-token",
+            "effect": "Confirm the same explicit action selection with --yes."
+          },
+          {
+            "flag": "--json",
+            "effect": "Emit one envY JSON envelope."
+          }
+        ]
+      },
+      {
+        "id": "validate",
+        "argv": [
+          "storage",
+          "validate"
+        ],
+        "json": true,
+        "tui": "native",
+        "internal": false,
+        "preview": false,
+        "sideEffects": "Run organize check on generated rule configuration; no scan or writes.",
+        "arguments": [],
+        "flags": [
+          {
+            "flag": "--json",
+            "effect": "Emit one envY JSON envelope."
+          }
+        ]
+      },
+      {
+        "id": "init",
+        "argv": [
+          "storage",
+          "init"
+        ],
+        "json": true,
+        "tui": "CLIhandoff",
+        "internal": false,
+        "preview": false,
+        "sideEffects": "Initialize the dedicated archive repository and local state.",
+        "arguments": [],
+        "flags": [
+          {
+            "flag": "--json",
+            "effect": "Emit one envY JSON envelope."
+          }
+        ],
+        "handoff": {
+          "argv": [
+            "envy",
+            "storage",
+            "init",
+            "--json"
+          ],
+          "target": {
+            "kind": "archive",
+            "label": "Dedicated restic archive",
+            "status": "unknown",
+            "configured": true,
+            "reason": "No safe public archive location is declared; inspect machine policy in the CLI."
+          },
+          "backend": {
+            "program": "restic",
+            "fixedArguments": [
+              "init",
+              "--repository-version",
+              "2"
+            ]
+          },
+          "exit": {
+            "success": 0,
+            "failure": "nonzero",
+            "return": "Return to storage after the process exits; refresh explicitly."
+          },
+          "sideEffects": "Initialize the dedicated archive repository and local state.",
+          "interactive": false,
+          "confirmation": "Explicit CLI invocation"
+        }
+      },
+      {
+        "id": "check",
+        "argv": [
+          "storage",
+          "check"
+        ],
+        "json": true,
+        "tui": "CLIhandoff",
+        "internal": false,
+        "preview": false,
+        "sideEffects": "Read back all archive data; may initialize and lock local state.",
+        "arguments": [],
+        "flags": [
+          {
+            "flag": "--json",
+            "effect": "Emit one envY JSON envelope."
+          }
+        ],
+        "handoff": {
+          "argv": [
+            "envy",
+            "storage",
+            "check",
+            "--json"
+          ],
+          "target": {
+            "kind": "archive",
+            "label": "Dedicated restic archive",
+            "status": "unknown",
+            "configured": true,
+            "reason": "No safe public archive location is declared; inspect machine policy in the CLI."
+          },
+          "backend": {
+            "program": "restic",
+            "fixedArguments": [
+              "check",
+              "--read-data"
+            ]
+          },
+          "exit": {
+            "success": 0,
+            "failure": "nonzero",
+            "return": "Return to storage after the process exits; refresh explicitly."
+          },
+          "sideEffects": "Read back all archive data; may initialize and lock local state.",
+          "interactive": false,
+          "confirmation": "Explicit CLI invocation"
+        }
+      },
+      {
+        "id": "gc",
+        "argv": [
+          "storage",
+          "gc"
+        ],
+        "json": false,
+        "tui": "CLIhandoff",
+        "internal": false,
+        "preview": false,
+        "sideEffects": "Delete old Nix generations and collect caches; maintain --nix retains generations.",
+        "arguments": [],
+        "flags": [
+          {
+            "flag": "--older-than",
+            "effect": "Generation retention; default 30d."
+          },
+          {
+            "flag": "--yes",
+            "effect": "Confirm destructive cleanup; otherwise prompt interactively."
+          },
+          {
+            "flag": "--brew/--no-brew",
+            "effect": "Darwin Homebrew cleanup; enabled by default."
+          }
+        ],
+        "handoff": {
+          "argv": [
+            "envy",
+            "storage",
+            "gc",
+            "--older-than",
+            "30d",
+            "--brew"
+          ],
+          "target": {
+            "kind": "nix-generations-and-caches",
+            "label": "Local Nix generations and caches",
+            "status": "set"
+          },
+          "backend": {
+            "program": "nix-collect-garbage",
+            "fixedArguments": [
+              "--delete-older-than",
+              "30d"
+            ]
+          },
+          "exit": {
+            "success": 0,
+            "failure": "nonzero",
+            "return": "Return to storage after the process exits; refresh explicitly."
+          },
+          "sideEffects": "Delete old Nix generations and collect caches; maintain --nix retains generations.",
+          "interactive": true,
+          "confirmation": "CLI prompt or explicit --yes"
+        }
+      }
+    ],
+    "tuiPlan": "Native preview/confirmation for run, purge, maintain and restore; init/check/gc use CLI handoff.",
+    "operations": {
+      "contractVersion": 1,
+      "previewFlag": "--preview",
+      "tokenFlag": "--preview-token",
+      "confirmFlag": "--yes",
+      "previewTTLSeconds": 300,
+      "previewExcludes": [
+        "--yes",
+        "--preview-token"
+      ],
+      "implicitPlan": false
+    },
+    "maintenanceSelection": {
+      "cliDefault": "All policy-enabled actions when no action flags are supplied.",
+      "frontendDefault": [],
+      "emptySelection": "reject",
+      "executeFlag": "--yes",
+      "actionOrder": [
+        "nix",
+        "docker",
+        "go",
+        "go-modcache",
+        "uv",
+        "npm",
+        "pip",
+        "brew"
+      ]
+    },
+    "internalInvocations": [
+      {
+        "argv": [
+          "storage",
+          "run",
+          "--scheduled"
+        ],
+        "tui": "none",
+        "internal": true
+      }
+    ],
+    "modes": [
+      "manual",
+      "report",
+      "auto"
+    ]
+  },
+  "maintenancePreview": {
+    "contractVersion": 1,
+    "kind": "preview",
+    "operation": "maintain",
+    "previewToken": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "expiresAt": 1700000300,
+    "operationId": "11111111111111111111111111111111",
+    "request": {
+      "actions": [
+        "go",
+        "npm"
+      ]
+    },
+    "policyFingerprint": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "sourceFingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "state": "ready",
+    "preview": {
+      "execute": false,
+      "items": [
+        {
+          "action": "go",
+          "available": true,
+          "commands": [
+            [
+              "/fixture/bin/go",
+              "clean",
+              "-cache"
+            ]
+          ],
+          "note": "Remove the entire Go build cache, without an age cutoff; retain module source downloads. Read-only preview; no cleanup command was run.",
+          "binding": {
+            "version": 1,
+            "action": "go",
+            "executable": {
+              "path": "/fixture/bin/go",
+              "resolvedPath": "/fixture/bin/go",
+              "exists": true,
+              "identity": [
+                1,
+                2,
+                33261,
+                10,
+                0,
+                0
+              ]
+            },
+            "cwd": {
+              "path": "/fixture/home",
+              "identity": [
+                1,
+                3,
+                16832
+              ]
+            },
+            "scope": {
+              "selectorsDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+              "files": []
+            },
+            "target": {
+              "path": "/fixture/home/.cache/go"
+            },
+            "roots": []
+          },
+          "target": {
+            "path": "/fixture/home/.cache/go"
+          }
+        },
+        {
+          "action": "npm",
+          "available": true,
+          "commands": [
+            [
+              "/fixture/bin/npm",
+              "--cache",
+              "/fixture/home/.cache/npm",
+              "cache",
+              "verify"
+            ]
+          ],
+          "note": "Verify cache integrity and garbage-collect unneeded data; verify writes to the cache. Read-only preview; no cleanup command was run.",
+          "binding": {
+            "version": 1,
+            "action": "npm",
+            "executable": {
+              "path": "/fixture/bin/npm",
+              "resolvedPath": "/fixture/bin/npm",
+              "exists": true,
+              "identity": [
+                1,
+                2,
+                33261,
+                10,
+                0,
+                0
+              ]
+            },
+            "cwd": {
+              "path": "/fixture/home",
+              "identity": [
+                1,
+                3,
+                16832
+              ]
+            },
+            "scope": {
+              "selectorsDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+              "files": []
+            },
+            "target": {
+              "path": "/fixture/home/.cache/npm"
+            },
+            "roots": []
+          },
+          "target": {
+            "path": "/fixture/home/.cache/npm"
+          }
+        }
+      ]
+    },
+    "result": null,
+    "errors": [],
+    "unknown": [],
+    "refreshedStatus": {
+      "status": "unavailable",
+      "reason": "No execution has occurred."
+    }
+  },
+  "restorePreview": {
+    "contractVersion": 1,
+    "kind": "preview",
+    "operation": "restore",
+    "previewToken": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "expiresAt": 1700000300,
+    "operationId": "22222222222222222222222222222222",
+    "request": {
+      "actions": [],
+      "runId": "33333333333333333333333333333333",
+      "absoluteTarget": "/fixture/home/recovered"
+    },
+    "policyFingerprint": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "sourceFingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "state": "ready",
+    "preview": {
+      "run": "33333333333333333333333333333333",
+      "absoluteTarget": "/fixture/home/recovered",
+      "policy": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "manifestDigest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "targetBinding": {
+        "parents": [
+          {
+            "path": "/",
+            "device": 1,
+            "inode": 1
+          },
+          {
+            "path": "/fixture/home",
+            "device": 1,
+            "inode": 2
+          }
+        ],
+        "missingParents": []
+      },
+      "snapshot": null,
+      "repositoryId": null,
+      "items": [
+        {
+          "path": "/fixture/home/Downloads/report.bin",
+          "status": "held",
+          "signature": [
+            1,
+            2,
+            24,
+            0,
+            0
+          ],
+          "sha256": "a5b6921cca87693b42a63cc07e1a9e03dcba551ca8a10b95a04d80b38773341d"
+        }
+      ],
+      "metadata": {
+        "archiveReadRequired": false,
+        "executionSupported": true,
+        "restoreMethod": "held-copy",
+        "limitations": []
+      }
+    },
+    "result": null,
+    "errors": [],
+    "unknown": [],
+    "refreshedStatus": {
+      "status": "unavailable",
+      "reason": "No execution has occurred."
+    }
+  },
+  "partialResult": {
+    "contractVersion": 1,
+    "kind": "result",
+    "operation": "maintain",
+    "previewToken": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "expiresAt": 1700000300,
+    "operationId": "11111111111111111111111111111111",
+    "request": {
+      "actions": [
+        "go",
+        "npm"
+      ]
+    },
+    "policyFingerprint": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "sourceFingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "state": "partial",
+    "preview": {
+      "execute": false,
+      "items": [
+        {
+          "action": "go",
+          "available": true,
+          "commands": [
+            [
+              "/fixture/bin/go",
+              "clean",
+              "-cache"
+            ]
+          ],
+          "note": "Remove the entire Go build cache, without an age cutoff; retain module source downloads. Read-only preview; no cleanup command was run.",
+          "binding": {
+            "version": 1,
+            "action": "go",
+            "executable": {
+              "path": "/fixture/bin/go",
+              "resolvedPath": "/fixture/bin/go",
+              "exists": true,
+              "identity": [
+                1,
+                2,
+                33261,
+                10,
+                0,
+                0
+              ]
+            },
+            "cwd": {
+              "path": "/fixture/home",
+              "identity": [
+                1,
+                3,
+                16832
+              ]
+            },
+            "scope": {
+              "selectorsDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+              "files": []
+            },
+            "target": {
+              "path": "/fixture/home/.cache/go"
+            },
+            "roots": []
+          },
+          "target": {
+            "path": "/fixture/home/.cache/go"
+          }
+        },
+        {
+          "action": "npm",
+          "available": true,
+          "commands": [
+            [
+              "/fixture/bin/npm",
+              "--cache",
+              "/fixture/home/.cache/npm",
+              "cache",
+              "verify"
+            ]
+          ],
+          "note": "Verify cache integrity and garbage-collect unneeded data; verify writes to the cache. Read-only preview; no cleanup command was run.",
+          "binding": {
+            "version": 1,
+            "action": "npm",
+            "executable": {
+              "path": "/fixture/bin/npm",
+              "resolvedPath": "/fixture/bin/npm",
+              "exists": true,
+              "identity": [
+                1,
+                2,
+                33261,
+                10,
+                0,
+                0
+              ]
+            },
+            "cwd": {
+              "path": "/fixture/home",
+              "identity": [
+                1,
+                3,
+                16832
+              ]
+            },
+            "scope": {
+              "selectorsDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+              "files": []
+            },
+            "target": {
+              "path": "/fixture/home/.cache/npm"
+            },
+            "roots": []
+          },
+          "target": {
+            "path": "/fixture/home/.cache/npm"
+          }
+        }
+      ]
+    },
+    "result": {
+      "execute": true,
+      "items": [
+        {
+          "action": "go",
+          "available": true,
+          "commands": [
+            [
+              "/fixture/bin/go",
+              "clean",
+              "-cache"
+            ]
+          ],
+          "note": "Remove the entire Go build cache, without an age cutoff; retain module source downloads.",
+          "binding": {
+            "version": 1,
+            "action": "go",
+            "executable": {
+              "path": "/fixture/bin/go",
+              "resolvedPath": "/fixture/bin/go",
+              "exists": true,
+              "identity": [
+                1,
+                2,
+                33261,
+                10,
+                0,
+                0
+              ]
+            },
+            "cwd": {
+              "path": "/fixture/home",
+              "identity": [
+                1,
+                3,
+                16832
+              ]
+            },
+            "scope": {
+              "selectorsDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+              "files": []
+            },
+            "target": {
+              "path": "/fixture/home/.cache/go"
+            },
+            "roots": []
+          },
+          "target": {
+            "path": "/fixture/home/.cache/go"
+          },
+          "output": [
+            {
+              "returncode": 0,
+              "command": "/fixture/bin/go clean -cache"
+            }
+          ]
+        },
+        {
+          "action": "npm",
+          "available": false,
+          "commands": [
+            [
+              "/fixture/bin/npm",
+              "--cache",
+              "/fixture/home/.cache/npm",
+              "cache",
+              "verify"
+            ]
+          ],
+          "note": "Verify cache integrity and garbage-collect unneeded data; verify writes to the cache. command failed with exit code 5; remaining steps were skipped.",
+          "binding": {
+            "version": 1,
+            "action": "npm",
+            "executable": {
+              "path": "/fixture/bin/npm",
+              "resolvedPath": "/fixture/bin/npm",
+              "exists": true,
+              "identity": [
+                1,
+                2,
+                33261,
+                10,
+                0,
+                0
+              ]
+            },
+            "cwd": {
+              "path": "/fixture/home",
+              "identity": [
+                1,
+                3,
+                16832
+              ]
+            },
+            "scope": {
+              "selectorsDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+              "files": []
+            },
+            "target": {
+              "path": "/fixture/home/.cache/npm"
+            },
+            "roots": []
+          },
+          "target": {
+            "path": "/fixture/home/.cache/npm"
+          },
+          "output": [
+            {
+              "returncode": 5,
+              "command": "/fixture/bin/npm --cache /fixture/home/.cache/npm cache verify"
+            }
+          ]
+        }
+      ],
+      "errors": [
+        "npm"
+      ]
+    },
+    "errors": [
+      "npm"
+    ],
+    "unknown": [],
+    "refreshedStatus": {
+      "status": "available",
+      "data": {
+        "mode": "manual",
+        "runs": [
+          {
+            "id": "33333333333333333333333333333333",
+            "createdAt": 1699999900,
+            "snapshot": null,
+            "repositoryId": null,
+            "items": [
+              {
+                "path": "/fixture/home/Downloads/report.bin",
+                "action": "quarantine",
+                "targets": "files",
+                "status": "quarantined",
+                "size": 25,
+                "signature": [
+                  1,
+                  2,
+                  24,
+                  0,
+                  0
+                ],
+                "heldSignature": [
+                  1,
+                  2,
+                  24,
+                  0,
+                  0
+                ],
+                "heldPath": "/fixture/home/state/quarantine/33333333333333333333333333333333/0",
+                "expiresAt": 1700100000
+              }
+            ],
+            "errors": []
+          }
+        ],
+        "operations": [
+          {
+            "operationId": "11111111111111111111111111111111",
+            "operation": "maintain",
+            "request": {
+              "actions": [
+                "go",
+                "npm"
+              ]
+            },
+            "state": "partial",
+            "errors": [
+              "npm"
+            ],
+            "unknown": []
+          },
+          {
+            "operationId": "22222222222222222222222222222222",
+            "operation": "restore",
+            "request": {
+              "actions": [],
+              "runId": "33333333333333333333333333333333",
+              "absoluteTarget": "/fixture/home/recovered"
+            },
+            "state": "ready",
+            "errors": [],
+            "unknown": []
+          }
+        ],
+        "latestPlan": null
+      }
+    }
+  }
+}

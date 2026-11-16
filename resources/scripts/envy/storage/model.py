@@ -18,6 +18,10 @@ MODEL_VERSION = 2
 class StorageError(ValueError):
     """A storage operation could not meet its required conditions."""
 
+    def __init__(self, message: str, *, code: str = "storage_error"):
+        super().__init__(message)
+        self.code = code
+
 
 @dataclass(frozen=True)
 class Rule:
@@ -53,6 +57,8 @@ class Policy:
     excluded: tuple[str, ...] = ()
     extra_protected: tuple[Path, ...] = ()
     mount_source: str = ""
+    machine_id: str = ""
+    platform: str = ""
 
     @property
     def fingerprint(self) -> str:
@@ -273,7 +279,7 @@ def policy_from_manifest(manifest: dict, state: Path, checkout: Path) -> Policy:
     if not isinstance(maintenance_raw, dict):
         raise StorageError("Invalid storage maintenance policy")
     maintenance = []
-    for name in ("nix", "docker", "go", "uv", "npm", "pip", "brew"):
+    for name in ("nix", "docker", "go", "go-modcache", "uv", "npm", "pip", "brew"):
         value = maintenance_raw.get(name, False)
         if not isinstance(value, bool):
             raise StorageError("Storage maintenance flags must be booleans")
@@ -281,7 +287,8 @@ def policy_from_manifest(manifest: dict, state: Path, checkout: Path) -> Policy:
             maintenance.append(name)
     protected = tuple([state, checkout, *general, *mandatory[2:], *extra])
     return Policy(home, mode, days, tuple(rules), protected, tuple(mandatory),
-                  tuple(overrides), repository, password_file, tuple(maintenance), tuple(excluded), tuple(extra), mount_source)
+                  tuple(overrides), repository, password_file, tuple(maintenance), tuple(excluded), tuple(extra), mount_source,
+                  manifest.get("id", ""), manifest.get("platform", ""))
 
 
 def is_protected(path: Path, policy: Policy) -> bool:

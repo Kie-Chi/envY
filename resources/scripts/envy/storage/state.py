@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import os
 import re
 from contextlib import contextmanager
 from pathlib import Path
@@ -31,6 +32,24 @@ def write_record(root: Path, kind: str, record: dict) -> None:
     no_symlinks(path)
     atomic_write_text(path, json.dumps(record, ensure_ascii=False, indent=2) + "\n",
                       mode=0o600, private_parent=True)
+
+
+def sync_record(root: Path, kind: str, identifier: str) -> None:
+    """Require file and directory fsync for a critical claim or outcome.
+
+    The shared atomic writer deliberately treats directory fsync as best effort.
+    Claims need a strict barrier before any external effect is allowed.
+    """
+    path = root / kind / f"{identifier}.json"
+    no_symlinks(path)
+    for entry, flags in ((path, os.O_RDONLY | os.O_NOFOLLOW),
+                         (path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW),
+                         (root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)):
+        descriptor = os.open(entry, flags)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
 
 
 def records(root: Path, kind: str) -> list[dict]:

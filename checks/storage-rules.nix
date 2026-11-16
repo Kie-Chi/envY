@@ -37,6 +37,7 @@ let
     envy.storage.maintenance.go = true;
     envy.storage.rules.exclude = [ "go-build-cache" ];
   };
+  moduleGo = evaluate "darwin" { envy.storage.maintenance.go-modcache = true; };
   mounted = evaluate "darwin" {
     envy.storage.archive = {
       repository = "/Volumes/archive/restic";
@@ -138,6 +139,10 @@ assert (rule darwin "feishu-update").protectedOverrides == [
   (home + "/Library/Application Support/LarkShell/update/update.noindex")
   (home + "/Library/Application Support/LarkShell/update/update_downloading")
 ];
+assert !darwin.envy.storage.maintenance.go-modcache;
+assert !linux.envy.storage.maintenance.go-modcache;
+assert moduleGo.envy.storage.maintenance.go-modcache;
+assert rule moduleGo "go-build-cache" != null;
 assert rule nativeGo "go-build-cache" == null;
 assert nativeGo.envy.storage.rules.exclude == [ "go-build-cache" ];
 assert !valid unknown && !valid invalid;

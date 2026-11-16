@@ -99,6 +99,48 @@ class StructuredOutputTests(unittest.TestCase):
         self.assertIsInstance(payload["entries"], list)
         self.assertEqual(payload["entries"][0]["operation"], "apply")
 
+    def test_storage_partial_failure_keeps_successes_warnings_and_unknown_sizes(self):
+        import typer
+        from envy.storage import cli as storage_cli
+
+        result = {
+            "items": [{"action": "go", "available": True},
+                      {"action": "docker", "available": False, "logicalBytes": None}],
+            "errors": ["docker"],
+            "warnings": ["daemon unavailable"],
+        }
+        output = io.StringIO()
+        console = Console(file=output, force_terminal=False, width=220)
+        with patch("envy.jsonio.log.console", console), self.assertRaises(typer.Exit) as failure:
+            storage_cli._perform("maintain", True, lambda: result)
+        payload = json.loads(output.getvalue())
+        self.assertEqual(failure.exception.exit_code, 1)
+        self.assertEqual(payload["command"], "storage maintain")
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"]["code"], "partial_failure")
+        self.assertEqual(payload["warnings"], result["warnings"])
+        self.assertEqual(payload["data"], result)
+        self.assertIsNone(payload["data"]["items"][1]["logicalBytes"])
+
+    def test_storage_failure_before_result_emits_one_error_document(self):
+        import typer
+        from envy.storage import cli as storage_cli
+        from envy.storage.model import StorageError
+
+        def unavailable():
+            raise StorageError("Machine manifest unavailable")
+
+        output = io.StringIO()
+        console = Console(file=output, force_terminal=False, width=220)
+        with patch("envy.jsonio.log.console", console), self.assertRaises(typer.Exit) as failure:
+            storage_cli._perform("status", True, unavailable)
+        payload = json.loads(output.getvalue())
+        self.assertEqual(failure.exception.exit_code, 1)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["command"], "storage status")
+        self.assertEqual(payload["error"]["code"], "storage_error")
+        self.assertIsNone(payload["data"])
+
     def test_log_registered_with_alias(self):
         commands = get_command(cli).commands
         self.assertIn("log", commands)

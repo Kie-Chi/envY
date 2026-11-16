@@ -131,6 +131,7 @@ in
         "envy.vscode.mode" = config.envy.vscode.mode;
         "envy.mirrors.mode" = config.envy.mirrors.mode;
         "envy.storage.mode" = homeStorage.mode;
+        "envy.storage.maintenance.go-modcache" = homeStorage.maintenance.go-modcache;
         "envy.storage.archive.repository" = homeStorage.archive.repository;
         "envy.amux.skipPermissions" = config.envy.amux.skipPermissions;
       };

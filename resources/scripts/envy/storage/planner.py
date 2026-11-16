@@ -263,6 +263,8 @@ def plan(policy: Policy, state: Path) -> dict:
               "candidates": list(matched), "skipped": skipped, "rules": summary,
               "bytes": sum(entry["size"] for entry in matched)}
     write_record(state, "plans", record)
+    from envy.storage.receipts import record_plan_source
+    record_plan_source(policy, state, record)
     return record
 
 

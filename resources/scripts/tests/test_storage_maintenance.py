@@ -5,6 +5,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,7 +14,8 @@ from unittest.mock import patch
 from rich.console import Console
 from typer.testing import CliRunner
 
-from envy.storage import cli, maintenance
+from envy.process import run_process
+from envy.storage import cli, go_modcache, maintenance
 from envy.storage.model import Policy, StorageError
 
 
@@ -23,10 +25,15 @@ class MaintenanceTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.home = Path(self.temporary.name).resolve()
         self.policy = Policy(self.home, "manual", 30, (), (), (), (), "", "",
-                             maintenance.ACTIONS)
+                             tuple(name for name in maintenance.ACTIONS if name != "go-modcache"))
         self.run = patch.object(maintenance, "run_process", side_effect=self.command).start()
         self.which = patch.object(maintenance.shutil, "which", side_effect=lambda name: "/bin/" + name).start()
         self.platform = patch.object(maintenance, "PLATFORM", "linux").start()
+        self.docker_report = patch.object(maintenance.docker, "inspect", return_value={"status": "available"}).start()
+        self.docker_target = patch.object(maintenance.docker, "maintenance_target", return_value={"daemonId": "fixture"}).start()
+        self.docker_verify = patch.object(maintenance.docker, "verify_target").start()
+        patch.object(maintenance.docker, "bound_commands", side_effect=lambda target: maintenance.COMMANDS["docker"]).start()
+        patch.object(maintenance.docker, "bound_environment", return_value={"PATH": "/fixture/bin"}).start()
         self.addCleanup(patch.stopall)
 
     @staticmethod
@@ -39,10 +46,10 @@ class MaintenanceTests(unittest.TestCase):
             data = maintenance.preview(self.policy)
         self.assertFalse(data["execute"])
         self.assertEqual(stdout.getvalue(), "")
-        self.assertEqual([item["action"] for item in data["items"]], list(maintenance.ACTIONS))
+        self.assertEqual([item["action"] for item in data["items"]], list(self.policy.maintenance))
         self.assertTrue(all(item["available"] for item in data["items"]))
         self.assertEqual([call.args[0] for call in self.run.call_args_list], [
-            ["docker", "info", "--format", "{{.ServerVersion}}"], ["pip", "cache", "--help"]])
+            ["pip", "cache", "--help"]])
         self.assertEqual(json.loads(json.dumps(data))["execute"], False)
         docker = next(item for item in data["items"] if item["action"] == "docker")
         self.assertEqual(len(docker["commands"]), 2)
@@ -53,7 +60,7 @@ class MaintenanceTests(unittest.TestCase):
         self.which.side_effect = None
         self.which.return_value = None
         data = maintenance.maintain(self.policy)
-        self.assertEqual(data["errors"], list(maintenance.ACTIONS))
+        self.assertEqual(data["errors"], list(self.policy.maintenance))
         self.assertTrue(all("not available" in item["note"] for item in data["items"]))
         self.run.assert_not_called()
 
@@ -91,6 +98,62 @@ class MaintenanceTests(unittest.TestCase):
             self.assertTrue(call.kwargs["capture"])
             self.assertFalse(call.kwargs["check"])
             self.assertGreater(call.kwargs["timeout"], 0)
+
+    def test_docker_identity_drift_stops_before_any_cleanup(self):
+        self.docker_verify.side_effect = StorageError("Docker target changed")
+        data = maintenance.maintain(self.policy, ["docker"])
+        self.assertEqual(data["errors"], ["docker"])
+        self.run.assert_not_called()
+        self.assertIn("target changed", data["items"][0]["note"])
+
+    def test_module_download_cleanup_requires_separate_opt_in_and_pinned_target(self):
+        with self.assertRaises(StorageError):
+            maintenance.preview(self.policy, ["go-modcache"])
+        policy = Policy(self.home, "manual", 30, (), (), (), (), "", "", ("go-modcache",))
+        target = {"path": str(self.home / "downloads"), "resolvedPath": str(self.home / "downloads"),
+                  "cwd": str(self.home)}
+        binding = {"version": 1, "action": "go-modcache", "target": target,
+                   "cwd": {"path": str(self.home)}, "executable": {"path": "/synthetic/go"},
+                   "scope": {}, "roots": []}
+        with (
+            patch.object(maintenance.native_context, "capture", return_value=binding),
+            patch.object(maintenance.native_context, "verify", return_value=binding) as verify,
+        ):
+            preview = maintenance.preview(policy)
+            self.assertIn("without an age cutoff", preview["items"][0]["note"])
+            self.run.assert_not_called()
+            data = maintenance.maintain(policy)
+        self.assertEqual(data["errors"], [])
+        verify.assert_called_once_with("go-modcache", binding, policy, platform="linux")
+        self.assertEqual(self.run.call_args.args[0], ["/synthetic/go", "clean", "-modcache"])
+        self.assertEqual(self.run.call_args.kwargs["cwd"], str(self.home))
+        self.assertEqual(self.run.call_args.kwargs["env"]["GOMODCACHE"], target["resolvedPath"])
+        self.run.reset_mock()
+        with (
+            patch.object(maintenance.native_context, "capture", return_value=binding),
+            patch.object(maintenance.native_context, "verify", side_effect=StorageError("target changed")),
+        ):
+            data = maintenance.maintain(policy)
+        self.assertEqual(data["errors"], ["go-modcache"])
+        self.run.assert_not_called()
+
+    def test_module_cache_cannot_remove_an_ancestor_of_the_current_project(self):
+        project = self.home / "project"
+        nested = project / "subproject"
+        nested.mkdir(parents=True)
+        policy = Policy(self.home, "manual", 30, (), (), (), (), "", "", ("go-modcache",))
+        with (
+            patch.object(go_modcache.Path, "cwd", return_value=nested),
+            patch.object(maintenance.native_context, "executable", return_value={"path": "/synthetic/go"}),
+            patch.object(go_modcache, "probe", return_value=subprocess.CompletedProcess(
+                [], 0, str(project) + chr(10), "")),
+        ):
+            preview = maintenance.preview(policy)
+            result = maintenance.maintain(policy)
+        self.assertFalse(preview["items"][0]["available"])
+        self.assertIn("project", preview["items"][0]["note"])
+        self.assertEqual(result["errors"], ["go-modcache"])
+        self.run.assert_not_called()
 
     def test_brew_environment_overrides_inherited_values(self):
         with patch.dict(os.environ, HOMEBREW_NO_AUTOREMOVE="0", HOMEBREW_NO_AUTO_UPDATE="0"):
@@ -185,20 +248,18 @@ class MaintenanceTests(unittest.TestCase):
                               (OSError("cannot start"), "could not start")):
             with self.subTest(note=note):
                 self.run.reset_mock()
-                self.run.side_effect = failure if isinstance(failure, Exception) else None
-                self.run.return_value = failure
+                self.docker_target.side_effect = StorageError("Docker " + note)
                 data = maintenance.maintain(self.policy, ["docker"])
                 self.assertEqual(data["errors"], ["docker"])
                 self.assertIn(note, data["items"][0]["note"])
-                self.assertEqual(self.run.call_count, 1)
+                self.run.assert_not_called()
 
     def test_docker_builder_failure_stops_before_image_prune(self):
-        self.run.side_effect = [subprocess.CompletedProcess([], 0, "29", ""),
-                                subprocess.CompletedProcess([], 42, "", "failed")]
+        self.run.side_effect = [subprocess.CompletedProcess([], 42, "", "failed")]
         data = maintenance.maintain(self.policy, ["docker"])
         self.assertEqual(data["errors"], ["docker"])
         self.assertIn("exit code 42", data["items"][0]["note"])
-        self.assertEqual(self.run.call_count, 2)
+        self.assertEqual(self.run.call_count, 1)
         self.assertEqual(len(data["items"][0]["output"]), 1)
 
     def test_execution_reports_timeouts_and_start_failures(self):
@@ -239,6 +300,97 @@ class MaintenanceTests(unittest.TestCase):
                 self.assertEqual(data["data"]["execute"], execute)
                 self.assertEqual(self.run.call_count, int(execute))
                 self.assertEqual(result.output, "")
+
+    def test_legacy_api_does_not_capture_confirmed_context(self):
+        with patch.object(maintenance.native_context, "capture") as capture:
+            maintenance.preview(self.policy, ["go"])
+            maintenance.maintain(self.policy, ["go"])
+        capture.assert_not_called()
+        self.assertEqual(self.run.call_args.args[0], ["go", "clean", "-cache"])
+
+    def test_bound_preview_failure_is_explicit_and_does_not_run_saved_commands(self):
+        with patch.object(maintenance.native_context, "capture",
+                          side_effect=StorageError("Native target metadata output limit exceeded")):
+            data = maintenance.preview(self.policy, ["go"], bind_targets=True)
+        self.assertFalse(data["items"][0]["available"])
+        self.assertIn("output limit exceeded", data["items"][0]["note"])
+        data["items"][0]["commands"] = [["never-execute-saved-json"]]
+        result = maintenance.maintain(self.policy, ["go"], approved_preview=data)
+        self.assertEqual(result["errors"], ["go"])
+        self.run.assert_not_called()
+
+    def test_approved_large_output_is_discarded_without_changing_failure_semantics(self):
+        fixture = self.home / "large-output.py"
+        fixture.write_text(
+            "import os, sys\n"
+            "for _ in range(64):\n"
+            "    os.write(1, b'fake native stdout' * 4096)\n"
+            "    os.write(2, b'fake native stderr' * 4096)\n"
+            "sys.exit(int(sys.argv[1]))\n"
+        )
+        actions = ["go", "uv", "npm"]
+        approved = {"execute": False, "items": [{"action": action, "available": True,
+            "binding": {"version": 1, "action": action, "target": {}, "cwd": {},
+                        "executable": {}, "scope": {}, "roots": []}} for action in actions]}
+        current = {"cwd": {"path": str(self.home)}}
+        results = []
+        process_options = []
+        subprocess_run = subprocess.run
+        def fake_run(argv, **kwargs):
+            # Only the temporary output fixture reaches the actual process boundary.
+            self.assertEqual(argv[:2], [sys.executable, str(fixture)])
+            process_options.append(kwargs)
+            result = subprocess_run(argv, **kwargs)
+            results.append(result)
+            return result
+        def commands(action, binding, **kwargs):
+            return [[sys.executable, str(fixture), "42" if action == "uv" else "0"]]
+        self.run.side_effect = run_process
+        with patch.object(maintenance.native_context, "verify", return_value=current), \
+                patch.object(maintenance.native_context, "commands", side_effect=commands), \
+                patch.object(maintenance.native_context, "execution_environment", return_value=dict(os.environ)), \
+                patch("envy.process.subprocess.run", side_effect=fake_run), \
+                contextlib.redirect_stdout(io.StringIO()) as stdout, \
+                contextlib.redirect_stderr(io.StringIO()) as stderr:
+            data = maintenance.maintain(self.policy, actions, approved_preview=approved)
+        self.assertEqual(data["errors"], ["uv", "npm"])
+        self.assertTrue(data["items"][0]["available"])
+        self.assertEqual(data["items"][0]["output"][0]["returncode"], 0)
+        self.assertEqual(data["items"][1]["output"][0]["returncode"], 42)
+        self.assertIn("exit code 42", data["items"][1]["note"])
+        self.assertIn("skipped", data["items"][2]["note"])
+        self.assertEqual(data["items"][2]["output"], [])
+        self.assertEqual(self.run.call_count, 2)
+        for call, options, result in zip(self.run.call_args_list, process_options, results):
+            self.assertFalse(call.kwargs["capture"])
+            self.assertFalse(options["capture_output"])
+            self.assertEqual(options["stdout"], subprocess.DEVNULL)
+            self.assertEqual(options["stderr"], subprocess.DEVNULL)
+            self.assertIsNone(result.stdout)
+            self.assertIsNone(result.stderr)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), "")
+        serialized = json.dumps(data)
+        self.assertNotIn("fake native stdout", serialized)
+        self.assertNotIn("fake native stderr", serialized)
+        self.assertEqual(json.loads(serialized)["errors"], ["uv", "npm"])
+
+    def test_approved_preview_validates_every_item_shape_before_execution(self):
+        for approved in ({}, {"execute": True, "items": []},
+                         {"execute": False, "items": [{"action": "go", "available": "yes"}]},
+                         {"execute": False, "items": [{"action": "go", "available": True}]},
+                         {"execute": False, "items": [{"action": "go", "available": True,
+                             "binding": {"action": "go", "version": 1}}]}):
+            with self.subTest(approved=approved), self.assertRaises(StorageError):
+                maintenance.maintain(self.policy, ["go"], approved_preview=approved)
+        self.run.assert_not_called()
+
+    def test_approved_policy_validation_happens_before_context_probes(self):
+        policy = Policy(self.home, "manual", 30, (), (), (), (), "", "", ("go",))
+        with patch.object(maintenance.native_context, "capture") as capture, self.assertRaises(StorageError):
+            maintenance.maintain(policy, ["go", "uv"], approved_preview={"execute": False, "items": []})
+        capture.assert_not_called()
+        self.run.assert_not_called()
 
     def test_cli_native_failure_is_pure_json_and_nonzero(self):
         self.run.side_effect = None

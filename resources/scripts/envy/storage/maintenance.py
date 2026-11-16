@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import os
 import shlex
 import shutil
@@ -10,24 +11,28 @@ import subprocess
 from envy.process import run_process
 from envy.utils import PLATFORM
 from envy.storage.model import Policy, StorageError
-
-ACTIONS = ("nix", "docker", "go", "uv", "npm", "pip", "brew")
+from envy.storage import docker, native_context
 
 COMMANDS = {
     "nix": [["nix-collect-garbage"]],
     "docker": [["docker", "builder", "prune", "-f", "--filter", "until=336h"],
                ["docker", "image", "prune", "-f", "--filter", "until=336h"]],
     "go": [["go", "clean", "-cache"]],
+    "go-modcache": [["go", "clean", "-modcache"]],
     "uv": [["uv", "cache", "prune"]],
     "npm": [["npm", "cache", "verify"]],
     "pip": [["pip", "cache", "purge"]],
     "brew": [["brew", "cleanup", "--prune=30"]],
 }
 
+ACTIONS = tuple(COMMANDS)
+
 NOTES = {
     "nix": "Collect unreferenced store paths; retain all generations and GC roots.",
     "docker": "Prune unused builder cache and dangling images older than 336h; retain volumes.",
     "go": "Remove the entire Go build cache, without an age cutoff; retain module source downloads.",
+    "go-modcache": "Remove the entire Go module download cache without an age cutoff; "
+                   "future builds may require network access to download dependencies again.",
     "uv": "Prune unreachable cache objects using native in-use checks; no --force or --ci.",
     "npm": "Verify cache integrity and garbage-collect unneeded data; verify writes to the cache.",
     "pip": "Purge the entire pip cache, without an age cutoff; explicit maintenance only.",
@@ -37,6 +42,18 @@ NOTES = {
 }
 
 BREW_ENV = {"HOMEBREW_NO_AUTOREMOVE": "1", "HOMEBREW_NO_AUTO_UPDATE": "1"}
+
+
+def action_metadata(enabled: tuple[str, ...]) -> list[dict]:
+    """Describe policy opt-ins without probing tools, targets or cache contents."""
+    return [{"id": name, "flag": "--" + name,
+             "policyKey": "envy.storage.maintenance." + name,
+             "policyDefault": False, "policyEnabled": name in enabled,
+             "requiresPolicyOptIn": True, "scheduled": False,
+             "preview": {"supported": True, "writes": False,
+                         "probes": name in {"docker", "go-modcache", "pip"}},
+             "sideEffects": NOTES[name]}
+            for name in ACTIONS]
 
 
 def _probe(argv: list[str], timeout: int = 20, *, env: dict[str, str] | None = None):
@@ -62,18 +79,6 @@ def _failure(returncode: int) -> str:
     return f"command failed with exit code {returncode}"
 
 
-def _docker_ready() -> tuple[bool, str]:
-    try:
-        result = _probe(["docker", "info", "--format", "{{.ServerVersion}}"], timeout=15)
-    except subprocess.TimeoutExpired:
-        return False, "Docker engine probe timed out; nothing was pruned"
-    except OSError as exc:
-        return False, f"Docker engine probe could not start: {exc}"
-    if result.returncode != 0:
-        return False, f"Docker engine is unavailable ({_failure(result.returncode)}); nothing was pruned"
-    return True, ""
-
-
 def _pip_command() -> tuple[str | None, str]:
     failures = []
     for executable in ("pip", "pip3"):
@@ -97,7 +102,7 @@ def _pip_command() -> tuple[str | None, str]:
     return None, "; ".join(failures)
 
 
-def preview(policy: Policy, actions: list[str] | None = None) -> dict:
+def _selection(policy: Policy, actions: list[str] | None) -> list[str]:
     selected = list(dict.fromkeys(actions or policy.maintenance))
     if not selected:
         raise StorageError("No maintenance action is enabled by machine policy")
@@ -107,10 +112,21 @@ def preview(policy: Policy, actions: list[str] | None = None) -> dict:
             raise StorageError("Unknown maintenance action: " + action)
         if action not in policy.maintenance:
             raise StorageError("Maintenance action is not enabled by machine policy: " + action)
+    return selected
+
+
+def preview(policy: Policy, actions: list[str] | None = None, *, bind_targets: bool = False) -> dict:
+    selected = _selection(policy, actions)
+    if bind_targets:
+        return _bound_preview(policy, selected)
     items = []
     for action in selected:
+        if action == "go-modcache":
+            items.extend(_bound_preview(policy, [action])["items"])
+            continue
         commands = [list(command) for command in COMMANDS[action]]
         reason = ""
+        details = {}
         if action == "pip":
             executable, reason = _pip_command()
             if executable:
@@ -118,27 +134,38 @@ def preview(policy: Policy, actions: list[str] | None = None) -> dict:
         elif shutil.which(commands[0][0]) is None:
             reason = commands[0][0] + " command is not available"
         elif action == "docker":
-            _, reason = _docker_ready()
+            details["inspection"] = docker.inspect()
+            try:
+                details["target"] = docker.maintenance_target()
+                commands = docker.bound_commands(details["target"])
+            except StorageError as exc:
+                reason = str(exc)
         if action == "nix" and PLATFORM == "darwin":
             commands = [["sudo", "-n", "-H", *command] for command in commands]
             if not reason and shutil.which("sudo") is None:
                 reason = "sudo command is not available"
-        note = NOTES[action] + " Preview only lists commands; no cleanup command was run."
+        note = NOTES[action] + " Read-only preview; no cleanup command was run."
         if action == "nix" and PLATFORM == "darwin":
             note += " Execution requires an existing sudo ticket; no password is read or prompted for."
         item = {"action": action, "available": not reason, "commands": commands,
-                "note": note + (" " + reason if reason else "")}
+                "note": note + (" " + reason if reason else ""), **details}
         if action == "brew":
             item["environment"] = dict(BREW_ENV)
         items.append(item)
     return {"execute": False, "items": items}
 
 
-def maintain(policy: Policy, actions: list[str] | None = None) -> dict:
-    """Execute opted-in actions; the CLI calls this only with explicit --yes."""
+def maintain(policy: Policy, actions: list[str] | None = None, *, approved_preview: dict | None = None) -> dict:
+    """Execute opted-in actions; approval receipts and locking belong to the caller."""
+    if approved_preview is not None:
+        return _maintain_approved(policy, _selection(policy, actions), approved_preview)
     data = preview(policy, actions)
-    for item in data["items"]:
+    for index, item in enumerate(data["items"]):
         if not item["available"]:
+            continue
+        if item["action"] == "go-modcache":
+            approved = {"execute": False, "items": [item]}
+            data["items"][index] = _maintain_approved(policy, ["go-modcache"], approved)["items"][0]
             continue
         item["note"] = NOTES[item["action"]]
         item["output"] = []
@@ -149,9 +176,14 @@ def maintain(policy: Policy, actions: list[str] | None = None) -> dict:
             elif item["action"] == "pip":
                 kwargs["env"] = _pip_environment()
             try:
+                if item["action"] == "docker":
+                    docker.verify_target(item["target"])
+                    kwargs["env"] = docker.bound_environment()
                 result = run_process(argv, **kwargs)
                 code = result.returncode
                 reason = _failure(code) if code else ""
+            except StorageError as exc:
+                code, reason = 1, str(exc)
             except subprocess.TimeoutExpired:
                 code, reason = 124, "command timed out"
             except OSError as exc:
@@ -160,6 +192,94 @@ def maintain(policy: Policy, actions: list[str] | None = None) -> dict:
             if code != 0:
                 item["available"] = False
                 item["note"] += f" {shlex.join(argv)}: {reason}; remaining steps were skipped."
+                break
+    data["execute"] = True
+    data["errors"] = [item["action"] for item in data["items"] if not item["available"]]
+    return data
+
+
+def _bound_preview(policy: Policy, selected: list[str]) -> dict:
+    items = []
+    for action in selected:
+        item = {"action": action, "available": False, "commands": [],
+                "note": NOTES[action] + " Read-only preview; no cleanup command was run."}
+        try:
+            binding = native_context.capture(action, policy, platform=PLATFORM)
+            item.update(available=True, binding=binding, target=binding["target"],
+                        commands=native_context.commands(action, binding, platform=PLATFORM))
+            if action == "nix" and PLATFORM == "darwin":
+                item["note"] += " Execution requires an existing sudo ticket; no password is read or prompted for."
+        except StorageError as exc:
+            item["note"] += " " + str(exc)
+        except (OSError, ValueError, TypeError, KeyError):
+            # Do not expose query stderr, environment values or private configuration.
+            item["note"] += " Native target binding is unavailable; a fresh preview is required."
+        if action == "brew":
+            item["environment"] = dict(BREW_ENV)
+        items.append(item)
+    return {"execute": False, "items": items}
+
+
+def _maintain_approved(policy: Policy, selected: list[str], approved: dict) -> dict:
+    """Use the approved set unchanged and revalidate each native step before writing."""
+    if (not isinstance(approved, dict) or approved.get("execute") is not False
+            or not isinstance(approved.get("items"), list)):
+        raise StorageError("A bound maintenance preview is required")
+    items = approved["items"]
+    if (any(not isinstance(item, dict) for item in items)
+            or [item.get("action") for item in items] != selected):
+        raise StorageError("Approved maintenance selection changed; generate a fresh preview")
+    # Check every item's shape before allowing any native mutation.
+    for item in items:
+        if type(item.get("available")) is not bool:
+            raise StorageError("Approved maintenance availability is invalid")
+        binding = item.get("binding")
+        if item["available"] and (not isinstance(binding, dict)
+                                  or binding.get("action") != item["action"]
+                                  or binding.get("version") != native_context.VERSION
+                                  or any(not isinstance(binding.get(key), dict)
+                                         for key in ("target", "cwd", "executable", "scope"))
+                                  or not isinstance(binding.get("roots"), list)):
+            raise StorageError("Approved maintenance target is missing; generate a fresh preview")
+    data = copy.deepcopy(approved)
+    stopped = False
+    for item in data["items"]:
+        if not item["available"]:
+            stopped = True
+            continue
+        action = item["action"]
+        item["note"] = NOTES[action]
+        item["output"] = []
+        if stopped:
+            item["available"] = False
+            item["note"] += " An earlier native action is unavailable or failed; remaining actions were skipped."
+            continue
+        # Step count comes from native semantics, never from saved JSON argv.
+        for step in range(2 if action == "docker" else 1):
+            argv = None
+            try:
+                current = native_context.verify(action, item["binding"], policy, platform=PLATFORM)
+                argv = native_context.commands(action, current, platform=PLATFORM)[step]
+                environment = native_context.execution_environment(action, current, platform=PLATFORM)
+                result = run_process(argv, capture=False, check=False, timeout=1800,
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                     env=environment, cwd=current["cwd"]["path"])
+                code = result.returncode
+                reason = _failure(code) if code else ""
+            except StorageError as exc:
+                code, reason = 1, str(exc)
+            except subprocess.TimeoutExpired:
+                code, reason = 124, "command timed out"
+            except (OSError, ValueError, TypeError, KeyError, IndexError):
+                code, reason = 1, "Native target or command is unavailable; generate a fresh preview"
+            output = {"returncode": code}
+            if argv is not None:
+                output["command"] = shlex.join(argv)
+            item["output"].append(output)
+            if code:
+                item["available"] = False
+                item["note"] += " " + reason + "; remaining steps were skipped."
+                stopped = True
                 break
     data["execute"] = True
     data["errors"] = [item["action"] for item in data["items"] if not item["available"]]

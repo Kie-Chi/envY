@@ -351,7 +351,7 @@
             }).rules;
           });
         in pkgs.runCommand "envy-storage-tests" {
-          nativeBuildInputs = [ python organize pkgs.restic pkgs.lsof ];
+          nativeBuildInputs = [ python organize pkgs.restic pkgs.lsof pkgs.git ];
         } ''
           export PYTHONPYCACHEPREFIX="$TMPDIR/pycache"
           export PYTHONPATH="${./resources/scripts}"

@@ -2,6 +2,22 @@
 
 更新日期：2026-11-12 UTC。envY 提供共享默认规则，机器按稳定 ID 增加、排除和局部覆盖。最新变更补齐微信和 Zotero 的更新缓存规则，收紧飞书和 VS Code 的暂存选择范围，并补充后台更新器拦截。下文保留 2026-11-11 的 NAS 合成归档验证与只读报告，历史统计按各自记录时间解释。
 
+## 2026-11-15 升级：操作预览与确认
+
+本节记录完整升级阶段 6 的源码实现；后文的真实隔离、NAS 与空间统计仍属于各自标注日期的历史证据。本次操作测试与故障注入使用合成临时文件和 fake providers；标准 Git 检查通过 Python 1347 项（47 跳过）、Storage 331 项（无跳过）、Rust 184 项（无跳过）、Codex 27 项（1 跳过）及 lint、agent、平台边界，独立复核确认已报告问题闭环。另有 Nix 2.33.1 本地 store 的只读元信息探针，仅验证 URI 与 feature 兼容性；未执行新的宿主清理、恢复、NAS 写入、apply 或调度启用。
+
+`storage capabilities --json` 提供动作、政策 opt-in、flags、副作用及 CLI/TUI 覆盖，不扫描或读取归档口令。TUI 逐命令覆盖与按键见 [TUI 前端边界](tui.md#storage-预览与确认)。首次 Storage 仍只 inspect；操作页只读取 capabilities，保存 plan 必须显式触发。
+
+`run PLAN`、显式非空选择的 `maintain`、`purge` 和 `restore RUN --target ABS` 支持两步协议：先用 `--preview --json` 获取预览，再用同一请求及 `--preview-token TOKEN --yes --json` 确认；两步 flags 不能混用。旧 CLI 默认语义保留，尤其旧 restore 仍直接写入，TUI 必须使用新协议。新 run 拒绝无 producer 来源证明的旧 plan，须主动重新生成，不能给任意 JSON 追加 hash 就成为可信计划。
+
+私有 token 绑定政策、源码、同一机器及宿主、state 文件系统身份、完整请求和计划/恢复/清退证据，默认有效期 300 秒。维护另绑定 executable、cwd、配置元数据与实际 cache/prefix/store：Docker 固定 context/endpoint/daemon/builder，Go 固定 cwd 与缓存，Go module cache 仍独立 opt-in。预览到确认及每步原生执行前复验；漂移、过期或无法证明目标时拒绝。原生 Nix 仅支持可证明的固定本地 store，确认 GC 保留 generations；`gc` 删除旧 generation 的行为仍独立。
+
+确认持有既有 state lock，严格同步单次 claim 的文件与目录并重读，再调用原有引擎。重复 token 只返回原结果或中断后的 unknown，不盲目重放；已消费结果读取仍检查请求与宿主归属。结果持久化或状态刷新失败会保留已知成功、逐项错误和 unknown，不伪称回滚。取消后无法证明的外部效果保持 unknown。
+
+purge 固定到预览批准的 `(run,path)` 和内容证据；新 run 或同 run 后来到期的条目不扩入。恢复预览不创建目标；远端证据校验可能读取归档并需要凭据。确认后只写新的绝对目标，held 与已有单文件 archive 复用同一恢复选择；远端通过现有 restic dump 流写入独占创建的 FD 并校验 SHA-256，不把最终目标路径交给 restic。输出名称及父目录复验不能视作应用参与的原子锁，失败可留下本次新建的部分目标；未知远端格式或目录归档仍不支持。
+
+init/check/gc 首版仅为可发现的 CLI 交接，展示完整 argv、目标、参数、退出方式与副作用，打开说明不会执行。`storage check` 内部固定 restic `check --read-data`，envY CLI 不接受额外 `--read-data`；gc 无 JSON，不能与 `maintain --nix` 混同。`run --scheduled` 仍只属后台政策，report 是模式。
+
 ## 共享规则与机器选择
 
 规则由 `modules/storage/rules/common.nix`、`darwin.nix`、`linux.nix` 提供，`default.nix` 组合当前平台贡献。路径从 `config.envy.user.home` 推导，机器无需导入 `hosts/default.nix` 才能获得默认规则。
@@ -27,7 +43,9 @@ envy.storage.rules.include.local-build-cache = {
 
 旧 Nix `rules = [ ... ];` 已迁移且会被类型检查拒绝。旧版本 manifest 的规则列表仍可读取；模型版本为 2，指纹含模型版本、规则元数据与最终政策，旧 plan 不可执行。config/setup 重写 managed block 时保留机器级 include、exclude、局部覆盖与自定义规则。
 
-当前选择：Air 为 `report`，29 条 Darwin 默认规则中因 native Go 选择排除 `go-build-cache`，得到 28 条有效规则；另一台 Darwin 保持 `manual`，获得 29 条默认规则；Linux 保持 `manual`，获得旧安装包与 Go 年龄规则两项。没有启用 auto 或定时器。`report` 阻止默认及定时执行；显式 `run --yes` 仍是写入操作。
+当前选择：Air 为 `manual`，29 条 Darwin 默认规则中因 native Go 选择排除 `go-build-cache`，得到 28 条有效规则；另一台 Darwin 保持 `manual`，获得 29 条默认规则；Linux 保持 `manual`，获得旧安装包与 Go 年龄规则两项。没有启用 auto 或定时器。`report` 阻止默认及定时执行；显式 `run --yes` 仍是写入操作。
+
+首次真实 manual 试跑于 2026-11-13 00:30（本机时间）完成：`037b3b8950b14c1cade72b5dc82cf1c3` 隔离两个旧微信日志，共 3,717,360 B（约 3.55 MiB），并核对原始与隔离后的 SHA-256、inode 和保留期。89 项因声明的进程仍在运行而保留；飞书在执行前已启动，因此先前可处理的两处飞书缓存也未移动。当前 CLI 将这些保护拒绝记入 `errors` 并返回 `partial_failure` / exit 1；两个日志的实际状态为 `quarantined`。隔离保留到 2026-12-13 00:30（+08:00）之后，尚未执行 purge，也未因此释放磁盘空间。
 
 ## 更新下载包规则
 
@@ -69,6 +87,123 @@ envy.storage.rules.include.local-build-cache = {
 相同路径及父子候选重叠会报告涉及的规则并拒绝整个 plan；执行存储 plan 前再次检查。文件执行前复核签名与内容，归档后读回比较 SHA-256；目录用子树相对路径、类型、大小与 mtime 的摘要复核结构和元数据，该摘要不等于逐文件内容哈希。隔离通过 rename 延迟释放，默认保留 30 天；rename 本身不立即释放空间。恢复与过期释放也需重新验证，归档不会自动 restic forget。
 
 organize-tool 使用本地打包的 3.3.0，负责 check/sim/选择；envY 负责重验与实际修改，restic 负责归档和恢复。实测 organize 的 locations.path 不展开通配符，目录 lastmodified 只检查目录自身 mtime；envY 分别补充路径展开和 recursiveAge。walker 跳过符号链接，无法据此绕过 envY 的安全校验。
+
+## 及时释放空间设计（待实施）
+
+本节是 design 范围内的方案，不是已实现的行为。工作计划与完整设计已通过独立 Reviewer、NixReviewer 审核，批准范围仅为 design。当前 Air 保持 manual/28，所有现有默认 action、30 天隔离、已隔离文件、NAS 合成演练及调度状态不变。本次不运行清理或 maintenance，不执行 apply、commit 或 push。
+
+**目标与动作契约**
+
+目标是让已经满足年龄、路径与活动保护条件的可丢弃条目，在一次明确执行中完成删除，不再额外等待 30 天隔离。即时释放不表示绕过现有 14/30 天年龄门限，也不表示应用运行时可以删除缓存。只需对应应用退出，不要求关机；缺少可靠在线维护接口的应用继续保留退出条件。
+
+| 通道 | 适用内容 | 执行结果与恢复能力 |
+|---|---|---|
+| `action = "delete"`（新增） | 经过用途验证且完整规则契约获准的可丢弃派生缓存 | 先记录、暂存与复查，同次执行删除；完成删除后无本地恢复副本 |
+| `action = "quarantine"`（保留） | 用途未确认、离线状态、更新事务、下载介质或需要回滚的内容 | 保留记录中的隔离期，到期仍需 purge；移动不释放文件数据空间 |
+| `action = "archive"`（保留） | 单独选择的普通文件归档 | 保留现有 NAS 验证、隔离与恢复语义，不在本次扩展目录 archive |
+| 原生 `maintenance`（保留独立入口） | Nix、Docker、Go、uv、npm、pip、Homebrew 所管理的对象 | 由对应工具处理引用、锁和索引，继续要求明确选择与 `--yes`，不混入规则调度 |
+
+不以 `quarantineDays = 0` 模拟 delete，不新增另一套 mode，不增加应用监控守护进程、关机钩子或自动退出/重启流程。manual/report/auto 继续只决定触发与执行方式。
+
+**现有规则的完整分类**
+
+“可重建”要求内容由仍保留的程序或源数据重新派生，不承担用户唯一副本、离线业务状态、安装事务或恢复材料的职责。重新下载依赖远端可用性，不能自动等同于可重建；日志历史也不可重建。下表覆盖 Darwin 的 29 个默认 ID，Linux 仍只有 `old-installers` 与 `go-build-cache`。
+
+| 分类 | 稳定 ID | 设计决定 |
+|---|---|---|
+| 首批用途验证候选（6） | `vscode-gpu-cache`、`codex-shader-cache`、`chrome-shader-cache`、`feishu-shader-cache`、`feishu-iron-shader-cache`、`steam-shader-cache` | 精确 Shader/GPU 子目录；核实重建来源和版本布局后，才可登记 delete 契约 |
+| 同批用途验证候选（1） | `chrome-code-cache` | 只考虑现有 `js`、`wasm` 子目录；继续要求浏览器与相关后台进程退出 |
+| 后续候选，当前继续隔离（4） | `chrome-cache`、`vscode-cache`、`vscode-cached-data`、`wechat-web-cache` | 进一步确认 HTTP、版本或嵌入式缓存的损失边界，首批不授予 delete |
+| 保留隔离（3） | `feishu-web-cache-aha`、`feishu-web-cache-iron`、`wechat-web-cachestorage` | Service Worker CacheStorage 可能保存离线业务内容；当前没有完整重建来源证据 |
+| 保留隔离（2） | `wechat-cache-dirs`、`wechat-cache-files` | 泛缓存范围较宽，不能仅凭大小、年龄或目录名推断内容可丢弃 |
+| 保留隔离（6） | `feishu-update`、`codex-sparkle`、`vscode-shipit`、`wechat-sparkle`、`zotero-update-archive`、`zotero-update-staging` | 现有年龄和进程条件不证明安装成功、事务结束或不再需要回滚；完成状态适配器单独设计 |
+| 保留隔离（2） | `vscode-vsix`、`vscode-vsix-trash` | 可能用于离线安装或旧版恢复，远端撤包和 `.trash` 名称均不能作为删除依据 |
+| 按诊断日志保留政策处理（3） | `feishu-logs`、`wechat-logs`、`vscode-logs` | 当前继续隔离；将来如直接删除，须以明确的日志保留约定审批，不以“可重建”审批 |
+| 保留隔离（1） | `old-installers` | 普通 Downloads 安装包可能是用户刻意保留的旧版或唯一安装介质 |
+| 原生维护优先（1） | `go-build-cache` | 保留 native Go 与年龄规则互斥；未选择原生维护时维持现有隔离规则 |
+
+上述 7 个首批 ID 只是验证对象，不是已获准删除的名单。本轮未验证真实应用清空后的重建，也未证明任何应用支持在线删除。尤其当前约 662 MiB 的飞书 CacheStorage 不属于首批即时删除范围，不能把目前约 834 MiB 的阻塞候选全部计为未来可立即回收量。
+
+原生通道继续保持各自边界：Nix 保留 generations/GC roots；Docker 只处理受 336h 条件约束的 builder/dangling images，不动 volumes/containers；Go 只清 build cache 而保留模块源码；uv 不加 force/ci；npm verify 按会写入的维护命令展示；pip 为整库 purge；Homebrew 的 prune 年龄不代表其所有影响都有统一年龄限制。
+
+**删除资格与单一来源**
+
+1. 在 storage 所有的版本化 catalog 中登记经过验证的删除契约。由同一份 Nix 定义生成 Nix 校验与执行端随包携带的可信契约资源，避免另手写一份 Python 路径白名单。资源含契约版本、平台与摘要；路径使用受限 home 占位模板，由已验证的机器 home 实例化。
+2. Nix 对最终 effective 规则断言，Python 再用随包契约独立核对。首版只允许把完整审核定义的 `action` 从 quarantine 改为 delete；平台、path、targets、depth、names、extensions、recursiveAge、minAgeDays、minSizeBytes、processes、optionalRoot、protectedOverrides 全部精确一致。即使仅把年龄改得更严格，首版也不自动推导授权，需审核契约变体。
+3. 稳定 ID、`source`、`overriddenFields`、用途说明及 manifest 内的 `deleteAllowed` 展示值都不是执行授权。自定义 ID、同 ID 改路径、扩大 glob、清空进程或伪造元数据均拒绝 delete，不静默降级为隔离。机器不能用一个 `rebuildable = true` 开关授予自己删除资格。
+4. 共享 catalog 默认 action 保持原样；后续仅在具体机器通过稳定 ID 显式选择已审核契约。排除规则同时撤销其资格和保护授权，Pro/Linux 不继承 Air 的删除选择。下例仅为未来 API，当前 schema 不接受 delete：
+
+```nix
+envy.storage.rules.include.chrome-code-cache.action = "delete";
+```
+
+同一资源生成函数必须接入四个入口：`modules/cores/util.nix` 的 `envyPackage`、`flake.nix` 的 `mkEnvyRuntime`、`mkDevShell` 和 storage check。可信资源及预期摘要由构建生成并绑定，不能只核对资源自报摘要或信任外部 manifest。固定的 catalog 生成输入清单（storage 定义、schema、生成器及其锁定输入）同时驱动构建指纹、checkout 校验和开发壳缓存键，不能动态采用外部资源提供的文件清单。
+
+已安装 wrapper 默认优先加载 checkout Python 时，必须核对当前 checkout 的 catalog 生成输入指纹与构建绑定的指纹；无法确认对应就拒绝 delete，并提示使用匹配的开发入口或 bundled runtime，不自动信任 checkout 的同名 JSON。`ENVY_USE_BUNDLED=1` 使用同一构建的源码与资源。执行端还核对平台、契约版本与构建绑定的预期摘要；资源缺失、不匹配或只有外部 manifest 时，delete 失败关闭，quarantine/archive 按受支持契约使用。不得通过任意 JSON 环境变量获得删除权限。资源摘要参与政策指纹；devShell 新增读取 `modules/storage` 时，必须同步把该目录及固定生成输入加入 `./envy` 的 cache key，防止复用旧资格。
+
+**同次删除的状态与故障处理**
+
+删除仍由 envY 执行，不交给 organize。保留年龄、声明进程、文件占用、受保护路径、同文件系统、所有者、符号链接/硬链接、父子重叠与签名复查；不允许以一次 lsof 无结果替代应用退出。
+
+```mermaid
+stateDiagram-v2
+    [*] --> prepared
+    prepared --> staged: rename
+    staged --> deleting: verified
+    deleting --> deleted: complete
+    prepared --> skipped: busy_before_move
+    staged --> held: guard_blocks
+    deleting --> partial: incomplete_removal
+    deleting --> unknown: interrupted_and_missing
+```
+
+以上图名仅为说明；实际 run 使用独立的 `delete-prepared`、`delete-staged`、`deleting`、`deleted`、`delete-held`、`delete-partial`、`delete-unknown` 状态，不复用会被旧 purge 识别为到期隔离的状态，也不为 delete 伪造 30 天 `expiresAt`。
+
+执行顺序：
+
+1. 验证新计划版本、政策与可信契约摘要，检查计划未执行过；重新检查原路径、年龄、身份、目录内容结构、应用进程与占用。发现已知占用或正常变动时，在移动前跳过。
+2. 先持久记录原路径、对象身份、动作、暂存目标、文件 SHA-256 或目录条目清单，再创建独占的私有批次目录。首次移动前，严格同步新建 staging/批次目录及必要祖先的目录项，确认暂存入口已持久化。目录清单保存相对路径、类型和身份/签名，既保留摘要也保留清单，以支持部分删除后对剩余项的核对；不能把现有仅名称/类型/大小/mtime 的 treeHash 宣称为内容哈希。
+3. 在同一文件系统把对象 rename 到 `state/staging/<run>/<index>`。源、目标父目录通过描述符绑定，拒绝已有批次目录/目标、链接和路径替换；暂存后比对实际 inode、文件哈希或目录清单。原路径若被应用重新创建，后续处理仍只指向暂存对象，不覆盖或追删新对象。
+4. 再检查声明进程与暂存对象占用，复核身份、清单和当前政策契约。记录并持久化 `deleting` 后，使用绑定目录描述符的 unlink 或抗符号链接替换的递归删除；平台缺少所需 FD 能力时，在移动前拒绝 delete。
+5. 观察到删除完成后，先严格同步承载最终 unlink/rmdir 的父目录，再提交并同步 `deleted` 记录及其父目录。同步失败时保持非终态并返回错误，不能仅因路径当前不存在就提交 deleted。若最终写记录失败，也不能把它报告为原数据完整保留。递归删除已经开始后失败，记录 `delete-partial` 和剩余条目，明确已删除部分不可由本地暂存恢复；中断后对象缺失且没有已提交的完成记录时进入 delete-unknown，不计已验证删除量。
+
+持久化栅栏覆盖完整顺序：记录文件及其父目录同步成功；首次移动前同步新建暂存目录及必要祖先的目录项；rename 后同步源、目标父目录；最终 unlink/rmdir 后同步其父目录，然后才持久提交 deleted。现有 secure_io 的目录 fsync 是 best-effort，不能原样作为强保证；实现时增加 storage 删除路径专用的严格处理，不改变其它业务的 I/O 默认行为。平台验证未证明目录同步与所需持久化语义前，不承诺断电恢复，也不启用该平台 delete。即使已同步，也不能把进程检查/文件检查视为与应用启动、现存 FD 写入之间的原子锁；暂存、FD 绑定与复核用于缩小窗口，首次资格只限已证明可丢弃的派生数据。
+
+| 中断位置 | 对账与恢复行为 |
+|---|---|
+| 意图已记录、rename 未发生 | 原对象仍在且身份匹配时记为未执行，保留原对象；不重新搜索同名新对象继续删 |
+| rename 后，删除尚未开始 | 通过暂存位置与身份对账；完整内容保留，可恢复到新目标；不因重启自动删除 |
+| 暂存后活动检查阻塞 | `delete-held`，展示已暂存未释放的量；不伪装成“原路径完全未动”的 skipped |
+| 目录已删除一部分 | `delete-partial`，保留剩余部分；restore 仅报告部分恢复，不能声称完整恢复 |
+| 已写 deleting、重启时暂存对象缺失 | `delete-unknown`；可能已删除或被外部移动，不重试同名原路径，不计作已验证的删除/释放量 |
+| 删除完成并记录提交 | `deleted`，恢复明确返回不可用；无隐含本地或 NAS 备份 |
+
+恢复沿用现有 restore 的“写入新绝对目标、不覆盖现有目标”原则。为使暂存数据仍由 storage 管理，拟给既有 purge 增加精确 `--run <id>`：默认 purge（包括定时路径）不处理 delete-held/partial；只有明确指定 run 且 `--yes` 时才允许尝试完成该删除。继续前必须校验当前规则仍选择同一已审核 delete 契约、应用与占用条件满足、剩余清单只是原清单的子集且每个剩余文件身份匹配，没有新文件或链接。目录因本次删除而变化的 mtime/size 与身份校验分开处理。任何未知项、变化或政策不符都保留剩余数据。对旧 quarantine，即使指定 --run 也仍检查原 expiresAt，不能提前释放。重复处理 deleted 只返回现状。
+
+**运行结果和空间口径**
+
+已知应用运行、已知文件占用、正常的候选变化或消失分别写入带结构化 reason code 的 skipped；全为预期跳过时 `ok=true`、exit 0，并明确显示“删除 0、跳过 N”。暂存后保留另记 retained。权限/进程探测失败、lsof 超时或异常 stderr 属于活动状态未知，进入 errors、exit 1；非法政策、越界、受保护路径、错误所有者、链接、持久化失败和部分删除也不降为普通 busy。实现用明确检查结果或异常类型区分，不能按错误文案匹配。`delete-unknown` 明确进入 errors、exit 1；仅因已知占用形成的 `delete-held` 进入 retained，在没有其它错误时 exit 0。
+
+终端 plan/run 增加 Action，并分别展示待删除估算、待隔离量、已删除量、已隔离量、占用跳过和失败。仅通过年龄与进程检查的候选仍标明“执行前需占用/完整性复查”，不承诺该字节数已经可释放。JSON envelope 保持 schemaVersion 1，新增 skipped、retained 和汇总字段；errors 只装真实错误，保留现有顶层字段与类型，并显式测试忙碌退出码语义变化。
+
+文件和目录统一分别统计逻辑量与分配量，解决当前文件 st_size、目录 st_blocks 混合相加的口径；原 `bytes` 保留兼容含义并标为旧口径，不悄悄重定义。报告区分候选分配量估算、隔离移动量、已删除条目分配量估算、保留/未知量和同一文件系统的 statvfs 前后差值。APFS clone、snapshot、尚未关闭的 FD 和并发写入会影响实际空闲空间，不把条目大小或删除估算写成保证释放量；原生工具自己的回收报告另列来源。
+
+**版本兼容与实施验收**
+
+规划将 storage MODEL_VERSION 从 2 提升到 3，并将可信契约摘要与所有新增政策字段纳入指纹，旧计划全部重新生成。新 run 使用独立 recordVersion 2，缺少该字段的已知旧记录按 legacy 1 读取；未知记录版本拒绝破坏性操作。旧列表 manifest 的 quarantine/archive 保持可读，delete 必须有新 effective 契约和随包可信资源。新旧 CLI 混用不作为受支持路径；新 delete 暂存使用独立 staging 路径与状态，避免旧 purge 将其误认为到期隔离。
+
+已有 quarantine/archive runs 不迁移、不缩短期限；`037b3b8950b14c1cade72b5dc82cf1c3` 的两个日志继续保留原 expiresAt。既有 NAS 合成文件、snapshot、Codex 恢复压缩包不受新 action 影响。阶段顺序与完成条件：
+
+| 阶段 | 工作 | 完成条件 |
+|---|---|---|
+| A：结果语义 | 区分 skipped、retained、errors，加入 Action 和明确空间口径 | 复现“2 项隔离、89 项忙碌”时返回预期跳过；探测未知仍 exit 1；无真实文件操作 |
+| B：执行能力 | 新增 delete 契约、可信资源、FD 暂存删除、记录与恢复边界 | 只在隔离 fixture 验证；所有现有默认动作与三机模式/规则数不变；尚不启用真实删除 |
+| C：逐规则用途验证 | 首先验证 7 个候选的可重建来源、实际版本布局及损失边界，能使用隔离 profile 的先用隔离 profile | 只有具备证据的完整规则进入可信契约；未确认的候选仍隔离，不为凑名单扩大范围 |
+| D：后续独立启用 | 在指定机器明确选择获准规则 action，再生成新计划并审核一次真实试跑范围 | 保留 manual；auto、调度、真实删除与 apply 都不由本次 design 评审授权 |
+
+必要回归：完整契约阳例和所有字段篡改/伪造元数据负例；旧 manifest/plan/run 与未知版本；应用在 plan 后及 rename 后启动、FD 写入、活动探测异常；符号链接/硬链接/不安全所有者、父子冲突、跨文件系统、源路径替换和重建；每个记录/rename/fsync/删除边界的故障注入；目录部分删除、删除后最终记录失败、delete-unknown、精确 run 的继续删除与部分 restore；30 天旧保留期不可绕过；JSON 混合结果与字段类型、Action 展示及 APFS 计量。可信资源变更必须使计划和开发壳缓存同时失效。
+
+实现时复用 `storage-rule-selection`、专用 `envy-storage-tests`、`envy-lint`、受影响机器求值及相关 JSON 测试；Linux 增补自身 catalog 断言，不能把固定 Darwin fixture 在 Linux 跑通当作 Linux catalog 覆盖。设计阶段未重跑测试或 Nix 构建。本机只读能力核对显示 Nix Python 3.13.13 支持 FD 相对 open/stat/unlink、O_NOFOLLOW 和抗链接替换的 rmtree；Linux 实际运行与严格目录同步/断电语义留待实施 fixture 验证。
 
 ## 迁移基线与 2026-11-11 只读报告
 
@@ -267,5 +402,5 @@ sftp:xikai@192.168.255.139:/vol1/1000/share/envY/archive/macbook_air
 专用仓库初始化和本轮合成文件的 NAS 归档/恢复已获授权并完成，后续不再将它们列为未验证项目。当前剩余关卡：
 
 1. 单独选择真实用户数据的文件型 archive 规则；当前没有把缓存统一改为 archive，目录 archive 仍未支持。
-2. 分别审核真实清理、auto/定时任务和 apply。应用退出后重新 plan，逐项审阅，再决定 run/purge/native maintenance 的 --yes；本轮没有获得这些执行授权。
+2. Air 已获授权改为 manual 并完成上述一次真实隔离试跑。后续新增清理、到期 purge、原生维护、auto/定时任务和 apply 仍按各自具体范围授权；应用退出后应重新 plan，再决定执行。
 3. 若需要大规模 archive、跨网运行或真实 NAS 故障演练，另定路径、数据量、恢复与保留策略。当前测试 state 没有接入主机调度；测试副本和 snapshot 的删除也应明确范围，不自动 forget/prune。

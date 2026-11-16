@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import signal
+import stat
 import subprocess
 import tempfile
 import threading
@@ -134,8 +135,8 @@ class Archive:
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise StorageError("restic did not return a complete snapshot") from exc
 
-    def content_hash(self, snapshot: str, path: str) -> str:
-        # Dump to a streaming hash rather than restoring a second large local copy.
+    def _dump(self, snapshot: str, path: str, destination_fd: int | None = None) -> str:
+        # The native process receives only the archive source, never the destination path.
         with tempfile.TemporaryFile() as errors:
             with subprocess.Popen(self._argv(["dump", snapshot, path]), env=self.environment(),
                                   stdout=subprocess.PIPE, stderr=errors, start_new_session=True) as process:
@@ -148,13 +149,41 @@ class Archive:
                 timer.daemon = True
                 timer.start()
                 try:
-                    digest = hashlib.file_digest(process.stdout, "sha256").hexdigest()
+                    digest = hashlib.sha256()
+                    while chunk := process.stdout.read(1024 * 1024):
+                        digest.update(chunk)
+                        if destination_fd is not None:
+                            remaining = memoryview(chunk)
+                            while remaining:
+                                written = os.write(destination_fd, remaining)
+                                if written <= 0:
+                                    raise StorageError("Archive restore write failed")
+                                remaining = remaining[written:]
                     code = process.wait()
+                except BaseException:
+                    terminate()
+                    process.wait()
+                    raise
                 finally:
                     timer.cancel()
                 if code:
                     raise StorageError("Archive content verification failed; local file retained")
-                return digest
+                return digest.hexdigest()
+
+    def content_hash(self, snapshot: str, path: str) -> str:
+        return self._dump(snapshot, path)
+
+    def restore_file(self, snapshot: str, path: str, destination_fd: int, expected_sha256: str) -> None:
+        info = os.fstat(destination_fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid()
+                or info.st_size != 0 or os.lseek(destination_fd, 0, os.SEEK_CUR) != 0
+                or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)):
+            raise StorageError("Archive restore requires a new exclusive regular file")
+        if self._dump(snapshot, path, destination_fd) != expected_sha256:
+            raise StorageError("Restored archive content did not match its record")
+        after = os.fstat(destination_fd)
+        if (after.st_dev, after.st_ino, after.st_nlink) != (info.st_dev, info.st_ino, 1):
+            raise StorageError("Archive restore destination identity changed")
 
     def restore(self, snapshot: str, target: Path, paths: list[str]) -> None:
         args = ["restore", snapshot, "--target", str(target), "--verify"]

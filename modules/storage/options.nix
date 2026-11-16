@@ -76,7 +76,7 @@ in
         description = "Resolved rules with IDs, origins and overridden field names.";
       };
     };
-    maintenance = lib.genAttrs [ "nix" "docker" "go" "uv" "npm" "pip" "brew" ]
+    maintenance = lib.genAttrs [ "nix" "docker" "go" "go-modcache" "uv" "npm" "pip" "brew" ]
       (name: mkOption {
         type = types.bool;
         default = false;

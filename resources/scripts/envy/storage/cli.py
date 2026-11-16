@@ -12,7 +12,7 @@ from rich.table import Table
 
 from envy import jsonio, log
 from envy.evaluation import machine_manifest
-from envy.storage import lifecycle, maintenance, planner
+from envy.storage import contracts, inspection, lifecycle, maintenance, planner, receipts
 from envy.storage.backend import Archive
 from envy.storage.model import StorageError, policy_from_manifest, rule_details
 from envy.storage.state import locked, read_record, records
@@ -37,17 +37,27 @@ def _perform(command, json_output, operation):
         data = operation()
     except (StorageError, OSError) as exc:
         if json_output:
-            jsonio.emit_error(f"storage {command}", str(exc), code="storage_error")
+            jsonio.emit_error(f"storage {command}", str(exc), code=getattr(exc, "code", "storage_error"))
         else:
             log.error("storage", str(exc))
         raise typer.Exit(1) from exc
-    failed = bool(data.get("errors")) or data.get("ok") is False
+    failed = bool(data.get("errors")) or bool(data.get("unknown")) or data.get("ok") is False or data.get("state") in {"partial", "unknown"}
     if json_output:
         jsonio.emit(f"storage {command}", data=data, ok=not failed,
-                    error={"code": "partial_failure", "message": "Storage operation failed; inspect rule results and errors"}
-                    if failed else None)
+                    error={"code": "unknown_operation" if data.get("state") == "unknown" else "partial_failure", "message": "Storage operation failed; inspect rule results and errors"}
+                    if failed else None, warnings=data.get("warnings", []))
     else:
-        if command == "plan" or "candidates" in data:
+        if data.get("contractVersion") == 1 and data.get("kind") in {"preview", "result"}:
+            log.console.print(f"Storage {data['operation']}: {data['state']}", markup=False)
+            log.console.print("Request: " + str(data["request"]), markup=False)
+            jsonio.write_document(data["preview"] if data["kind"] == "preview" else data["result"])
+            if data["kind"] == "preview":
+                log.console.print("Preview token: " + data["previewToken"], markup=False)
+                log.console.print("Expires at: " + str(data["expiresAt"]), markup=False)
+                log.hint("Confirm the same request with --preview-token TOKEN --yes; cancellation runs nothing.")
+            for item in [*data["errors"], *data["unknown"]]:
+                log.console.print(str(item), markup=False)
+        elif command == "plan" or "candidates" in data:
             table = Table(title=f"Storage plan {data.get('id', '')}")
             for name in ("Rule", "Targets", "Entries", "GiB", "Blocked", "Note"):
                 table.add_column(name)
@@ -71,6 +81,50 @@ def _perform(command, json_output, operation):
                               "skipped" if item.get("skipped") else "ok" if item.get("ok") else "failed",
                               item.get("error") or item.get("reason", ""))
             log.console.print(table)
+        elif command == "inspect":
+            table = Table(title="Storage inspection (report only)")
+            for name in ("Item", "Allocated GiB", "Logical GiB", "Status", "Note"):
+                table.add_column(name)
+            for entry in data.get("items", []):
+                def amount(key):
+                    value = entry.get(key)
+                    return "unknown" if value is None else f"{value / 2**30:.3f}"
+                table.add_row(entry["id"], amount("allocatedBytes"), amount("logicalBytes"),
+                              entry["status"], entry["note"])
+            log.console.print(table)
+            native = data.get("reports", {}).get("docker", {})
+            if native:
+                native_table = Table(title="Docker (internal objects; rows are not additive)")
+                for name in ("Type", "Count", "Size GiB", "Native reclaimable GiB", "Policy estimate GiB"):
+                    native_table.add_column(name)
+                for name in ("images", "buildCache", "volumes", "containers"):
+                    group = native.get(name, {})
+                    def native_amount(key):
+                        value = group.get(key)
+                        return "unknown" if value is None else f"{value / 2**30:.3f}"
+                    native_table.add_row(name, str(group.get("count", "unknown")),
+                                         native_amount("logicalBytes"), native_amount("nativeReclaimableBytes"),
+                                         native_amount("policyEligibleBytes"))
+                log.console.print(native_table)
+                log.console.print("Docker status: " + native.get("status", "unknown"), markup=False)
+                if native.get("reason"):
+                    log.console.print(str(native["reason"]), markup=False)
+            applications = data.get("reports", {}).get("applications", {}).get("reports", {})
+            if applications:
+                codex = applications.get("codex", {})
+                current = codex.get("current") or {}
+                log.console.print("Codex current: " + str(current.get("version") or "unknown")
+                                  + "; rollback: " + str(codex.get("rollbackVersion") or "unknown")
+                                  + "; process coverage: " + codex.get("processStatus", "unknown"), markup=False)
+                vscode = applications.get("vscode", {})
+                log.console.print("VS Code updater running: " + str(vscode.get("updaterRunning"))
+                                  + "; update completion: " + vscode.get("completionStatus", "unknown"), markup=False)
+            for project in data.get("reports", {}).get("projects", {}).get("projects", []):
+                log.console.print("Project: " + str(project.get("root") or project.get("requestedPath"))
+                                  + "; status: " + project.get("status", "unknown"), markup=False)
+            log.hint("Full paths, ownership and activity evidence: envy storage inspect --json")
+            for warning in data.get("warnings", []):
+                log.warn("storage", warning)
         elif command == "maintain":
             table = Table(title="Storage maintenance")
             for name in ("Action", "Available", "Commands", "Note"):
@@ -80,13 +134,50 @@ def _perform(command, json_output, operation):
                               " ; ".join(" ".join(command) for command in item.get("commands", [])),
                               item.get("note", ""))
             log.console.print(table)
+            for item in data.get("items", []):
+                native = item.get("inspection")
+                if native:
+                    log.console.print("Docker report status: " + native.get("status", "unknown"), markup=False)
+                    for group_name in ("images", "buildCache"):
+                        group = native.get(group_name, {})
+                        eligible = group.get("policyEligibleBytes")
+                        amount = "unknown" if eligible is None else f"{eligible / 2**30:.3f} GiB estimate"
+                        log.console.print(group_name + " policy eligible: " + amount, markup=False)
             if not data.get("execute"):
-                log.hint("Execute selected actions with: envy storage maintain --yes --nix/--docker/--go/--uv/--npm/--pip/--brew")
+                log.hint("Execute selected actions with: envy storage maintain --yes --nix/--docker/--go/--go-modcache/--uv/--npm/--pip/--brew")
         else:
-            log.console.print_json(data=data)
+            jsonio.write_document(data)
     if failed:
         raise typer.Exit(1)
     return data
+
+
+def _preview_mode(preview: bool, token: str | None, yes: bool) -> bool:
+    if preview and (yes or token is not None):
+        raise StorageError("--preview cannot be combined with --yes or --preview-token", code="invalid_preview")
+    if token is not None and not yes:
+        raise StorageError("--preview-token requires --yes", code="invalid_preview")
+    return preview or token is not None
+
+
+def _approved_flow(operation: str, policy, state, selected: dict, preview: bool, token: str | None):
+    return (receipts.preview(operation, policy, state, selected) if preview
+            else receipts.confirm(operation, policy, state, selected, token))
+
+
+@app.command("capabilities")
+def cmd_capabilities(json_output: bool = typer.Option(False, "--json", help="Emit JSON.")):
+    """Describe commands and maintenance policy without scanning or probing tools."""
+    _perform("capabilities", json_output, lambda: contracts.capabilities(machine_manifest()))
+
+
+@app.command("inspect")
+def cmd_inspect(
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+    project: list[Path] = typer.Option([], "--project", help="Inspect generated artifacts in this explicit Git project."),
+):
+    """Inspect known local storage hotspots without plans, cleanup or service startup."""
+    _perform("inspect", json_output, lambda: inspection.inspect(Path.home(), projects=project))
 
 
 @app.command("plan")
@@ -104,12 +195,20 @@ def cmd_run(
     plan_id: Optional[str] = typer.Argument(None, help="Saved plan ID; omit to create a fresh plan."),
     yes: bool = typer.Option(False, "--yes", help="Execute the planned lifecycle actions."),
     scheduled: bool = typer.Option(False, "--scheduled", hidden=True),
+    preview: bool = typer.Option(False, "--preview", help="Create a bound preview for an explicitly saved plan."),
+    preview_token: Optional[str] = typer.Option(None, "--preview-token", help="Confirm this preview token with --yes."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ):
     """Preview by default; execute an approved plan or the configured scheduled policy."""
     def operation():
+        modern = _preview_mode(preview, preview_token, yes)
+        if scheduled and modern:
+            raise StorageError("Scheduled runs do not accept preview flags", code="invalid_preview")
         policy, state = _context()
         with locked(state):
+            if modern:
+                selected = receipts.request("run", plan_id=plan_id)
+                return _approved_flow("run", policy, state, selected, preview, preview_token)
             if scheduled and policy.mode == "manual":
                 raise StorageError("Scheduled storage execution is disabled in manual mode")
             if scheduled and (plan_id or yes):
@@ -159,19 +258,24 @@ def cmd_status(json_output: bool = typer.Option(False, "--json", help="Emit JSON
                                 "passwordFile": _password_status(policy.password_file),
                                 "repositoryChecked": False},
                     "latestPlan": max(records(state, "plans"), key=lambda plan: plan["createdAt"], default=None),
-                    "runs": records(state, "runs")}
+                    "runs": records(state, "runs"), "operations": receipts.summaries(state)}
     _perform("status", json_output, operation)
 
 
 @app.command("purge")
 def cmd_purge(
     yes: bool = typer.Option(False, "--yes", help="Delete expired, unchanged quarantine files."),
+    preview: bool = typer.Option(False, "--preview", help="Create a bound preview of quarantine deletion."),
+    preview_token: Optional[str] = typer.Option(None, "--preview-token", help="Confirm this preview token with --yes."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ):
     """Preview or release expired quarantine files; archive snapshots are retained."""
     def operation():
+        modern = _preview_mode(preview, preview_token, yes)
         policy, state = _context()
         with locked(state):
+            if modern:
+                return _approved_flow("purge", policy, state, receipts.request("purge"), preview, preview_token)
             return lifecycle.purge(policy, state, execute=yes)
     _perform("purge", json_output, operation)
 
@@ -180,12 +284,21 @@ def cmd_purge(
 def cmd_restore(
     run_id: str = typer.Argument(help="Storage run ID from status."),
     target: Path = typer.Option(..., "--target", help="New directory for recovered files."),
+    preview: bool = typer.Option(False, "--preview", help="Read recovery metadata without creating the target."),
+    preview_token: Optional[str] = typer.Option(None, "--preview-token", help="Confirm this preview token with --yes."),
+    yes: bool = typer.Option(False, "--yes", help="Confirm recovery with --preview-token."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ):
     """Recover a run into a new directory, preserving original path structure."""
     def operation():
+        modern = _preview_mode(preview, preview_token, yes)
+        if yes and not preview_token:
+            raise StorageError("Restore --yes requires --preview-token", code="invalid_preview")
         policy, state = _context()
         with locked(state):
+            if modern:
+                selected = receipts.request("restore", run_id=run_id, target=target)
+                return _approved_flow("restore", policy, state, selected, preview, preview_token)
             return lifecycle.restore(policy, state, run_id, target)
     _perform("restore", json_output, operation)
 
@@ -195,20 +308,27 @@ def cmd_maintain(
     nix: bool = typer.Option(False, "--nix", help="Collect unreferenced Nix store paths, keeping generations."),
     docker: bool = typer.Option(False, "--docker", help="Prune Docker build cache and dangling images older than 336h."),
     go: bool = typer.Option(False, "--go", help="Clean the Go build cache."),
+    go_modcache: bool = typer.Option(False, "--go-modcache", help="Remove all Go module downloads; no age cutoff, requires policy opt-in."),
     uv: bool = typer.Option(False, "--uv", help="Maintain the uv cache."),
     npm: bool = typer.Option(False, "--npm", help="Maintain the npm cache."),
     pip: bool = typer.Option(False, "--pip", help="Maintain the pip cache."),
     brew: bool = typer.Option(False, "--brew", help="Maintain Homebrew caches."),
     yes: bool = typer.Option(False, "--yes", help="Execute instead of previewing."),
+    preview: bool = typer.Option(False, "--preview", help="Create a bound preview; explicit action flags are required."),
+    preview_token: Optional[str] = typer.Option(None, "--preview-token", help="Confirm this preview token with --yes."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ):
     """Preview or run explicit native maintenance; never part of the schedule."""
     def operation():
+        modern = _preview_mode(preview, preview_token, yes)
         policy, state = _context()
-        actions = [name for name, enabled in (("nix", nix), ("docker", docker), ("go", go),
-                                             ("uv", uv), ("npm", npm), ("pip", pip),
-                                             ("brew", brew)) if enabled]
+        flags = {"nix": nix, "docker": docker, "go": go, "go-modcache": go_modcache,
+                 "uv": uv, "npm": npm, "pip": pip, "brew": brew}
+        actions = [name for name in maintenance.ACTIONS if flags[name]]
         with locked(state):
+            if modern:
+                selected = receipts.request("maintain", actions=actions)
+                return _approved_flow("maintain", policy, state, selected, preview, preview_token)
             if yes:
                 return maintenance.maintain(policy, actions or None)
             return maintenance.preview(policy, actions or None)

@@ -500,6 +500,34 @@
           piPackage = inputs.pi.packages.${system}.default;
         };
 
+      mkEnvySourceCheck = system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          python = pkgs.python3.withPackages (ps: [
+            ps.typer ps.rich ps.prompt-toolkit ps.pyyaml ps.tomli-w
+          ]);
+        in pkgs.runCommand "envy-source-tests" {
+          passthru.bootProbe = import ./checks/runtime/boot.nix { inherit pkgs; };
+          passthru.installProbe = import ./checks/runtime/install.nix { inherit pkgs; };
+          passthru.fullProbe = import ./checks/runtime/full.nix { inherit pkgs; };
+          nativeBuildInputs = [ python pkgs.git (lib.getBin pkgs.nix) ]
+            ++ lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ pkgs.ps ];
+        } ''
+          export HOME="$TMPDIR/home"
+          export PYTHONPYCACHEPREFIX="$TMPDIR/pycache"
+          mkdir -p "$HOME"
+          ${lib.optionalString pkgs.stdenv.hostPlatform.isDarwin ''
+            export ENVY_RUNTIME_TEST_DARWIN_PS=${pkgs.ps}/bin/ps
+            export ENVY_RUNTIME_DARWIN_PS=${pkgs.ps}/bin/ps
+          ''}
+          python -m unittest discover -s ${./.}/checks/runtime -p 'test_*.py'
+          python ${./.}/checks/runtime/source_visibility.py \
+            --scripts ${./.}/resources/scripts \
+            --nixpkgs-lib ${nixpkgs}/lib \
+            --nix ${lib.getBin pkgs.nix}/bin/nix \
+            --git ${pkgs.git}/bin/git > "$out"
+        '';
+
       mkGithubActionsCheck = system:
         import ./checks/github-actions.nix {
           pkgs = nixpkgs.legacyPackages.${system};
@@ -882,6 +910,7 @@
       checks.aarch64-darwin.secret-safety = mkSecretSafetyCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-lint = mkEnvyLintCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-github-actions = mkGithubActionsCheck "aarch64-darwin";
+      checks.aarch64-darwin.envy-source-tests = mkEnvySourceCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-agent-tests = mkEnvyAgentCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-powerline-tests = mkEnvyPiPowerlineCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-auto-assigned-tests = mkEnvyPiAutoAssignedCheck "aarch64-darwin";
@@ -905,6 +934,7 @@
       checks.x86_64-linux.secret-safety = mkSecretSafetyCheck "x86_64-linux";
       checks.x86_64-linux.envy-lint = mkEnvyLintCheck "x86_64-linux";
       checks.x86_64-linux.envy-github-actions = mkGithubActionsCheck "x86_64-linux";
+      checks.x86_64-linux.envy-source-tests = mkEnvySourceCheck "x86_64-linux";
       checks.x86_64-linux.envy-agent-tests = mkEnvyAgentCheck "x86_64-linux";
       checks.x86_64-linux.pi-powerline-tests = mkEnvyPiPowerlineCheck "x86_64-linux";
       checks.x86_64-linux.pi-auto-assigned-tests = mkEnvyPiAutoAssignedCheck "x86_64-linux";

@@ -37,6 +37,7 @@
 
   # --- STORAGE CONFIG ---
   envy.storage.mode = "manual";
+  envy.storage.maintenance.go-modcache = false;
   envy.storage.archive.repository = "sftp:xikai@192.168.255.139:/vol1/1000/share/envY/archive/macbook_air";
   envy.storage.archive.mountSource = "";
 

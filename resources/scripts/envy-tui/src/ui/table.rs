@@ -277,10 +277,15 @@ pub(super) fn render_empty_state(
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(""),
-            Line::from(Span::styled(title.to_string(), theme::heading())),
+            Line::from(Span::styled(title.to_string(), match title.chars().next() {
+                Some('✓') => theme::heading().fg(theme::OK),
+                Some('!' | '?') => theme::heading().fg(theme::WARN),
+                Some('○') => theme::heading().fg(theme::MUTED),
+                _ => theme::heading(),
+            })),
             Line::from(""),
-            Line::from(message.to_string()),
-            Line::from(Span::styled(action.to_string(), theme::muted())),
+            Line::from(Span::styled(if message.is_empty() { action.to_string() } else { message.to_string() }, theme::muted())),
+            Line::from(Span::styled(if message.is_empty() { String::new() } else { action.to_string() }, theme::muted())),
         ])
         .alignment(Alignment::Center)
         .wrap(Wrap { trim: false })

@@ -115,7 +115,7 @@ fn configure_settings_renders_editable_values() {
     terminal.draw(|frame| draw(frame, &mut app)).unwrap();
     let text = buffer_text(terminal.backend().buffer());
     assert!(text.contains("Settings"));
-    assert!(text.contains("envy.mirrors.mode"));
+    assert!(text.contains("Mirrors · Profile"));
 }
 
 fn settings_app(payload: Value, selected: usize) -> App {
@@ -149,6 +149,13 @@ fn settings_show_backend_metadata_and_distinguish_same_labels() {
         .draw(|frame| configure::render_settings(frame, &app, frame.area()))
         .unwrap();
     let text = buffer_text(terminal.backend().buffer());
+    assert!(text.contains("first · Model"));
+    assert!(text.contains("second · Model"));
+    assert!(text.contains("envy.agents.second.model"));
+    assert!(!text.contains("TYPE"));
+    app.show_help = true;
+    terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+    let text = buffer_text(terminal.backend().buffer());
     for expected in [
         "envy.agents.second.model",
         "AGENTS",
@@ -161,6 +168,7 @@ fn settings_show_backend_metadata_and_distinguish_same_labels() {
     ] {
         assert!(text.contains(expected), "Missing {expected}:\n{text}");
     }
+    app.show_help = false;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let chooser = app.setting_chooser.as_ref().unwrap();
@@ -168,10 +176,27 @@ fn settings_show_backend_metadata_and_distinguish_same_labels() {
         chooser.key,
         crate::model::SettingKey::Config("envy.agents.second.model".into())
     );
-    assert!(chooser.title.contains("envy.agents.second.model"));
+    assert_eq!(chooser.title, "second · Model");
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.pending_setting.as_ref().unwrap().value, "third");
+}
+
+#[test]
+fn settings_endpoints_and_profiles_keep_their_owner_visible() {
+    let mut app = settings_app(json!({"fields": [
+        {"path":"envy.llm.endpoints.stepfun.baseUrl", "prompt":"LLM endpoint base URL", "value":"https://one.example"},
+        {"path":"envy.llm.endpoints.deepseek.baseUrl", "prompt":"LLM endpoint base URL", "value":"https://two.example"},
+        {"path":"envy.agents.pi.model", "prompt":"Model identifier", "value":"model-one"},
+        {"path":"envy.agentProfiles.pi.model", "prompt":"Model identifier", "value":"model-two"}
+    ]}), 2);
+    for (width, height) in [(80, 24), (120, 30), (180, 36)] {
+        let (text, _) = render(&mut app, width, height);
+        for label in ["stepfun · Base URL", "deepseek · Base URL", "pi · Model", "profile/pi · Model"] {
+            assert!(text.contains(label), "missing {label} at {width}:\n{text}");
+        }
+        assert!(!text.contains("LLM endpoint base URL"));
+    }
 }
 
 #[test]
@@ -226,9 +251,9 @@ fn settings_secrets_render_only_status_and_cannot_open_an_editor() {
         .draw(|frame| configure::render_settings(frame, &app, frame.area()))
         .unwrap();
     let text = buffer_text(terminal.backend().buffer());
-    assert!(text.contains("Proxy credential [secret]"));
+    assert!(text.contains("◆ Proxy credential"));
     assert!(text.contains("unset"));
-    assert!(text.contains("Secret status only"));
+    assert!(text.contains("Edit with envy config secret-set."));
     assert!(!text.contains("never-render-this-secret"));
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -260,6 +285,34 @@ fn settings_legacy_text_fields_and_host_help_still_work() {
         edit.key,
         crate::model::SettingKey::Config("envy.user.name".into())
     );
+}
+
+#[test]
+fn long_setting_confirmation_keeps_controls_and_full_value_reachable() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let previous = format!("https://old.example/{}", "old-path/".repeat(100));
+    let proposed = format!("https://new.example/{}VALUE-END", "中文-path/".repeat(100));
+    let mut app = settings_app(json!({"fields":[
+        {"path":"envy.llm.endpoints.stepfun.baseUrl","prompt":"Base URL","value":previous}
+    ]}), 1);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.setting_edit.as_mut().unwrap().buffer = proposed.clone();
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    for (width, height) in [(80, 18), (120, 24), (180, 30)] {
+        app.pending_setting.as_mut().unwrap().scroll = 0;
+        let (screen, _) = render(&mut app, width, height);
+        assert!(screen.contains("↵ save  Esc cancel"));
+        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        let (screen, _) = render(&mut app, width, height);
+        assert!(screen.contains("VALUE-END"), "{screen}");
+        assert!(screen.contains("↵ save  Esc cancel"));
+        assert!(screen.contains("envy.llm.endpoints.stepfun.baseUrl"));
+        assert_eq!(app.pending_setting.as_ref().unwrap().value, proposed);
+        assert!(!app.setting_loading);
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.pending_setting.is_none());
+    assert!(!app.setting_loading);
 }
 
 #[test]
@@ -322,6 +375,26 @@ fn detail_footer_stays_fixed_at_the_last_valid_scroll_offset() {
 }
 
 #[test]
+fn long_notifications_preserve_the_primary_action_and_help() {
+    let mut app = settings_app(json!({"fields":[
+        {"path":"envy.agents.pi.model","prompt":"Model","value":"one"}
+    ]}), 1);
+    app.status = "! Save failed · check the backend result before retrying ".repeat(8);
+    for width in [60, 80, 120] {
+        let (screen, _) = render(&mut app, width, 24);
+        let footer = screen.lines().last().unwrap();
+        assert!(footer.contains("↵ edit"), "{width}: {footer}");
+        assert!(footer.contains("? help"), "{width}: {footer}");
+        assert!(!footer.contains("NORMAL"));
+        assert!(footer.contains('…'));
+    }
+    app.pages.get_mut(&Screen::Config).unwrap().loading = true;
+    app.status = "Refreshing settings".into();
+    let (screen, _) = render(&mut app, 120, 24);
+    assert_eq!(screen.lines().last().unwrap().matches("Refreshing").count(), 1);
+}
+
+#[test]
 fn narrow_search_keeps_input_and_essential_shortcuts_visible() {
     let mut app = test_app();
     app.screen = Screen::Search;
@@ -333,14 +406,14 @@ fn narrow_search_keeps_input_and_essential_shortcuts_visible() {
 
     let rendered = buffer_text(terminal.backend().buffer());
     assert!(rendered.contains("git█"));
-    assert!(rendered.contains("Enter submit"));
+    assert!(rendered.contains("↵ search"));
     assert!(rendered.contains("? help  q quit"));
 
     app.input_mode = InputMode::Normal;
     terminal.draw(|frame| draw(frame, &mut app)).unwrap();
     let rendered = buffer_text(terminal.backend().buffer());
-    assert!(rendered.contains("REGISTRY SEARCH · / edit query"));
-    assert!(!rendered.contains("Enter submit"));
+    assert!(rendered.contains("SEARCH · / edit"));
+    assert!(!rendered.contains("SEARCH · ↵ search"));
 }
 
 /// Render the whole screen and return it with trailing spaces trimmed.
@@ -508,16 +581,17 @@ fn activity_tables_show_local_times_with_their_age() {
     );
     let (text, buffer) = render(&mut app, 100, 9);
     assert_snapshot(&text, JOURNAL_TABLE);
-    assert_eq!(cell_at(&buffer, "fail").fg, ERROR);
+    assert_eq!(cell_at(&buffer, "! Failed").fg, ERROR);
 }
 
 #[test]
-fn narrow_healthy_home_stacks_cards_and_reports_no_action() {
+fn narrow_home_stacks_cards_and_reports_no_action() {
     let mut app = home_app(status_payload(json!([]), json!([]), 0));
     let (text, buffer) = render(&mut app, 80, 19);
-    assert_snapshot(&text, NARROW_HEALTHY_HOME);
+    assert_snapshot(&text, NARROW_NO_ACTIONS_HOME);
     assert_terminal_palette(&buffer);
-    assert_eq!(cell_at(&buffer, "HEALTHY").bg, OK);
+    assert!(text.contains("No suggested actions"));
+    assert!(!text.contains("HEALTHY"));
 }
 
 fn software_app(count: usize) -> App {
@@ -600,6 +674,55 @@ fn page_height_matches_the_rendered_table_rows() {
 }
 
 #[test]
+fn home_keeps_unknown_health_outcomes_visible() {
+    let mut app = test_app();
+    app.pages.insert(Screen::Home, crate::model::PageState {
+        payload:Some(json!({"git":{"upstream":"origin/master"},"doctor":{"results":[{"status":"unknown","name":"Deferred check","message":"No result yet"}]}})),
+        ..Default::default()
+    });
+    let (screen, buffer) = render(&mut app, 120, 30);
+    assert!(screen.contains("Needs attention · 1"));
+    assert!(screen.contains("? Deferred check"));
+    assert!(!screen.contains("HEALTHY"));
+    assert!(!screen.contains("is healthy"));
+    assert!(screen.contains("No suggestions available"));
+    assert!(!screen.contains("up to date"));
+    assert!(!screen.contains("↑0 ↓0"));
+    let row = row_containing(&buffer, "effective").unwrap();
+    for x in 0..buffer.area.width { if buffer[(x, row)].symbol() == "—" { assert_ne!(buffer[(x, row)].fg, OK); } }
+    assert_eq!(cell_at(&buffer, "? Deferred check").fg, WARN);
+}
+
+#[test]
+fn health_missing_empty_failed_and_unknown_reports_never_claim_success() {
+    for (payload, error, expected) in [
+        (None, None, "Health unavailable"),
+        (Some(json!({})), None, "Health unavailable"),
+        (Some(json!({"results":null})), None, "Health unavailable"),
+        (Some(json!({"results":[]})), None, "No check results"),
+        (None, Some("doctor failed".to_string()), "Health unavailable"),
+        (Some(json!({"results":[{"status":"unknown","name":"unmeasured","message":"not measured"}]})), None, "? Unknown"),
+        (Some(json!({"results":[{"name":"missing status","message":"no verdict"}]})), None, "? Unknown"),
+        (Some(json!({"ok":false,"data":{"results":[{"status":"ok","name":"cached"}]}})), None, "! Health incomplete"),
+        (Some(json!({"results":[{"status":"ok","name":"cached"}]})), Some("refresh failed".into()), "Cached checks · no problems"),
+    ] {
+        let mut app = test_app();
+        app.screen = Screen::Doctor;
+        app.doctor_problems_only = true;
+        app.pages.insert(Screen::Doctor, crate::model::PageState {payload, error, ..Default::default()});
+        for width in [80, 120, 180] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 20)).unwrap();
+            terminal.draw(|frame| activity::render_doctor(frame, &app, frame.area())).unwrap();
+            let screen = buffer_text(terminal.backend().buffer());
+            assert!(screen.contains(expected), "{expected}: {screen}");
+            assert!(!screen.contains("✓ No problems found"));
+            let (screen, _) = render(&mut app, width, 24);
+            assert!(!screen.contains("✓ No problems found"));
+        }
+    }
+}
+
+#[test]
 fn doctor_table_marks_each_status() {
     let mut app = test_app();
     app.screen = Screen::Doctor;
@@ -621,7 +744,7 @@ fn doctor_table_marks_each_status() {
     let (text, buffer) = render(&mut app, 100, 9);
     assert_snapshot(&text, DOCTOR_TABLE);
     assert_terminal_palette(&buffer);
-    assert_eq!(cell_at(&buffer, "● error").fg, ERROR);
+    assert_eq!(cell_at(&buffer, "! Failed").fg, ERROR);
     let nav = row_containing(&buffer, "Health 2").unwrap();
     let badge = (0..buffer.area.width)
         .find(|x| buffer[(*x, nav)].symbol() == "2")
@@ -637,8 +760,9 @@ fn doctor_table_marks_each_status() {
         "summary": {"ok": 1, "warn": 0, "error": 0, "info": 0},
         "results": [{"status": "ok", "section": "conf", "name": "machine file", "message": "found"}]
     }));
-    let (text, _) = render(&mut app, 100, 12);
-    assert!(text.contains("No warnings or errors") && text.contains("Press f to show all"));
+    let (text, buffer) = render(&mut app, 100, 12);
+    assert!(text.contains("No problems found") && text.contains("f show all checks"));
+    assert_eq!(cell_at(&buffer, "✓ No problems found").fg, OK);
     assert!(!text.contains("Health 0"), "no badge without problems");
 }
 
@@ -652,19 +776,19 @@ const WIDE_HOME: &str = r#"
 ╭ Software ────────────────────────────╮╭ Recommended ─────────────────────────────────────────────────────────────────╮
 │ effective  82                        ││ ▸ envy plan  3 repository path(s) changed                                    │
 │ included   91                        ││   envy push  2 commit(s) are ahead of origin/master                          │
-│ excluded   9                         ││  t  Storage · local reports and explicit projects                            │
+│ excluded   9                         ││  t  Storage                                                                  │
 │ groups     8                         ││                                                                              │
 ╰──────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────────────────╯
 ╭ Needs attention · 1 ─────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ ● GitHub CLI auth  GitHub CLI is not authenticated                                                                   │
+│ ! GitHub CLI auth  GitHub CLI is not authenticated                                                                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭ Recent operations ───────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ ● apply  ok      34.3s  10 min ago                                                                                   │
-│ ● push   ok      11.4s  2 h ago     branch=master  remote=all                                                        │
-│ ● sync   fail   3m 32s  2 d ago     error=merge conflict in flake.lock                                               │
+│ ✓ apply  ok      34.3s  10 min ago                                                                                   │
+│ ✓ push   ok      11.4s  2 h ago     branch=master  remote=all                                                        │
+│ ! sync   fail   3m 32s  2 d ago     error=merge conflict in flake.lock                                               │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- NORMAL   Home ready    t Storage  2 Configure  3 Activity  │  ↑↓ select  Tab section  v view  r refresh  ? help  q quit"#;
-const NARROW_HEALTHY_HOME: &str = r#"
+                                                                                    t Storage  r refresh  ? help  q quit"#;
+const NARROW_NO_ACTIONS_HOME: &str = r#"
  envY   1 Home   2 Configure   3 Activity              mac · master ● 3 changed
 ╭ Machine ─────────────────────────────╮╭ Repository ──────────────────────────╮
 │ mac                                  ││ master → origin/master               │
@@ -678,12 +802,12 @@ const NARROW_HEALTHY_HOME: &str = r#"
 │                                      ││ groups     8                         │
 ╰──────────────────────────────────────╯╰──────────────────────────────────────╯
 ╭ Recommended ─────────────────────────────────────────────────────────────────╮
-│  HEALTHY   No action required                                                │
-│ The selected machine is healthy                                              │
-│                                                                              │
-│ 2 Configure software, mirrors, settings  3 Activity health and history       │
+│ No suggested actions                                                         │
+│  t  Storage                                                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
- NORMAL   Home ready       t Storage  2 Configure  3 Activity  │  ? help  q quit"#;
+
+
+                                            t Storage  r refresh  ? help  q quit"#;
 const SOFTWARE_TABLE: &str = r#"
  envY   1 Home   2 Configure   3 Activity
  Configure ›  Software   Search   Sources   Mirrors   Settings              v switch view
@@ -694,36 +818,36 @@ const SOFTWARE_TABLE: &str = r#"
 │                     pkg-2   effective   nix:a-very-long-attribute-path-for-package-num…┃
 │                     pkg-3   effective   nix:a-very-long-attribute-path-for-package-num…│
 ╰────────────────────────────────────────────────────────────────────────────────────────╯
- NORMAL   Software ready                      ↵ toggle  w why  / filter  │  ? help  q quit"#;
+                                      ↵ toggle  w why  / filter  r refresh  ? help  q quit"#;
 const GENERATIONS_TABLE: &str = r#"
  envY   1 Home   2 Configure   3 Activity
  Activity ›  Health   Generations   Operations   Storage                                                  v switch view
-╭ Generations · Enter details · Space mark · d diff ──────────────────────────────────────────────────────────── 1 / 2 ╮
+╭ Generations ────────────────────────────────────────────────────────────────────────────────────────────────── 1 / 2 ╮
 │  GENERATION STATE            CREATED                  STORE TARGET                                                   │
 │▸ 113        current          10-29 03:40  10 min ago  darwin-system-26.05.56c666e  ypk8n1d1                          │
 │  112                         10-27 00:48  2 d ago     darwin-system-26.05.0246b24  01234567                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- NORMAL   History ready                Enter details  v view  Space mark  d diff  │  Tab section  v view  ? help  q quit"#;
+                                                                ↵ details  Space mark  d diff  r refresh  ? help  q quit"#;
 const JOURNAL_TABLE: &str = r#"
  envY   1 Home   2 Configure   3 Activity
  Activity ›  Health   Generations   Operations   Storage                              v switch view
-╭ Operation journal · Enter receipt ──────────────────────────────────────────────────────── 1 / 3 ╮
-│  TIME                     OPERATION      RESULT   DURATION  DETAIL                               │
-│▸ 10-29 03:40  10 min ago  apply          ok       34.3s     —                                    │
-│  10-29 01:12  2 h ago     push           ok       11.4s     branch=master  remote=all            │
-│  10-26 22:00  2 d ago     sync           fail     3m 32s    error=merge conflict in flake.lock   │
+╭ Operations ─────────────────────────────────────────────────────────────────────────────── 1 / 3 ╮
+│  TIME                     OPERATION      RESULT     DURATION  DETAIL                             │
+│▸ 10-29 03:40  10 min ago  apply          ✓ OK       34.3s     —                                  │
+│  10-29 01:12  2 h ago     push           ✓ OK       11.4s     branch=master  remote=all          │
+│  10-26 22:00  2 d ago     sync           ! Failed   3m 32s    error=merge conflict in flake.lock │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
- NORMAL   History ready                 Enter details  v view  Space mark  d diff  │  ? help  q quit"#;
+                                                                ↵ receipt  r refresh  ? help  q quit"#;
 const DOCTOR_TABLE: &str = r#"
  envY   1 Home   2 Configure   3 Activity
  Activity ›  Health 2   Generations   Operations   Storage                            v switch view
-╭ Doctor · problems first ────────────────────────────────────────────────────────────────── 1 / 3 ╮
+╭ Health ─────────────────────────────────────────────────────────────────────────────────── 1 / 3 ╮
 │  STATUS    SECTION  CHECK                          RESULT                                        │
-│▸ ● error   secr     decrypt                        sops decrypt failed                           │
-│  ● warn    apps     GitHub CLI auth                not authenticated                             │
-│  ● ok      conf     machine file                   found                                         │
+│▸ ! Failed  secr     decrypt                        sops decrypt failed                           │
+│  ! Warning apps     GitHub CLI auth                not authenticated                             │
+│  ✓ OK      conf     machine file                   found                                         │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
- NORMAL   Doctor ready                   ↵ details  f filter  │  Tab section  v view  ? help  q quit"#;
+                                                    ↵ details  f problems  r refresh  ? help  q quit"#;
 
 fn storage_app() -> App {
     let mut app = test_app();
@@ -760,11 +884,11 @@ fn storage_entry_report_age_and_scope_are_visible_in_the_integrated_page() {
         "Inspection",
         "Policy & records",
         "Rule validation",
-        "Stale",
-        "received 10 min ago",
+        "stale",
+        "10 min ago",
         "/explicit/a  project/",
         "codex-data",
-        "unknown",
+        "! No access",
     ] {
         assert!(screen.contains(text), "missing {text}");
     }
@@ -783,11 +907,11 @@ fn storage_project_input_and_context_help_keep_read_effects_and_keys_visible() {
     ));
     app.handle_paste("/tmp/a  path/中文");
     let (screen, _) = render(&mut app, 120, 24);
-    assert!(screen.contains("PROJECT DIRECTORY"));
+    assert!(screen.contains("PROJECT"));
     assert!(screen.contains("/tmp/a  path/"));
     assert!(screen.contains('中') && screen.contains('文'));
     assert_eq!(app.storage_project_input, "/tmp/a  path/中文");
-    assert!(screen.contains("Enter add"));
+    assert!(screen.contains("↵ add"));
     app.handle_key(crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Esc,
         crossterm::event::KeyModifiers::NONE,
@@ -799,8 +923,8 @@ fn storage_project_input_and_context_help_keep_read_effects_and_keys_visible() {
         "remove last project",
         "initialize and lock",
         "temporary organize",
-        "Quarantine still occupies",
-        "cached reports never rescan",
+        "Quarantine occupies storage",
+        "refresh report",
     ] {
         assert!(help.contains(text), "missing help: {text}");
     }

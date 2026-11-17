@@ -97,6 +97,27 @@ fn empty_selection_rejected_and_flags_come_from_backend_metadata() {
 }
 
 #[test]
+fn compact_review_keeps_targets_effects_failures_and_full_evidence() {
+    let mut actions = ready();
+    actions.accept(&Task::Preview(preview_intent(Operation::Maintain)),
+        WorkflowReport::from_result(Ok(response("storage maintain", fixture()["maintenancePreview"].clone(), true))),
+        1_700_000_000);
+    let summary = actions.summary_text();
+    assert!(summary.contains("/fixture/home/.cache/go"));
+    assert!(summary.contains("Remove the entire Go build cache"));
+    assert!(!summary.contains("selectorsDigest"));
+    assert!(!summary.contains("previewToken"));
+    assert!(actions.text().contains("selectorsDigest"));
+    actions.accept(&Task::Execute(preview_intent(Operation::Maintain), "claimed".into()),
+        WorkflowReport::from_result(Ok(response("storage maintain", fixture()["partialResult"].clone(), false))),
+        1_700_000_000);
+    let result = actions.summary_text();
+    assert!(result.contains("! Partially completed"));
+    assert!(result.contains("! errors: npm"));
+    assert!(result.contains("exit code 5"));
+}
+
+#[test]
 fn producer_maintenance_and_restore_previews_are_reviewable_without_execution() {
     for (key, op) in [
         ("maintenancePreview", Operation::Maintain),
@@ -261,6 +282,43 @@ fn input_and_context_changes_destroy_preview_and_policy_metadata() {
     assert!(actions.capabilities.is_none());
     assert_eq!(actions.selected, [false; 8]);
     assert!(actions.text().contains("unknown external effects"));
+}
+
+#[test]
+fn compact_review_preserves_structured_native_targets() {
+    for target in [
+        json!({"endpoint":"unix:///fixture/docker.sock","context":"remote-demo","builder":"demo-builder"}),
+        json!({"prefix":"/fixture/brew","cache":"/fixture/cache","cellar":"/fixture/cellar"}),
+        json!({"endpoint":"daemon-demo","storeDir":"/fixture/store","stateDir":"/fixture/state"}),
+    ] {
+        let mut lines = Vec::new();
+        compact_evidence(&json!({"items":[{"action":"native","target":target,"note":"Removes eligible caches"}]}), &mut lines);
+        let text = lines.join("\n");
+        for value in target.as_object().unwrap().values() { assert!(text.contains(value.as_str().unwrap()), "{text}"); }
+        assert!(text.contains("Removes eligible caches"));
+    }
+}
+
+#[test]
+fn compact_results_keep_complete_and_unknown_outcomes_distinct() {
+    for (state, expected, ok) in [("complete", "✓ Complete", true), ("unknown", "? Outcome unknown", false)] {
+        let mut actions = ready();
+        actions.accept(
+            &Task::Execute(preview_intent(Operation::Maintain), "claimed".into()),
+            WorkflowReport::from_result(Ok(response("storage maintain", json!({
+                "state":state, "result":{"items":[{"action":"go","target":{"path":"/fixture/cache"},
+                    "available":true,"output":[{"returncode":0}]}]}
+            }), ok))),
+            1_700_000_000,
+        );
+        let text = actions.summary_text();
+        assert!(text.contains(expected), "{text}");
+        assert!(!text.contains("! complete"));
+        if state == "unknown" { assert!(!text.contains('✓')); }
+        assert!(!text.contains("available: true"));
+        assert!(!text.contains("execute:"));
+        assert!(text.contains("/fixture/cache"));
+    }
 }
 
 #[test]

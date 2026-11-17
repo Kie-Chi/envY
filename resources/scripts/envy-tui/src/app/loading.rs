@@ -81,7 +81,7 @@ impl App {
             LoadTarget::Search(_) | LoadTarget::Storage(_) => None,
         };
         self.status = match saved_age {
-            Some(age) => format!("Showing {} from {age}", target.title().to_lowercase()),
+            Some(age) => format!("Cached · {age}"),
             None if has_content => format!("Refreshing {}", target.title().to_lowercase()),
             None => format!("Loading {}", target.title().to_lowercase()),
         };
@@ -138,17 +138,17 @@ impl App {
             .saved_at
             .map(|saved_at| crate::model::relative_age(saved_at, self.now()));
         self.status = if let (true, Some(age)) = (state.loading, &saved_age) {
-            format!("Showing {} from {age}", target.title().to_lowercase())
+            format!("Cached · {age}")
         } else if let (Some(_), Some(age)) = (&state.error, &saved_age) {
-            format!("{} refresh failed; showing data from {age}", target.title())
+            format!("! Refresh failed · cached {age}")
         } else if state.loading && state.has_content() {
             format!("Refreshing {}", target.title().to_lowercase())
         } else if state.loading {
             format!("Loading {}", target.title().to_lowercase())
         } else if state.error.is_some() && state.has_content() {
-            format!("{} refresh failed; showing cached data", target.title())
+            "! Refresh failed · cached data".into()
         } else if state.error.is_some() {
-            format!("{} load failed", target.title())
+            format!("! {} unavailable", target.title())
         } else if let Some(report) = &state.storage_report {
             report.summary()
         } else if state.has_content() {
@@ -306,17 +306,17 @@ impl App {
                     match (stage, result) {
                         (MutationStage::Preview, Ok(payload)) => {
                             self.status =
-                                format!("{} plan ready for {}", intent.action.label(), intent.item);
+                                format!("Review {}", intent.item);
                             self.pending_mutation = Some(MutationPreview { intent, payload });
                         }
                         (MutationStage::Apply, Ok(_)) => {
                             let description =
-                                format!("{} applied for {}", intent.action.label(), intent.item);
+                                format!("✓ {} saved", intent.item);
                             self.pending_mutation = None;
                             self.invalidate_after_mutation();
                             self.load_current(true);
                             self.post_mutation = Some(intent.item.clone());
-                            self.status = format!("{description}; refreshing data");
+                            self.status = description;
                         }
                         (_, Err(error)) => {
                             self.pending_mutation = None;
@@ -375,12 +375,12 @@ impl App {
                     match result {
                         Ok(_) => {
                             self.refresh_after_setting();
-                            self.status = format!("{} updated; refreshing", key.label());
+                            self.status = format!("✓ {} saved", key.title());
                         }
                         Err(error) => {
                             self.invalidate_setting_context();
                             self.overlay_error = Some(error);
-                            self.status = format!("{} change failed; declarations/runtime may have changed. Reload Settings", key.label());
+                            self.status = format!("! {} failed · reload Settings to check saved state", key.title());
                         }
                     }
                 }
@@ -467,7 +467,7 @@ impl App {
                             // candidate list or turn a network condition into a
                             // blocking TUI error.
                             self.status = format!(
-                                "{target} measurement unavailable; source selection remains usable"
+                                "! {target} measurement unavailable"
                             );
                         }
                     }
@@ -496,7 +496,7 @@ impl App {
                             self.invalidate_after_mirror();
                             self.load_current(true);
                             self.status =
-                                format!("{target} mirror override saved; plan/apply when ready");
+                                format!("✓ {target} mirror saved · apply to activate");
                         }
                         (_, Err(error)) => {
                             self.pending_mirror = None;
@@ -520,7 +520,7 @@ impl App {
                         log.follow = false;
                         log.scroll = 0;
                     }
-                    self.status = if success { "Backend report ready" } else { "Backend request failed or incomplete; inspect report" }.into();
+                    self.status = if success { "✓ Report ready" } else { "! Report incomplete · see details" }.into();
                 }
                 Message::JsonWorkflowFinished { .. } => {}
                 Message::WorkflowOutput { request, line }

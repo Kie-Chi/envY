@@ -112,8 +112,7 @@ fn render_mutation(frame: &mut Frame, app: &App, area: Rect) {
             Line::from(format!("Group       {}", preview.intent.group)),
             Line::from(format!("Operand     {}", preview.intent.operand)),
             Line::from(format!("Result      {effective}")),
-            Line::from(format!("Changed     {changed}")),
-            Line::from("Verified    dry-run JSON schema v1"),
+            Line::from(if changed { "Policy change" } else { "Already selected" }),
             Line::from(""),
             Line::from(Span::styled("Policy operations", theme::heading())),
         ];
@@ -178,77 +177,59 @@ fn render_mutation(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_help(frame: &mut Frame, app: &App, area: Rect) {
-    if app.screen == crate::model::Screen::Storage {
-        popup(
-            frame,
-            centered_size(92, 26, area),
-            "STORAGE · READ REPORTS",
-            vec![
-                Line::from("[ / ]     Inspection / Policy & records / Rule validation"),
-                Line::from("p         add one complete project directory (Inspection only)"),
-                Line::from("x / X     remove last project / clear all explicit projects"),
-                Line::from("Enter     full details and original backend JSON"),
-                Line::from("a         explicit actions: save plan / preview / review / confirm"),
-                Line::from("          native maintenance starts empty; init/check/gc are CLI handoffs"),
-                Line::from("↑↓ / j k  select rows or scroll details; PgUp/PgDn, Home/End"),
-                Line::from(
-                    "r         request fresh data; cached reports never rescan on navigation",
-                ),
-                Line::from("s         search software; v cycles Activity; Tab changes section"),
+    if app.screen == crate::model::Screen::Config {
+        let settings = app.settings_rows();
+        if let Some(row) = settings.get(app.settings_selected) {
+            let mut lines = vec![
+                Line::styled(row.title(), theme::heading()),
+                Line::styled(row.key.label(), theme::faint()),
                 Line::from(""),
-                Line::from("Inspection: known hotspots and explicit project directories only."),
-                Line::from("Status: may initialize and lock local metadata."),
-                Line::from("Validation: writes and removes temporary organize rule configuration."),
-                Line::from(
-                    "Logical / allocated / native / policy bytes are independent estimates.",
-                ),
-                Line::from("Rows overlap; unknown is not zero. Quarantine still occupies storage."),
-                Line::from("Docker associations and application/project evidence remain in JSON."),
-                Line::from(""),
-                Line::from("? / Esc close help; Esc cancels input; q quits"),
-            ],
-            0,
-        );
+                Line::from(row.label.clone()),
+                Line::from(format!("{} · {}{}", row.group, row.nix_type,
+                    if row.required == Some(true) { " · required" } else { "" })),
+                Line::from(format!("Applicability: {}", if row.condition_state.is_empty() { "—" } else { &row.condition_state })),
+            ];
+            if !row.change_kind.is_empty() { lines.push(Line::from(format!("Update: {}", row.change_kind))); }
+            if !row.effect_hint().is_empty() { lines.push(Line::from(row.effect_hint().to_string())); }
+            if !row.choices.is_empty() { lines.push(Line::from(format!("Options: {}", row.choices.join(" · ")))); }
+            lines.extend([Line::from(""), Line::from("↵ edit   ↑↓ select   r refresh   ? / Esc close")]);
+            popup(frame, centered_size(86, 20, area), "SETTING HELP", lines, 0);
+        }
         return;
     }
-    popup(
-        frame,
-        centered_size(80, 34, area),
-        "KEYBOARD",
-        vec![
-            Line::from("1..3        jump to Home / Configure / Activity"),
-            Line::from("Tab / ←→    switch top-level sections"),
-            Line::from("v           cycle the current section's sub-view"),
-            Line::from("↑↓ / j k    select rows; detail dialogs scroll"),
-            Line::from("PgUp/PgDn   move by one viewport; g/G first/last"),
-            Line::from("s           open Configure / Search from anywhere"),
-            Line::from("r           refresh the current data view"),
-            Line::from("Esc         cancel or clear context; q quits"),
-            Line::from(""),
-            Line::from(Span::styled("Home", theme::heading())),
-            Line::from("Status and setup / repair guidance; t opens Storage reports"),
-            Line::from(""),
-            Line::from(Span::styled("Configure", theme::heading())),
-            Line::from("Software / Search / Mirrors / Settings are secondary views"),
-            Line::from("Settings Enter edits host or a config value"),
-            Line::from("Enter/Space  preview availability toggle"),
-            Line::from("w / i        explain selected software policy"),
-            Line::from("/            local text filter (no backend request)"),
-            Line::from("Ctrl-U       clear the current filter or query"),
-            Line::from("Enter / a    choose group, then preview add"),
-            Line::from("Mirror Enter  choose a target, then a chsrc/catalog source"),
-            Line::from(""),
-            Line::from(Span::styled("Activity", theme::heading())),
-            Line::from("Health / Generations / Operations / Storage are secondary views"),
-            Line::from("Health Enter opens details; x runs an allow-listed safe action"),
-            Line::from("Health f shows only warnings and errors"),
-            Line::from("v cycles Activity views; Space marks generations, d compares"),
-            Line::from(""),
-            Line::from("Every mutation: dry-run → contract validation → explicit confirmation."),
-            Line::from("Press ? or Esc to close."),
-        ],
-        0,
-    );
+    use crate::model::{HistoryView, Screen};
+    let (title, keys): (&str, &[&str]) = match app.screen {
+        Screen::Storage => ("STORAGE", &[
+            "[ / ]       Inspection / Policy & records / Rule validation",
+            "↵           selected item and full report",
+            "p           add project directory",
+            "x / X       remove last project / clear projects",
+            "a           maintenance, plans and recovery",
+            "r           refresh report",
+            "", "Size: logical bytes · On disk: allocated estimate",
+            "— unmeasured · rows may overlap",
+            "Policy: may initialize and lock local state",
+            "Validation: temporary organize config",
+            "Quarantine occupies storage until purged.",
+        ]),
+        Screen::Software => ("SOFTWARE", &["↵ / Space   review toggle", "w / i       explain selection", "/           filter locally", "Esc         clear filter"]),
+        Screen::Search => ("SEARCH", &["/           edit query", "↵           search / add selected result", "Ctrl-U      clear query"]),
+        Screen::Sources => ("SOURCES", &["↵           select repository", "s           sync metadata"]),
+        Screen::Mirror => ("MIRRORS", &["↵           choose source", "r           refresh measurements in chooser"]),
+        Screen::Doctor => ("HEALTH", &["↵           details", "f           problems / all checks", "x           review suggested action"]),
+        Screen::History if app.history_view == HistoryView::Operations => ("OPERATIONS", &["↵           receipt", "x           review available verification step"]),
+        Screen::History => ("GENERATIONS", &["↵           details", "Space       mark generation", "d           compare with marked generation"]),
+        _ => ("HOME", &["t           Storage", "2           Configure", "3           Activity"]),
+    };
+    let mut lines = keys.iter().map(|key| Line::from(key.to_string())).collect::<Vec<_>>();
+    lines.extend([
+        Line::from(""), Line::styled("Navigation", theme::heading()),
+        Line::from("1..3 / Tab  section      v view"),
+        Line::from("↑↓ select · PgUp/PgDn page · g/G ends"),
+        Line::from(if app.screen == Screen::Sources { "r refresh   q quit" } else { "r refresh   s search   q quit" }),
+        Line::from("? / Esc close help"),
+    ]);
+    popup(frame, centered_size(76, (lines.len() as u16 + 4).min(28), area), title, lines, 0);
 }
 
 fn render_workflow_log(frame: &mut Frame, area: Rect, log: &mut WorkflowLog) {
@@ -309,7 +290,7 @@ pub(super) fn render_overlays(frame: &mut Frame, app: &mut App) {
                 Line::from(""),
                 Line::from(Span::styled(error.clone(), Style::new().fg(ERROR))),
                 Line::from(""),
-                Line::from("Enter or Esc closes this message; cached data remains available."),
+                Line::from("↵ / Esc close"),
             ],
             0,
         );
@@ -324,9 +305,8 @@ pub(super) fn render_overlays(frame: &mut Frame, app: &mut App) {
                 Line::from(""),
                 Line::from(format!("Command  {}", action.display_command())),
                 Line::from(""),
-                Line::from(if action.is_json() { "The backend revalidates this fixed read-only step; its complete result stays visible." } else { "The TUI will pause and show the complete command output." }),
-                Line::from(""),
-                Line::from("Enter/y confirms; Esc/n cancels."),
+
+                Line::from("↵ / y run   Esc / n cancel"),
             ],
             0,
         );
@@ -339,10 +319,10 @@ pub(super) fn render_overlays(frame: &mut Frame, app: &mut App) {
                 Line::from(""),
                 Line::from(vec![
                     Span::styled(item.clone(), Style::new().fg(OK).bold()),
-                    Span::raw(" was saved to the selected machine policy."),
+                    Span::raw(" saved"),
                 ]),
                 Line::from(""),
-                Line::from("Choose the next step; the policy remains pending until applied."),
+                Line::from("Apply to activate this change."),
                 Line::from(""),
                 Line::from(vec![
                     Span::styled(" p ", theme::chip_style(ACCENT)),
@@ -353,7 +333,7 @@ pub(super) fn render_overlays(frame: &mut Frame, app: &mut App) {
                     Span::raw(" Doctor"),
                 ]),
                 Line::from(""),
-                Line::from("Enter or Esc keeps the change pending and returns to envY."),
+                Line::from("↵ / Esc later"),
             ],
             0,
         );

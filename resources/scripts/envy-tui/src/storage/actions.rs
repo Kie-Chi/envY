@@ -249,6 +249,7 @@ pub struct Actions {
     pub scroll: usize,
     pub scroll_max: usize,
     pub handoff: Option<usize>,
+    pub details: bool,
     pub epoch: u64,
     pub preview_context: Option<String>,
     pub capabilities_context: Option<String>,
@@ -341,12 +342,13 @@ impl Actions {
         Ok(intent)
     }
     pub fn changed(&mut self) {
+        self.details = false;
         self.preview = None;
         self.preview_context = None;
         self.stage = Stage::Editing;
         self.scroll = 0;
         self.handoff = None;
-        self.notice = "Selection changed; a fresh preview is required".into();
+        self.notice = "Selection changed · preview again.".into();
     }
     pub fn invalidate(&mut self) {
         self.epoch += 1;
@@ -365,21 +367,21 @@ impl Actions {
         self.handoff = None;
         self.stage = Stage::Result;
         self.field = None;
-        self.notice = "Context invalidated; token discarded. Any started operation has unknown external effects; inspect before retrying.".into();
+        self.notice = "Context changed · preview cleared. Started operations have unknown external effects; check before retrying.".into();
     }
     pub fn cancel(&mut self) {
         self.preview = None;
         self.field = None;
         if let Some(pending) = &self.pending {
             pending.cancel.store(true, Ordering::Relaxed);
-            self.notice = "Stop requested. Started external effects are unknown and are not rolled back. No automatic replay.".into();
+            self.notice = "Stop requested · effects unknown. Completed changes remain.".into();
         } else {
             let result = self.stage == Stage::Result;
             self.stage = Stage::Editing;
             self.notice = if result {
-                "Closed review; previous process evidence remains below"
+                "Review closed · result retained in details."
             } else {
-                "Cancelled; no execute request sent"
+                "Cancelled · no execute request sent."
             }
             .into();
         }
@@ -392,7 +394,7 @@ impl Actions {
             self.capabilities = report.response.as_ref().map(|r| r.payload.clone());
             self.stage = Stage::Editing;
             self.notice =
-                "Capabilities loaded; native maintenance starts with no selections".into();
+                "Select caches to maintain.".into();
         } else if let Task::Preview(intent) = task {
             let data = report.response.as_ref().map(|r| &r.payload["data"]);
             let valid = data.filter(|d| {
@@ -422,25 +424,94 @@ impl Actions {
                     data["expiresAt"].as_f64().unwrap(),
                 ));
                 self.stage = Stage::Review;
-                self.notice = "Review the complete preview. Enter opens explicit confirmation; it does not execute.".into();
+                self.notice = "Review targets and effects below.".into();
             } else {
-                self.notice = "Preview not ready, expired, failed or mismatched. Review evidence and request a fresh preview.".into();
+                self.notice = "Preview unavailable · check details and preview again.".into();
             }
         } else if matches!(task, Task::Execute(..)) {
             self.notice = if report.error.is_some() || report.response.as_ref()
                 .and_then(|r| r.payload.pointer("/data/state")).and_then(Value::as_str) == Some("unknown") {
-                "Execution outcome may be unknown. Review process evidence and backend status before a new operation; no rollback or replay."
+                "Outcome unknown · check details before retrying."
             } else {
-                "Execution returned. Review state/errors/unknown and refreshedStatus below; no automatic replay or inspection."
+                "Results received · check failures below."
             }.into();
         } else if matches!(task, Task::Plan) {
-            self.notice = "Plan request returned; read its saved ID and enter it explicitly before run preview.".into();
+            self.notice = if report.is_success() { "Plan saved · enter its ID for Run plan." } else { "Plan not saved · check errors." }.into();
         } else {
             self.notice =
-                "Capabilities unavailable; review the backend error and reload explicitly".into();
+                "Capabilities unavailable · check errors, then c to reload.".into();
         }
         self.report = Some(report);
     }
+    /// A compact task view. Complete receipts remain available via details.
+    pub fn summary_text(&self) -> String {
+        let mut lines = if self.stage == Stage::Review { Vec::new() } else { vec![self.notice.clone(), String::new()] };
+        match self.operation {
+            Operation::Maintain if matches!(self.stage, Stage::Editing | Stage::Busy) => {
+                for (index, id) in ACTION_IDS.iter().enumerate() {
+                    let state = if self.selectable(id) { "" }
+                        else if self.metadata(id).and_then(|m| m["requiresPolicyOptIn"].as_bool()) == Some(true) { " · opt-in required" }
+                        else { " · unavailable" };
+                    lines.push(format!("{}  [{}] {id}{state}", index + 1, if self.selected[index] { "x" } else { " " }));
+                }
+                for (index, id) in ACTION_IDS.iter().enumerate().filter(|(index, _)| self.selected[*index]) {
+                    if let Some(effect) = self.metadata(id).and_then(|m| m["sideEffects"].as_str()) {
+                        lines.push(format!("\n{} · {effect}", ACTION_IDS[index]));
+                    }
+                }
+            }
+            Operation::Run => lines.push(format!("Plan  {}", if self.plan_id.is_empty() { "i to enter a saved plan ID" } else { &self.plan_id })),
+            Operation::Restore => {
+                lines.push(format!("Run     {}", if self.run_id.is_empty() { "r to enter run ID" } else { &self.run_id }));
+                lines.push(format!("Target  {}", if self.target.is_empty() { "t to enter a new absolute path" } else { &self.target }));
+            }
+            Operation::Purge => lines.push("Delete expired quarantine items after preview.".into()),
+            _ => {}
+        }
+        if let Some(field) = self.field {
+            lines.push(format!("\n{field:?}  {}\n↵ keep   Esc cancel   Ctrl-U clear", self.buffer));
+        }
+        if !self.supported() { lines.push("Preview unavailable · reload capabilities with c.".into()); }
+        if let Some(report) = &self.report {
+            if let Some(error) = &report.error { lines.push(format!("\n! {error}")); }
+            if let Some(response) = &report.response {
+                if !response.status.success() { lines.push(format!("! {}", response.status)); }
+                if matches!(self.stage, Stage::Review | Stage::Confirm | Stage::Result) {
+                    let data = &response.payload["data"];
+                    let state = data["state"].as_str().unwrap_or("Report");
+                    if state != "ready" {
+                        let state = match state {
+                            "complete" if report.is_success() => "✓ Complete",
+                            "partial" => "! Partially completed",
+                            "unknown" => "? Outcome unknown",
+                            other => other,
+                        };
+                        lines.push(format!("\n{state}"));
+                    }
+                    let content = if data["kind"] == "preview" { &data["preview"] } else { data.get("result").filter(|v| !v.is_null()).unwrap_or(data) };
+                    compact_evidence(content, &mut lines);
+                    for key in ["errors", "unknown"] {
+                        if let Some(values) = data[key].as_array().filter(|values| !values.is_empty()) {
+                            let issue = format!("! {key}: {}", values.iter().map(short_value).collect::<Vec<_>>().join(" · "));
+                            if !lines.contains(&issue) { lines.push(issue); }
+                        }
+                    }
+                    if let Some(reason) = data.pointer("/refreshedStatus/reason").and_then(Value::as_str) {
+                        if data["kind"] != "preview" { lines.push(format!("Status: {reason}")); }
+                    }
+                }
+            }
+            if !report.stderr.is_empty() { lines.push(format!("\n! {} · d for full output", report.stderr.lines().next().unwrap_or(""))); }
+        }
+        if !self.progress.is_empty() {
+            lines.push(format!("\n↻ {}", crate::backend::strip_ansi(&self.progress).lines().last().unwrap_or("")));
+        }
+        if self.stage == Stage::Confirm {
+            lines.push("\ny execute   Esc cancel · changes may be irreversible".into());
+        }
+        lines.join("\n")
+    }
+
     pub fn text(&self) -> String {
         if let Some(index) = self.handoff {
             let id = ["init", "check", "gc"][index % 3];
@@ -513,6 +584,59 @@ impl Actions {
         }
         text
     }
+}
+
+fn short_value(value: &Value) -> String {
+    value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string())
+}
+
+/// Omit transport identities from the summary; targets and effects stay visible.
+fn compact_evidence(value: &Value, lines: &mut Vec<String>) {
+    if let Some(object) = value.as_object() {
+        for (key, value) in object {
+            if matches!(key.as_str(), "binding" | "targetBinding" | "policy" | "manifestDigest" | "signature" | "sha256" | "commands" | "output" | "execute" | "available") || value.is_null() { continue; }
+            if key == "items" {
+                if let Some(items) = value.as_array() {
+                    lines.push(format!("{} item(s)", items.len()));
+                    for item in items {
+                        let id = item["action"].as_str().or_else(|| item["id"].as_str()).or_else(|| item["rule"].as_str()).unwrap_or("");
+                        let path = item["path"].as_str().or_else(|| item.pointer("/target/path").and_then(Value::as_str)).or_else(|| item["target"].as_str()).unwrap_or("");
+                        let exits = item["output"].as_array().into_iter().flatten().filter_map(|entry| entry["returncode"].as_i64()).collect::<Vec<_>>();
+                        let failed = exits.iter().any(|code| *code != 0) || item["available"] == false;
+                        let marker = if failed { "!" } else { "›" };
+                        lines.push(format!("\n{marker} {id}  {path}"));
+                        if let Some(target) = item["target"].as_object() {
+                            let target = target.iter().filter(|(key, _)| key.as_str() != "path").map(|(key, value)| (key.clone(), value.clone())).collect();
+                            compact_evidence(&Value::Object(target), lines);
+                        } else if !item["target"].is_null() && !item["target"].is_string() {
+                            compact_evidence(&item["target"], lines);
+                        }
+                        if let Some(status) = item["status"].as_str() { lines.push(status.into()); }
+                        if let Some(note) = item["note"].as_str() { lines.push(note.replace(" Read-only preview; no cleanup command was run.", "")); }
+                        for code in exits.iter().filter(|code| **code != 0) { lines.push(format!("! Exit {code}")); }
+                        if item["available"] == false { lines.push("! Unavailable".into()); }
+                        for key in ["error", "errors", "unknown", "reason", "reasons"] {
+                            if let Some(value) = item.get(key).filter(|v| !v.is_null() && !v.as_array().is_some_and(Vec::is_empty)) {
+                                lines.push(format!("! {key}: {}", short_value(value)));
+                            }
+                        }
+                        if id.is_empty() && path.is_empty() { compact_evidence(item, lines); }
+                    }
+                }
+            } else if value.is_object() {
+                lines.push(format!("{key}:"));
+                compact_evidence(value, lines);
+            } else if value.as_array().is_some_and(Vec::is_empty) { continue; }
+            else if matches!(key.as_str(), "errors" | "unknown") {
+                let items = value.as_array().map(|items| items.iter().map(short_value).collect::<Vec<_>>().join(" · ")).unwrap_or_else(|| short_value(value));
+                lines.push(format!("! {key}: {items}"));
+            } else if key == "note" {
+                lines.push(short_value(value).replace(" Read-only preview; no cleanup command was run.", ""));
+            } else {
+                lines.push(format!("{key}: {}", short_value(value)));
+            }
+        }
+    } else { lines.push(short_value(value)); }
 }
 
 #[cfg(test)]

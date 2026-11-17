@@ -366,6 +366,44 @@ impl SettingKey {
             Self::Config(path) => path.clone(),
         }
     }
+
+    /// Presentation names never replace the path used by the backend setter.
+    pub fn title(&self) -> String {
+        let Self::Config(path) = self else { return "Machine".into(); };
+        for prefix in ["envy.llm.endpoints.", "envy.llm.credentials.", "envy.agents.", "envy.agentProfiles."] {
+            if let Some((owner, field)) = path.strip_prefix(prefix).and_then(|rest| rest.rsplit_once('.')) {
+                let field = match field {
+                    "baseUrl" => "Base URL", "protocol" => "Protocol",
+                    "kind" => "Kind", "secretPath" => "Secret path",
+                    "adapter" => "Adapter", "endpoint" => "Endpoint",
+                    "credential" => "Credential", "model" => "Model",
+                    "contextWindow" => "Context window", "maxTokens" => "Output limit",
+                    "command" => "Command", "api" => "API",
+                    "thinkingLevelMap" => "Thinking levels", "moreThinking" => "Extra thinking",
+                    "models" => "Model candidates", other => other,
+                };
+                let profile = if prefix == "envy.agentProfiles." { "profile/" } else { "" };
+                return format!("{profile}{owner} · {field}");
+            }
+        }
+        match path.as_str() {
+            "envy.user.name" => "Username", "envy.user.home" => "Home directory",
+            "envy.git.name" => "Git · Name", "envy.git.email" => "Git · Email",
+            "envy.repository.path" => "Repository", "envy.vscode.mode" => "VS Code · Mode",
+            "envy.mirrors.mode" => "Mirrors · Profile",
+            "envy.amux.skipPermissions" => "amux · Skip permissions",
+            "envy.storage.mode" => "Storage · Mode",
+            "envy.storage.maintenance.go-modcache" => "Go · Remove module downloads",
+            "envy.storage.archive.repository" => "Archive · Repository",
+            "envy.storage.archive.mountSource" => "Archive · Mount source",
+            "envy.habits.terminalScratchpad.gesture" => "Terminal · Shortcut",
+            "envy.habits.globalLauncher.gesture" => "Launcher · Shortcut",
+            "envy.darwin.services.mihomo.mode" => "Mihomo · Mode",
+            "envy.darwin.services.mihomo.tun" => "Mihomo · TUN",
+            "envy.darwin.services.openssh.mode" => "SSH · Mode",
+            _ => return path.clone(),
+        }.into()
+    }
 }
 
 /// Setter metadata is authoritative when present. Only missing metadata uses
@@ -419,6 +457,39 @@ impl SettingRow {
     pub fn freeform(&self) -> bool {
         self.choices.is_empty()
     }
+
+    pub fn title(&self) -> String {
+        let title = self.key.title();
+        if title == self.key.label() { self.label.clone() } else { title }
+    }
+
+    pub fn section(&self) -> &str {
+        if self.secret { return "Secrets"; }
+        let SettingKey::Config(path) = &self.key else { return "Device"; };
+        for (prefix, section) in [
+            ("envy.llm.endpoints.", "Endpoints"), ("envy.llm.credentials.", "Credentials"),
+            ("envy.agents.", "Agents"), ("envy.agentProfiles.", "Profiles"),
+        ] {
+            if path.starts_with(prefix) { return section; }
+        }
+        match self.group.as_str() {
+            "BASE" | "ENV" => "Device", "GIT" => "Git", "HABITS" => "Shortcuts",
+            "STORAGE" => "Storage", "DARWIN_SERVICES" => "Services", other => other,
+        }
+    }
+
+    pub fn effect_hint(&self) -> &str {
+        if self.secret { return "Edit with envy config secret-set."; }
+        if !self.setter.editable() { return "Read only · reload Settings."; }
+        match self.activation_hint.as_str() {
+            "Select the local machine target; machine policy stays in its host file." => "Select the local machine target.",
+            "Changes take effect after envy apply." => "Run envy apply to activate.",
+            "The setter refreshes runtime overrides when credentials are available; changes apply to newly started agent processes." => "Applies to new sessions after runtime refresh.",
+            "The current condition is not met; this value is retained." => "Inactive · value retained.",
+            "Applicability is unknown because condition inputs are unavailable." => "Applicability unknown · missing condition inputs.",
+            other => other,
+        }
+    }
 }
 
 /// A dropdown over an enumerated setting or the known host list.
@@ -449,6 +520,7 @@ pub struct PendingSetting {
     pub setter: SettingSetter,
     pub value: String,
     pub previous: String,
+    pub scroll: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -886,7 +958,7 @@ pub fn short_timestamp(value: &str) -> String {
 }
 
 /// Doctor results in display order: errors, then warnings, then everything
-/// else as reported. `problems_only` keeps just the errors and warnings.
+/// else as reported. `problems_only` also retains unknown outcomes.
 pub fn doctor_results(payload: Option<&Value>, problems_only: bool) -> Vec<&Value> {
     let rank = |result: &Value| match result.get("status").and_then(Value::as_str) {
         Some("error") => 0,
@@ -894,11 +966,12 @@ pub fn doctor_results(payload: Option<&Value>, problems_only: bool) -> Vec<&Valu
         _ => 2,
     };
     let mut results = payload
+        .map(report_data)
         .and_then(|value| value.get("results"))
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter(|result| !problems_only || rank(result) < 2)
+        .filter(|result| !problems_only || !matches!(result.get("status").and_then(Value::as_str), Some("ok" | "info")))
         .collect::<Vec<_>>();
     results.sort_by_key(|result| rank(result));
     results
@@ -1226,7 +1299,7 @@ mod tests {
     }
 
     #[test]
-    fn doctor_problems_come_first_in_reported_order() {
+    fn doctor_problem_filter_preserves_reported_order_and_unknown_outcomes() {
         let payload = json!({"results": [
             {"name": "a", "status": "ok"}, {"name": "b", "status": "warn"},
             {"name": "c", "status": "info"}, {"name": "d", "status": "error"},
@@ -1239,7 +1312,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(names(false), ["d", "b", "e", "a", "c", "f"]);
-        assert_eq!(names(true), ["d", "b", "e"]);
+        assert_eq!(names(true), ["d", "b", "e", "f"]);
         assert!(doctor_results(None, false).is_empty());
     }
 

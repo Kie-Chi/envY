@@ -56,6 +56,21 @@ fn reviewed() -> App {
 }
 
 #[test]
+fn evidence_toggle_keeps_preview_and_never_sends_a_request() {
+    let mut app = reviewed();
+    let request = app.request_id;
+    let preview = app.storage_actions.preview.clone();
+    key(&mut app, KeyCode::Char('d'));
+    assert!(app.storage_actions.details);
+    key(&mut app, KeyCode::Esc);
+    assert!(!app.storage_actions.details);
+    assert_eq!(app.storage_actions.preview, preview);
+    assert_eq!(app.storage_actions.stage, Stage::Review);
+    assert_eq!(app.request_id, request);
+    assert!(app.storage_actions.pending.is_none());
+}
+
+#[test]
 fn entry_requests_only_capabilities_and_plan_is_explicit_once() {
     let mut app = app();
     assert!(app.storage_actions.pending.is_none());
@@ -262,7 +277,7 @@ fn cancellation_of_started_execute_keeps_unknown_semantics_and_evidence() {
         .unwrap()
         .cancel
         .load(std::sync::atomic::Ordering::Relaxed));
-    assert!(app.storage_actions.notice.contains("not rolled back"));
+    assert!(app.storage_actions.notice.contains("Completed changes remain"));
     key(&mut app, KeyCode::Char('q'));
     key(&mut app, KeyCode::Char('y'));
     assert_eq!(app.request_id, id);
@@ -453,7 +468,7 @@ fn source_change_while_request_runs_rejects_reply_and_resets_input_context() {
     assert!(app.storage_actions.preview.is_none());
     assert!(app.storage_actions.plan_id.is_empty());
     assert!(app.storage_actions.capabilities.is_none());
-    assert!(app.storage_actions.notice.contains("Context invalidated"));
+    assert!(app.storage_actions.notice.contains("Context changed"));
 }
 
 fn assert_reviewed_receipt_survives_response_less_failure(kind: crate::transport::ErrorKind) {

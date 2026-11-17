@@ -509,7 +509,7 @@ impl App {
     pub fn input_bar_height(&self) -> u16 {
         match self.screen {
             Screen::Storage => {
-                4 + if self.input_mode == InputMode::StorageProject {
+                2 + if self.input_mode == InputMode::StorageProject {
                     3
                 } else {
                     0

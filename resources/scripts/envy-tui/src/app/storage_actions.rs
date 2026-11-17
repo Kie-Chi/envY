@@ -43,14 +43,14 @@ impl App {
         self.storage_actions.progress.clear();
         self.storage_actions.scroll = 0;
         self.storage_actions.notice = match &task {
-            Task::Capabilities => "Reading capabilities only; no tool probe or scan",
+            Task::Capabilities => "↻ Loading actions…",
             Task::Plan => {
-                "Saving a plan: candidate scan and local state writes; no move or deletion"
+                "↻ Scanning and saving a plan…"
             }
             Task::Preview(_) => {
-                "Preparing bound preview; receipt is saved locally. No execution confirmation sent"
+                "↻ Preparing preview…"
             }
-            Task::Execute(..) => "Executing once; cancelling cannot roll back external effects",
+            Task::Execute(..) => "↻ Running · cancellation cannot undo completed changes.",
         }
         .into();
         self.storage_actions.pending = Some(Pending {
@@ -68,7 +68,7 @@ impl App {
         {
             self.storage_actions.invalidate();
             self.storage_actions.notice =
-                "Capabilities context changed; reload capabilities and preview again".into();
+                "Context changed · c reload, then p preview.".into();
             return;
         }
         match self.storage_actions.intent() {
@@ -140,7 +140,7 @@ impl App {
         if cancelled {
             self.storage_actions.preview = None;
             self.storage_actions.stage = Stage::Result;
-            self.storage_actions.notice = "Request stopped or completed after cancellation; review returned evidence. External effects may be unknown; no rollback or replay.".into();
+            self.storage_actions.notice = "Stopped · effects may be unknown. Check results before retrying.".into();
         }
         // refreshedStatus is rendered from the result itself. Never trigger a
         // follow-up inspect, implicit plan, or another mutation here.
@@ -218,8 +218,15 @@ impl App {
             }
             KeyCode::Home => self.storage_actions.scroll = 0,
             KeyCode::End => self.storage_actions.scroll = self.storage_actions.scroll_max,
+            KeyCode::Char('d') => {
+                self.storage_actions.details = !self.storage_actions.details;
+                self.storage_actions.scroll = 0;
+            }
             KeyCode::Esc => {
-                if self.storage_actions.handoff.is_some() {
+                if self.storage_actions.details {
+                    self.storage_actions.details = false;
+                    self.storage_actions.scroll = 0;
+                } else if self.storage_actions.handoff.is_some() {
                     self.storage_actions.handoff = None;
                     self.storage_actions.scroll = 0;
                 } else {

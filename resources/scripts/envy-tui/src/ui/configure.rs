@@ -7,7 +7,7 @@ use crate::{
     app::{App, InputMode},
     model::{
         filtered_software_entries, mirror_mode, mirror_target_rows, search_entries, text,
-        SettingKey, SettingRow, SoftwareEntry,
+        SoftwareEntry,
     },
     theme::{self, ERROR, OK, WARN},
 };
@@ -18,135 +18,66 @@ use super::table::{
 };
 use super::{row_offset, spinner};
 
-fn setting_state(row: &SettingRow) -> &str {
-    if !row.condition_state.is_empty() {
-        &row.condition_state
-    } else {
-        match row.active {
-            Some(true) => "active",
-            Some(false) => "inactive",
-            None => "—",
-        }
-    }
-}
-
-fn setting_type(row: &SettingRow) -> String {
-    let kind = if row.secret {
-        "secret · read only"
-    } else if row.key == SettingKey::Host {
-        "host"
-    } else if !row.nix_type.is_empty() {
-        &row.nix_type
-    } else if row.freeform() {
-        "text"
-    } else {
-        "select"
-    };
-    if row.required == Some(true) {
-        format!("{kind} · required")
-    } else {
-        kind.to_string()
-    }
-}
-
 pub(super) fn render_settings(frame: &mut Frame, app: &App, area: Rect) {
     let settings = app.settings_rows();
     let selected = app.settings_selected.min(settings.len().saturating_sub(1));
-    let Some(row) = settings.get(selected) else {
-        return;
-    };
-    let mut help = vec![
-        Line::from(row.key.label()),
-        Line::styled(
-            format!("{} · {} · {}{}", row.group, setting_type(row), setting_state(row),
-                if row.change_kind.is_empty() { String::new() }
-                else { format!(" · {}", row.change_kind) }),
-            theme::muted(),
-        ),
-    ];
-    if row.secret {
-        help.push(Line::from("Secret status only; edit using envy config secret-set."));
-    } else if !row.setter.editable() {
-        help.push(Line::from("Read only: the backend setter is unavailable or unsupported. Reload Settings."));
+    let Some(row) = settings.get(selected) else { return; };
+    let mut context = vec![Line::styled(row.key.label(), theme::faint())];
+    let mut hints = Vec::new();
+    if !row.effect_hint().is_empty() { hints.push(row.effect_hint()); }
+    if row.condition_state == "unknown" && !row.effect_hint().contains("unknown") {
+        hints.push("? Applicability unknown");
+    } else if row.active == Some(false) && !row.effect_hint().contains("Inactive") {
+        hints.push("Inactive");
     }
-    if !row.activation_hint.is_empty() {
-        help.push(Line::from(row.activation_hint.clone()));
-    }
-    if !row.choices.is_empty() {
-        help.push(Line::styled(format!("Options: {}", row.choices.join(" · ")), theme::muted()));
-    }
-    // Preserve the full prompt in the help text when the table ellipsizes it.
-    if row.label != row.key.label() {
-        help.push(Line::from(row.label.clone()));
-    }
-    let help = Paragraph::new(help).wrap(Wrap { trim: false });
-    let help_height = (help.line_count(area.width.saturating_sub(2)) as u16)
-        .saturating_add(2)
-        .min(area.height.saturating_sub(4) / 2);
+    if !hints.is_empty() { context.push(Line::styled(hints.join(" · "), theme::muted())); }
+    let context = Paragraph::new(context).wrap(Wrap { trim: false });
+    let help_height = (context.line_count(area.width.saturating_sub(2).max(1)) as u16 + 2)
+        .min(5).min(area.height.saturating_sub(4) / 2);
     let [table_area, help_area] = Layout::vertical([
         Constraint::Min(4), Constraint::Length(help_height),
     ]).areas(area);
-    frame.render_widget(help.block(theme::panel().title(" Selected setting ")), help_area);
+    frame.render_widget(context.block(theme::panel().title(" Selected setting ")), help_area);
 
-    // The shared page viewport includes the help area. Keep the selected row
-    // visible within this smaller table without changing shared navigation.
     let visible = usize::from(table_area.height.saturating_sub(3)).max(1);
     let scroll = app.scroll.min(selected).max(selected.saturating_add(1).saturating_sub(visible));
-    let wide = area.width >= 110;
-    let columns = if wide {
-        vec![
-            column("GROUP", Constraint::Length(12)),
-            column("SETTING", Constraint::Fill(2)),
-            column("VALUE", Constraint::Fill(1)),
-            column("TYPE", Constraint::Length(22)),
-            column("STATE", Constraint::Length(9)),
-        ]
-    } else {
-        vec![
-            column("SETTING", Constraint::Fill(2)),
-            column("VALUE", Constraint::Fill(1)),
-        ]
-    };
-    let rows = settings.iter().map(|row| {
+    let columns = [
+        super::table::optional("GROUP", Constraint::Length(14), 90),
+        column("SETTING", Constraint::Fill(2)),
+        column("VALUE", Constraint::Fill(1)),
+    ];
+    let offset = row_offset(scroll, settings.len(), table_area);
+    let rows = settings.iter().enumerate().map(|(index, row)| {
+        let section_starts = index == 0 || index == offset || settings[index - 1].section() != row.section();
         let label = if row.secret {
-            TableCell::styled(format!("{} [secret]", row.label), theme::muted())
+            TableCell::styled(format!("◆ {}", row.title()), theme::muted())
         } else {
-            TableCell::new(row.label.clone())
+            TableCell::new(row.title())
         };
         let value = if row.value.is_empty() {
             TableCell::styled("—", theme::faint())
+        } else if row.secret {
+            TableCell::styled(row.value.clone(), if row.value == "set" { Style::new().fg(OK) } else { theme::muted() })
         } else {
             TableCell::new(row.value.clone())
         };
-        if wide {
-            vec![TableCell::new(row.group.clone()), label, value,
-                TableCell::new(setting_type(row)),
-                TableCell::styled(setting_state(row), match row.active {
-                    Some(true) => Style::new().fg(OK),
-                    Some(false) => Style::new().fg(WARN),
-                    None => theme::muted(),
-                })]
-        } else {
-            vec![label, value]
-        }
+        vec![TableCell::styled(if section_starts { row.section() } else { "" }, theme::faint()), label, value]
     }).collect();
     render_table(frame, table_area, DataTable {
-        title: "Settings · Enter edit · secrets read only".to_string(),
+        title: "Settings".into(),
         position: Some((selected + 1, settings.len())),
         columns: &columns,
-        rows,
-        selected,
-        scroll,
+        rows, selected, scroll,
     });
 }
 
 const SOURCE_COLUMNS: [Column; 6] = [
-    column("SOURCE", Constraint::Min(26)),
-    column("TYPE", Constraint::Length(10)),
-    column("REGISTERED", Constraint::Length(12)),
-    column("SELECTED", Constraint::Length(10)),
-    column("READY", Constraint::Length(8)),
-    column("OWNER", Constraint::Min(16)),
+    column("SOURCE", Constraint::Fill(2)),
+    super::table::optional("TYPE", Constraint::Length(10), 100),
+    column("REGISTERED", Constraint::Length(11)),
+    column("SELECTED", Constraint::Length(9)),
+    column("READY", Constraint::Length(7)),
+    super::table::optional("OWNER", Constraint::Fill(1), 130),
 ];
 
 /// Booleans read as yes/no; other values are shown as returned.
@@ -180,7 +111,7 @@ pub(super) fn render_sources(frame: &mut Frame, app: &App, area: Rect) {
         frame,
         area,
         DataTable {
-            title: "Sources · Enter select repository · s sync metadata".to_string(),
+            title: "Sources".into(),
             position: app.selection_position(),
             columns: &SOURCE_COLUMNS,
             rows,
@@ -212,13 +143,13 @@ pub(super) fn render_software(frame: &mut Frame, app: &App, area: Rect) {
             frame,
             sections[0],
             if filter_active {
-                "LOCAL FILTER · Enter keep · Esc clear · Ctrl-U reset"
+                "FILTER · ↵ keep · Esc clear"
             } else {
-                "LOCAL FILTER · / edit · Esc clear"
+                "FILTER · / edit · Esc clear"
             },
             &app.software_filter,
             filter_active,
-            "type item, group, reference, version, or state",
+            "name, group, or source",
         );
         sections[1]
     } else {
@@ -229,15 +160,11 @@ pub(super) fn render_software(frame: &mut Frame, app: &App, area: Rect) {
     if entries.is_empty() && !app.loading() {
         let (title, message, action) = if app.software_filter.is_empty() {
             (
-                "No software policy entries",
-                "The evaluated manifest contains no software items.",
-                "Press r to refresh.",
+                "No software selected", "", "r refresh",
             )
         } else {
             (
-                "No matching software",
-                "The local filter did not match any loaded policy entry.",
-                "Press / to edit it or Esc to clear it.",
+                "No matches", "", "/ edit filter · Esc clear",
             )
         };
         render_empty_state(frame, table_area, title, message, action);
@@ -293,12 +220,12 @@ pub(super) fn render_software(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 const SEARCH_COLUMNS: [Column; 6] = [
-    column("SOURCE", Constraint::Length(12)),
-    column("KIND", Constraint::Length(12)),
-    column("NAME", Constraint::Length(26)),
-    column("VERSION", Constraint::Length(12)),
-    column("DESCRIPTION", Constraint::Min(24)),
-    column("REFERENCE", Constraint::Length(34)),
+    super::table::optional("SOURCE", Constraint::Length(18), 90),
+    super::table::optional("KIND", Constraint::Length(10), 110),
+    column("NAME", Constraint::Fill(2)),
+    super::table::optional("VERSION", Constraint::Length(12), 100),
+    super::table::optional("DESCRIPTION", Constraint::Fill(3), 70),
+    super::table::optional("REFERENCE", Constraint::Fill(2), 160),
 ];
 
 pub(super) fn render_search(frame: &mut Frame, app: &App, area: Rect) {
@@ -308,13 +235,13 @@ pub(super) fn render_search(frame: &mut Frame, app: &App, area: Rect) {
         frame,
         sections[0],
         if search_active {
-            "REGISTRY SEARCH · Enter submit · Esc cancel · Ctrl-U reset"
+            "SEARCH · ↵ search · Esc cancel"
         } else {
-            "REGISTRY SEARCH · / edit query"
+            "SEARCH · / edit"
         },
         &app.query,
         search_active,
-        "search all configured providers",
+        "package or app name",
     );
     let table_area = sections[1];
     let entries = search_entries(app.payload());
@@ -322,9 +249,7 @@ pub(super) fn render_search(frame: &mut Frame, app: &App, area: Rect) {
         render_empty_state(
             frame,
             table_area,
-            &format!("{} Searching registries", spinner()),
-            "All configured providers remain enabled.",
-            "Results will appear here without blocking navigation.",
+            &format!("{} Searching…", spinner()), "", "",
         );
         return;
     }
@@ -332,9 +257,7 @@ pub(super) fn render_search(frame: &mut Frame, app: &App, area: Rect) {
         render_empty_state(
             frame,
             table_area,
-            "Find software across registries",
-            "Search Homebrew, npm, PyPI, Cargo, Nix, and other configured providers.",
-            "Press /, type a name, then press Enter.",
+            "Find software", "", "/ type a name · ↵ search",
         );
         return;
     }
@@ -342,12 +265,7 @@ pub(super) fn render_search(frame: &mut Frame, app: &App, area: Rect) {
         render_empty_state(
             frame,
             table_area,
-            "No registry matches",
-            &format!(
-                "No provider returned a result for ‘{}’.",
-                app.submitted_query
-            ),
-            "Press / to refine the query or r to retry all providers.",
+            "No results", &app.submitted_query, "/ change query · r retry",
         );
         return;
     }
@@ -364,7 +282,9 @@ pub(super) fn render_search(frame: &mut Frame, app: &App, area: Rect) {
                 TableCell::new(entry.kind.clone()),
                 TableCell::new(entry.name.clone()),
                 TableCell::new(entry.version.clone()),
-                TableCell::new(format!("{} · {}", entry.availability, entry.description)),
+                TableCell::new(entry.description.clone()).note(
+                    if entry.availability == "managed" { String::new() }
+                    else { format!(" · {}", entry.availability) }),
                 TableCell::new(entry.reference.clone()),
             ]
         })
@@ -395,9 +315,7 @@ pub(super) fn render_mirror(frame: &mut Frame, app: &App, area: Rect) {
         render_empty_state(
             frame,
             area,
-            "No mirror targets",
-            "envY did not return any ecosystem targets for this machine.",
-            "Press r to refresh or inspect `envy mirror targets`.",
+            "No mirror targets", "", "r refresh",
         );
         return;
     }
@@ -415,7 +333,7 @@ pub(super) fn render_mirror(frame: &mut Frame, app: &App, area: Rect) {
         area,
         DataTable {
             title: format!(
-                "Mirror targets · profile {} · Enter choose source",
+                "Mirrors · {}",
                 mirror_mode(app.payload())
             ),
             position: Some(app.selection_position().unwrap_or((0, count))),

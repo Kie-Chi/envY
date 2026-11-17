@@ -288,8 +288,14 @@ impl App {
             }
             return;
         }
-        if self.pending_setting.is_some() {
+        if let Some(pending) = self.pending_setting.as_mut() {
             match key.code {
+                KeyCode::Up | KeyCode::Char('k') => pending.scroll = pending.scroll.saturating_sub(1),
+                KeyCode::Down | KeyCode::Char('j') => pending.scroll = pending.scroll.saturating_add(1),
+                KeyCode::PageUp => pending.scroll = pending.scroll.saturating_sub(10),
+                KeyCode::PageDown => pending.scroll = pending.scroll.saturating_add(10),
+                KeyCode::Home => pending.scroll = 0,
+                KeyCode::End => pending.scroll = usize::MAX,
                 KeyCode::Enter | KeyCode::Char('y') if !self.setting_loading => {
                     self.apply_pending_setting();
                 }

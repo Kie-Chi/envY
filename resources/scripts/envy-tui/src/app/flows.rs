@@ -41,7 +41,7 @@ impl App {
         }
         self.storage_project_input.clear();
         self.input_mode = InputMode::StorageProject;
-        self.status = "Enter one complete project directory; spaces are part of the path".into();
+        self.status = "Enter a project directory".into();
     }
 
     pub(super) fn commit_storage_project(&mut self) {
@@ -53,7 +53,7 @@ impl App {
         self.input_mode = InputMode::Normal;
         self.storage_project_input.clear();
         if self.storage_projects.contains(&path) {
-            self.status = "Project directory is already in the explicit scope".into();
+            self.status = "Project already added".into();
             return;
         }
         self.storage_projects.push(path);
@@ -68,7 +68,7 @@ impl App {
             return;
         }
         if self.storage_projects.is_empty() {
-            self.status = "No explicit project directories to remove".into();
+            self.status = "No projects selected".into();
             return;
         }
         if all {
@@ -374,18 +374,14 @@ impl App {
             return;
         };
         if row.secret {
-            self.status = "Secret status only; use envy config secret-set".to_string();
+            self.status = "◆ Secret · edit with envy config secret-set".to_string();
             return;
         }
         if !row.setter.editable() {
-            self.status = "This setting has no supported backend setter; reload Settings".to_string();
+            self.status = "Read only · reload Settings".to_string();
             return;
         }
-        let title = if row.label == row.key.label() {
-            row.label.clone()
-        } else {
-            format!("{} · {}", row.label, row.key.label())
-        };
+        let title = row.title();
         if row.freeform() {
             self.setting_edit = Some(SettingEdit {
                 key: row.key,
@@ -395,7 +391,7 @@ impl App {
                 previous: row.value,
             });
             self.input_mode = InputMode::SettingValue;
-            self.status = "Edit value; Enter saves, Esc cancels".to_string();
+            self.status = "Edit value".to_string();
         } else {
             let selected = row
                 .choices
@@ -410,7 +406,7 @@ impl App {
                 selected,
                 current: row.value,
             });
-            self.status = "Choose a value; Enter confirms, Esc cancels".to_string();
+            self.status = "Choose a value".to_string();
         }
     }
 
@@ -422,7 +418,7 @@ impl App {
             return;
         };
         if value == chooser.current {
-            self.status = format!("{} unchanged", chooser.key.label());
+            self.status = format!("{} unchanged", chooser.key.title());
             return;
         }
         self.pending_setting = Some(PendingSetting {
@@ -430,6 +426,7 @@ impl App {
             setter: chooser.setter,
             value,
             previous: chooser.current,
+            scroll: 0,
         });
     }
 
@@ -440,11 +437,11 @@ impl App {
         self.input_mode = InputMode::Normal;
         let value = edit.buffer.trim().to_string();
         if value.is_empty() {
-            self.status = format!("{} left unchanged (empty)", edit.key.label());
+            self.status = format!("{} unchanged · empty input", edit.key.title());
             return;
         }
         if value == edit.previous {
-            self.status = format!("{} unchanged", edit.key.label());
+            self.status = format!("{} unchanged", edit.key.title());
             return;
         }
         self.pending_setting = Some(PendingSetting {
@@ -452,6 +449,7 @@ impl App {
             setter: edit.setter,
             value,
             previous: edit.previous,
+            scroll: 0,
         });
     }
 
@@ -464,7 +462,7 @@ impl App {
         self.invalidate_setting_context();
         self.setting_request = Some(request);
         self.setting_loading = true;
-        self.status = format!("Applying {}", pending.key.label());
+        self.status = format!("Saving {}", pending.key.title());
         spawn_setting(self.tx.clone(), request, pending.key, pending.setter, pending.value);
     }
 
@@ -621,7 +619,7 @@ impl App {
             scroll_max: 0,
             report: None,
         });
-        self.status = format!("Running {}{}", action.display_command(), if action == WorkflowAction::Plan { " · build limit 2h · Esc cancels" } else { "" });
+        self.status = format!("Running {}", action.display_command());
         if action.is_json() {
             let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             self.workflow_cancel = Some(cancelled.clone());
@@ -681,9 +679,9 @@ impl App {
         self.invalidate_after_mutation();
         self.load_current(true);
         self.status = if success {
-            format!("{} completed; refreshing data", action.title())
+            format!("✓ {} completed", action.title())
         } else {
-            format!("{} failed; inspect the command output", action.title())
+            format!("! {} failed · see output", action.title())
         };
     }
 

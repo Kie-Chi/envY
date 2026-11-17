@@ -141,30 +141,17 @@ impl StorageReport {
                 .as_ref()
                 .is_some_and(|process| !process.success)
             || rows.iter().any(|row| row.status == "error");
-        let warnings = rows
-            .iter()
-            .any(|row| matches!(row.status.as_str(), "warning" | "partial"));
-        let outcome = if failed {
-            "partial / failed"
-        } else if warnings {
-            "report with warnings"
-        } else {
-            "report received"
-        };
-        let exit = self
-            .process
-            .as_ref()
-            .map(|process| {
-                format!(
-                    " · exit {}",
-                    process
-                        .exit_code
-                        .map(|code| code.to_string())
-                        .unwrap_or_else(|| "signal".into())
-                )
-            })
-            .unwrap_or_else(|| " · saved process status unknown".into());
-        format!("Storage {} · {outcome}{exit}", self.view.command())
+        let warnings = rows.iter().filter(|row| {
+            matches!(row.status.as_str(), "warning" | "partial")
+                || (row.status == "unknown" && self.value(row).and_then(|v| v.get("status")).is_some())
+        }).count();
+        if failed {
+            let exit = self.process.as_ref().filter(|p| !p.success)
+                .and_then(|p| p.exit_code).map(|code| format!(" · exit {code}")).unwrap_or_default();
+            format!("! Storage incomplete{exit}")
+        }
+        else if warnings > 0 { format!("! Storage · {warnings} need attention") }
+        else { "✓ Storage ready".into() }
     }
 
     pub fn data(&self) -> Option<&Value> {

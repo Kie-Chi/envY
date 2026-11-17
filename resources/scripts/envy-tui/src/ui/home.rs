@@ -6,12 +6,11 @@ use serde_json::Value;
 use crate::{
     app::App,
     model::{
-        journal_entries, parse_timestamp, relative_age, short_timestamp, text, JournalEntry, Screen,
+        doctor_results, journal_entries, parse_timestamp, relative_age, short_timestamp, text, JournalEntry, Screen,
     },
-    theme::{self, ACCENT, ERROR, OK, WARN},
+    theme::{self, ACCENT, OK, WARN},
 };
 
-use super::hint_spans;
 use super::table::ellipsize;
 
 /// A label/value line in a Home card.
@@ -44,12 +43,13 @@ fn machine_lines(payload: &Value) -> Vec<Line<'static>> {
 
 fn repository_lines(git: &Value) -> Vec<Line<'static>> {
     let upstream = git.get("upstream").and_then(Value::as_str);
-    let ahead = git.get("ahead").and_then(Value::as_u64).unwrap_or(0);
-    let behind = git.get("behind").and_then(Value::as_u64).unwrap_or(0);
-    let remote = match upstream {
-        None => Span::styled("no upstream", theme::muted()),
-        Some(_) if ahead == 0 && behind == 0 => Span::styled("up to date", Style::new().fg(OK)),
-        Some(_) => Span::styled(format!("↑{ahead} ↓{behind}"), Style::new().fg(WARN)),
+    let ahead = git.get("ahead").and_then(Value::as_u64);
+    let behind = git.get("behind").and_then(Value::as_u64);
+    let remote = match (upstream, ahead, behind) {
+        (None, _, _) if git.get("upstream").is_some_and(Value::is_null) => Span::styled("no upstream", theme::muted()),
+        (Some(_), Some(0), Some(0)) => Span::styled("up to date", Style::new().fg(OK)),
+        (Some(_), Some(ahead), Some(behind)) => Span::styled(format!("↑{ahead} ↓{behind}"), Style::new().fg(WARN)),
+        _ => Span::styled("—", theme::muted()),
     };
     let worktree = match git.get("changes").and_then(Value::as_u64) {
         Some(0) => Span::styled("clean", Style::new().fg(OK)),
@@ -111,7 +111,7 @@ fn software_lines(software: &Value) -> Vec<Line<'static>> {
     vec![
         field_line(
             "effective",
-            Span::styled(text(software.get("effective")), Style::new().fg(OK).bold()),
+            Span::styled(text(software.get("effective")), if software.get("effective").and_then(Value::as_u64).is_some() { Style::new().fg(OK).bold() } else { theme::muted() }),
         ),
         field_line("included", text(software.get("included"))),
         field_line("excluded", text(software.get("excluded"))),
@@ -138,26 +138,12 @@ fn recommendation_lines(payload: &Value) -> Vec<Line<'static>> {
         })
         .collect::<Vec<_>>();
     if actions.is_empty() {
-        return vec![
-            Line::from(vec![
-                Span::raw(" "),
-                theme::chip("HEALTHY", OK),
-                Span::raw("  No action required"),
-            ]),
-            Line::from(Span::styled(
-                " The selected machine is healthy",
-                theme::muted(),
-            )),
-            Line::from(""),
-            Line::from(
-                [Span::raw(" ")]
-                    .into_iter()
-                    .chain(hint_spans(
-                        "2 Configure software, mirrors, settings  3 Activity health and history",
-                    ))
-                    .collect::<Vec<_>>(),
-            ),
-        ];
+        let message = if payload.get("recommendations").and_then(Value::as_array).is_some_and(Vec::is_empty) {
+            " No suggested actions"
+        } else {
+            " No suggestions available"
+        };
+        return vec![Line::from(Span::styled(message, theme::muted()))];
     }
     let width = actions
         .iter()
@@ -182,19 +168,9 @@ fn recommendation_lines(payload: &Value) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// Doctor warnings and errors, cut to the card's inner width.
+/// Doctor problems and unknown outcomes, cut to the card's inner width.
 fn attention_lines(doctor: &Value, width: u16) -> Vec<Line<'static>> {
-    doctor
-        .get("results")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter(|result| {
-            matches!(
-                result.get("status").and_then(Value::as_str),
-                Some("warn" | "error")
-            )
-        })
+    doctor_results(Some(doctor), true).into_iter()
         .map(|result| {
             let status = text(result.get("status"));
             let name = text(result.get("name"));
@@ -204,7 +180,7 @@ fn attention_lines(doctor: &Value, width: u16) -> Vec<Line<'static>> {
                 width.saturating_sub(used.min(u16::MAX as usize) as u16),
             );
             Line::from(vec![
-                Span::styled(" ● ", Style::new().fg(theme::status_color(&status))),
+                Span::styled(format!(" {} ", theme::status_symbol(&status)), Style::new().fg(theme::status_color(&status))),
                 Span::styled(name, theme::strong()),
                 Span::styled(format!("  {message}"), theme::muted()),
             ])
@@ -223,7 +199,7 @@ fn activity_lines(entries: &[JournalEntry], width: u16, now: i64) -> Vec<Line<'s
     entries
         .iter()
         .map(|entry| {
-            let color = if entry.result == "ok" { OK } else { ERROR };
+            let color = theme::status_color(&entry.result);
             let age = parse_timestamp(&entry.timestamp)
                 .map(|then| relative_age(then, now))
                 .unwrap_or_else(|| short_timestamp(&entry.timestamp));
@@ -241,7 +217,7 @@ fn activity_lines(entries: &[JournalEntry], width: u16, now: i64) -> Vec<Line<'s
                 entry.detail.as_str()
             };
             Line::from(vec![
-                Span::styled(" ● ", Style::new().fg(color)),
+                Span::styled(format!(" {} ", theme::status_symbol(&entry.result)), Style::new().fg(color)),
                 Span::raw(operation),
                 Span::styled(facts, theme::muted()),
                 Span::styled(ellipsize(detail, room), theme::faint()),
@@ -278,7 +254,7 @@ pub(super) fn render_home(frame: &mut Frame, app: &App, area: Rect) {
     next_lines.push(Line::from(vec![
         Span::raw(" "),
         theme::key("t"),
-        Span::raw(" Storage · local reports and explicit projects"),
+        Span::raw(" Storage"),
     ]));
     let next_rows = next_lines.len() as u16;
     let next = home_card("Recommended", next_lines);

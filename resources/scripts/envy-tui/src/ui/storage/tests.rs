@@ -58,27 +58,77 @@ fn render(report: Option<&StorageReport>, width: u16, height: u16, error: Option
 }
 
 #[test]
-fn storage_table_uses_integer_bytes_and_does_not_turn_unknown_into_zero() {
+fn storage_table_uses_readable_sizes_and_keeps_unmeasured_values_distinct() {
     let report = report();
     let screen = render(Some(&report), 240, 18, None);
     assert!(screen.contains("Inspection"));
     assert!(screen.contains("Policy & records"));
     assert!(screen.contains("Rule validation"));
-    assert!(screen.contains("9007199254740993"));
-    assert!(screen.contains("LOGICAL B"));
-    assert!(screen.contains("ALLOCATED B"));
-    assert!(screen.contains("NATIVE B"));
-    assert!(screen.contains("POLICY B"));
-    assert!(screen.contains("unknown"));
+    assert!(screen.contains("8.0 PiB"));
+    assert!(screen.contains("SIZE"));
+    assert!(screen.contains("ON DISK"));
+    assert!(!screen.contains("RECLAIMABLE"));
+    assert!(screen.contains("CANDIDATE"));
+    assert!(screen.contains("—"));
+    assert!(screen.contains("0 B"));
     assert!(
         !screen.contains("999"),
         "observed lower bounds do not replace unknown bytes"
     );
     assert!(!screen.contains("9007199254740992"));
-    assert!(screen.contains("rows overlap"));
-    assert!(screen.contains("Received 3 min ago"));
+    assert!(!screen.contains("rows overlap"));
+    assert!(screen.contains("Updated 3 min ago"));
     assert!(!screen.contains("--yes"));
     assert!(!screen.contains("maintain"));
+}
+
+#[test]
+fn missing_metrics_and_provider_failures_have_different_presentations() {
+    let report = StorageReport::from_payload(StorageView::Inspect,
+        serde_json::from_str(include_str!("../../storage/fixtures/inspect-darwin.json")).unwrap());
+    let screen = render(Some(&report), 180, 36, None);
+    assert!(screen.contains("! No access"));
+    assert!(screen.contains("! Unavailable"));
+    assert!(!screen.contains("RECLAIMABLE"));
+    assert!(!screen.contains("CANDIDATE"));
+    assert!(!screen.contains("report only"));
+    assert!(report.summary().contains("need attention"));
+    let codex = report.rows().into_iter().find(|row| row.label == "codex-data").unwrap();
+    assert_eq!(codex.measurements.logical, None);
+    assert!(report.detail_text(&codex).contains("permission_denied"));
+}
+
+#[test]
+fn provider_measurements_are_visible_without_fabricating_missing_values() {
+    let report = StorageReport::from_payload(StorageView::Inspect, json!({
+        "schemaVersion":1, "command":"storage inspect", "ok":true, "warnings":[],
+        "data":{"items":[], "reports":{"native":{"status":"complete","logicalBytes":1024,
+            "nativeReclaimableBytes":512,"allocatedBytes":null}}}
+    }));
+    let screen = render(Some(&report), 180, 20, None);
+    assert!(screen.contains("1.0 KiB"));
+    assert!(screen.contains("512 B"));
+    assert!(screen.contains("RECLAIMABLE"));
+    assert!(!screen.contains("ON DISK"));
+}
+
+#[test]
+fn policy_and_rules_do_not_render_capacity_columns() {
+    for view in [StorageView::Status, StorageView::Validate] {
+        let report = StorageReport::from_payload(view, json!({
+            "schemaVersion":1, "command":format!("storage {}", view.command()), "ok":true, "warnings":[],
+            "data":{"mode":"manual", "ruleDetails":[], "rules":[], "runs":[]}
+        }));
+        let mut terminal = Terminal::new(TestBackend::new(180, 24)).unwrap();
+        terminal.draw(|frame| render_storage(frame, frame.area(), StoragePage {
+            view, report:Some(&report), selected:0, scroll:0, loading:false, error:None,
+            timing:StorageTiming::default(), projects:&[], project_input:None,
+        })).unwrap();
+        let screen = text(terminal.backend().buffer());
+        assert!(!screen.contains("SIZE"));
+        assert!(!screen.contains("ON DISK"));
+        assert!(!screen.contains("unknown"));
+    }
 }
 
 #[test]
@@ -90,7 +140,7 @@ fn cached_and_unknown_receipt_times_remain_explicit() {
             now: 280
         }
         .label(),
-        "Cached · saved 3 min ago · refresh to update"
+        "Cached · 3 min ago"
     );
     assert_eq!(
         StorageTiming {
@@ -98,7 +148,7 @@ fn cached_and_unknown_receipt_times_remain_explicit() {
             ..Default::default()
         }
         .label(),
-        "Receipt time unknown"
+        "Not refreshed"
     );
 }
 
@@ -116,7 +166,7 @@ fn transport_error_keeps_previous_report_visible() {
     assert!(screen.contains("unknown-data"));
     let empty = render(None, 120, 20, Some("Protocol: response was not JSON"));
     assert!(empty.contains("Protocol"));
-    assert!(empty.contains("Storage report unavailable"));
+    assert!(empty.contains("Storage unavailable"));
 }
 
 #[test]
@@ -130,7 +180,7 @@ fn malformed_shape_renders_a_visible_diagnostic() {
     );
     let screen = render(Some(&report), 140, 18, None);
     assert!(screen.contains("Invalid report shape"));
-    assert!(screen.contains("error"));
+    assert!(screen.contains("! Failed"));
 }
 
 #[test]
@@ -212,7 +262,7 @@ fn report_for_another_view_is_not_shown_as_current() {
         })
         .unwrap();
     let screen = text(terminal.backend().buffer());
-    assert!(screen.contains("Waiting for the selected Storage view"));
+    assert!(screen.contains("Loading selected view…"));
     assert!(!screen.contains("sparse-data"));
 }
 
@@ -247,6 +297,7 @@ fn action_complete_envelope_tail_remains_reachable_beyond_u16_visual_rows() {
     use std::os::unix::process::ExitStatusExt;
     let mut actions = crate::storage::actions::Actions::default();
     let payload = json!({"data":{"target":format!("{}TAIL", "界".repeat(140_000))}});
+    actions.details = true;
     actions.report = Some(crate::model::WorkflowReport::from_result(Ok(crate::transport::JsonResponse {
         payload, status: std::process::ExitStatus::from_raw(256), stderr:"bounded synthetic stderr".into(),
     })));

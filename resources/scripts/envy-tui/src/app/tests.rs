@@ -49,7 +49,7 @@ fn restored_home_is_shown_until_a_fresh_status_replaces_it() {
     state.loading = true;
     state.request = Some(7);
     app.sync_status();
-    assert_eq!(app.status, "Showing home from 3 h ago");
+    assert_eq!(app.status, "Cached · 3 h ago");
     app.tx
         .send(Message::Loaded {
             request: 7,
@@ -93,14 +93,14 @@ fn failed_refresh_keeps_the_restored_home_and_names_its_age() {
     app.tx.send(failed(6, Screen::Home, "stale")).unwrap();
     app.receive_messages();
     assert!(app.loading());
-    assert_eq!(app.status, "Showing home from 3 h ago");
+    assert_eq!(app.status, "Cached · 3 h ago");
 
     app.tx
         .send(failed(7, Screen::Home, "nix eval failed"))
         .unwrap();
     app.receive_messages();
     assert!(!app.loading());
-    assert_eq!(app.status, "Home refresh failed; showing data from 3 h ago");
+    assert_eq!(app.status, "! Refresh failed · cached 3 h ago");
     assert_eq!(app.current_error(), Some("nix eval failed"));
     assert_eq!(app.payload(), Some(&json!({"machine": "old"})));
     assert_eq!(app.saved_age(Screen::Home).as_deref(), Some("3 h ago"));
@@ -134,7 +134,7 @@ fn failed_refresh_of_a_loaded_page_keeps_its_data() {
         .unwrap();
     app.receive_messages();
 
-    assert_eq!(app.status, "Doctor refresh failed; showing cached data");
+    assert_eq!(app.status, "! Refresh failed · cached data");
     assert_eq!(app.payload(), Some(&json!({"summary": {"ok": 1}})));
     assert!(!app.current_state().unwrap().needs_load(false));
 }
@@ -1033,7 +1033,7 @@ fn storage_failed_refresh_preserves_data_receipt_time_and_requires_explicit_retr
     assert_eq!(app.current_state().unwrap().received_at, Some(100));
     assert_eq!(app.current_error(), Some("Timeout: inspect"));
     assert!(app.current_has_content());
-    assert!(app.status.contains("refresh failed"));
+    assert!(app.status.contains("Refresh failed"));
     app.set_screen(Screen::Storage);
     assert_eq!(app.request_id, 0);
     assert!(app.current_error().is_some());
@@ -1067,7 +1067,7 @@ fn storage_partial_nonzero_reports_and_details_never_become_ready_or_mutations()
         })
         .unwrap();
     app.receive_messages();
-    assert!(app.status.contains("partial / failed"));
+    assert!(app.status.contains("Storage incomplete"));
     assert!(app.status.contains("exit 7"));
     assert!(!app.status.contains("ready"));
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));

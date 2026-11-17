@@ -45,12 +45,38 @@ pub fn selection() -> Style {
 
 pub fn status_color(status: &str) -> Color {
     match status {
-        "ok" => OK,
-        "warn" => WARN,
-        "error" => ERROR,
+        "ok" | "complete" | "success" => OK,
+        "warn" | "warning" | "partial" | "unknown" | "—" | "" => WARN,
+        "error" | "fail" | "failed" => ERROR,
         "info" => INFO,
         _ => MUTED,
     }
+}
+
+pub fn status_symbol(status: &str) -> &'static str {
+    match status {
+        "ok" | "complete" | "success" => "✓",
+        "warn" | "warning" | "partial" | "error" | "fail" | "failed" => "!",
+        "info" => "i",
+        "absent" | "missing" | "skipped" => "○",
+        _ => "?",
+    }
+}
+
+/// One presentation for report outcomes across pages and Home cards.
+pub fn status_label(status: &str) -> String {
+    let label = match status {
+        "ok" | "complete" | "success" => "OK",
+        "warn" | "warning" => "Warning",
+        "error" | "fail" | "failed" => "Failed",
+        "partial" => "Partial",
+        "info" => "Info",
+        "absent" | "missing" => "Not found",
+        "skipped" => "Skipped",
+        "unknown" | "—" | "" => "Unknown",
+        other => other,
+    };
+    format!("{} {label}", status_symbol(status))
 }
 
 /// Colored chips use ANSI black; neutral chips retain the terminal foreground.
@@ -98,6 +124,19 @@ mod tests {
     use ratatui::widgets::Widget;
 
     #[test]
+    fn outcome_aliases_share_symbols_labels_and_colors() {
+        for statuses in [vec!["ok", "complete", "success"], vec!["warn", "warning"], vec!["error", "fail", "failed"], vec!["absent", "missing"]] {
+            for status in &statuses {
+                assert_eq!(status_label(status), status_label(statuses[0]));
+                assert_eq!(status_color(status), status_color(statuses[0]));
+            }
+        }
+        assert_eq!(status_label("unknown"), "? Unknown");
+        assert_eq!(status_color("unknown"), WARN);
+        assert_ne!(status_symbol("unknown"), status_symbol("ok"));
+    }
+
+    #[test]
     fn secondary_text_retains_default_foreground_without_dimming() {
         for style in [muted(), faint()] {
             assert_eq!(style.fg, Some(Color::Reset));
@@ -119,7 +158,7 @@ mod tests {
 
     #[test]
     fn neutral_chips_do_not_draw_black_text_on_the_default_background() {
-        let style = chip_style(status_color("unknown"));
+        let style = chip_style(status_color("unset"));
         assert_eq!(style.fg, Some(Color::Reset));
         assert_eq!(style.bg, Some(Color::DarkGray));
         assert!(style.add_modifier.contains(Modifier::BOLD));

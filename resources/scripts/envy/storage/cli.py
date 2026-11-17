@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import json
 import os
 import stat
+import sys
 from pathlib import Path
 from typing import Optional
 
 import typer
 from rich.table import Table
+from rich.text import Text
 
 from envy import jsonio, log
 from envy.evaluation import machine_manifest
-from envy.storage import contracts, inspection, lifecycle, maintenance, planner, receipts
+from envy.storage import contracts, inspection, lifecycle, maintenance, planner, pruning, receipts
 from envy.storage.backend import Archive
 from envy.storage.model import StorageError, policy_from_manifest, rule_details
 from envy.storage.state import locked, read_record, records
@@ -125,6 +128,8 @@ def _perform(command, json_output, operation):
             log.hint("Full paths, ownership and activity evidence: envy storage inspect --json")
             for warning in data.get("warnings", []):
                 log.warn("storage", warning)
+        elif command == "prune":
+            _show_prune(data)
         elif command == "maintain":
             table = Table(title="Storage maintenance")
             for name in ("Action", "Available", "Commands", "Note"):
@@ -178,6 +183,79 @@ def cmd_inspect(
 ):
     """Inspect known local storage hotspots without plans, cleanup or service startup."""
     _perform("inspect", json_output, lambda: inspection.inspect(Path.home(), projects=project))
+
+
+def _prune_interactive() -> bool:
+    return sys.stdin.isatty()
+
+
+def _show_prune(data: dict) -> None:
+    if data.get("cancelled"):
+        log.console.print("Prune cancelled; no cleanup was performed.")
+        return
+    if data.get("execute"):
+        summary = data["summary"]
+        log.console.print("Prune: " + str(summary["deletedItems"]) + " deleted, "
+                          + str(summary["archivedItems"]) + " archived and released, "
+                          + str(summary["skippedItems"]) + " skipped, "
+                          + str(summary["retainedItems"]) + " retained.", markup=False)
+        log.console.print(f"Deleted size estimate: {data['deletedBytesEstimate'] / 2**20:.2f} MiB")
+        change = data.get("availableBytesChange")
+        if change is not None:
+            log.console.print(f"Observed free-space change: {change / 2**20:+.2f} MiB")
+        for item in data.get("maintenance", {}).get("items", []):
+            reclaimed = item.get("reportedReclaimedBytes")
+            amount = f"{reclaimed / 2**20:.2f} MiB reported" if reclaimed is not None else "reclaimed size not reported"
+            outcome = ("unknown" if data.get("maintenanceState") in {"unknown", "running"}
+                       else "completed" if item["available"] else "failed")
+            log.console.print(item["action"] + ": " + outcome + "; " + amount, markup=False)
+        for entry in data.get("retained", []):
+            log.console.print("Retained staged data: " + entry["heldPath"], markup=False)
+        for entry in data.get("errors", []):
+            log.error("prune", entry.get("reason", "Cleanup failed"))
+            if entry.get("heldPath"):
+                log.console.print("Staging path: " + entry["heldPath"], markup=False)
+        return
+    table = Table(title="Prune current storage")
+    for column in ("Rule", "Action", "MiB estimate", "Path / status"):
+        table.add_column(column)
+    for candidate in data["candidates"]:
+        table.add_row(candidate["rule"], "archive" if candidate["action"] == "archive" else "delete",
+                      f"{candidate['size'] / 2**20:.2f}",
+                      Text(candidate.get("blocked") or candidate["path"]))
+    for item in data["maintenance"]["items"]:
+        target = json.dumps(item["target"], ensure_ascii=False) + "\n" if item.get("target") else ""
+        table.add_row(item["action"], "native", "unknown", Text(target + item["note"]))
+    log.console.print(table)
+    log.console.print("Eligible files/directories: " + str(data["summary"]["eligibleItems"])
+                      + "; skipped: " + str(len(data["skipped"])), markup=False)
+    for warning in data["warnings"]:
+        log.console.print(warning, markup=False)
+
+
+@app.command("prune")
+def cmd_prune(
+    yes: bool = typer.Option(False, "--yes", "-f", "--force", help="Skip the single confirmation prompt."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Scan and show the scope without cleaning."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON; execution also requires --yes."),
+):
+    """Scan disposable caches and archive rules, then reclaim space immediately."""
+    def operation():
+        if dry_run and yes:
+            raise StorageError("--dry-run cannot be combined with --yes/-f/--force", code="invalid_prune")
+        if not dry_run and not yes and (json_output or not _prune_interactive()):
+            raise StorageError("Use --yes to execute noninteractively, or --dry-run to inspect", code="confirmation_required")
+        policy, state = _context()
+        with locked(state):
+            prepared = pruning.prepare(policy, state)
+            if dry_run:
+                return prepared
+            if not yes:
+                _show_prune(prepared)
+                if not typer.confirm("Prune the displayed content now?", default=False):
+                    return {**prepared, "cancelled": True}
+            return pruning.execute(policy, state, prepared)
+    _perform("prune", json_output, operation)
 
 
 @app.command("plan")
@@ -258,7 +336,8 @@ def cmd_status(json_output: bool = typer.Option(False, "--json", help="Emit JSON
                                 "passwordFile": _password_status(policy.password_file),
                                 "repositoryChecked": False},
                     "latestPlan": max(records(state, "plans"), key=lambda plan: plan["createdAt"], default=None),
-                    "runs": records(state, "runs"), "operations": receipts.summaries(state)}
+                    "runs": records(state, "runs"), "prunes": records(state, "prunes"),
+                    "operations": receipts.summaries(state)}
     _perform("status", json_output, operation)
 
 

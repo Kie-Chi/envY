@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 import shlex
 import shutil
 import subprocess
+import tempfile
+from decimal import Decimal
+from typing import Callable
 
 from envy.process import run_process
 from envy.utils import PLATFORM
@@ -155,10 +159,55 @@ def preview(policy: Policy, actions: list[str] | None = None, *, bind_targets: b
     return {"execute": False, "items": items}
 
 
-def maintain(policy: Policy, actions: list[str] | None = None, *, approved_preview: dict | None = None) -> dict:
+_REPORT_TAIL_BYTES = 64 * 1024
+_SIZE = r"(?P<size>[0-9]+(?:\.[0-9]+)?)\s*(?P<unit>bytes?|[kKMGT]i?B|B)"
+_REPORT_PATTERNS = {
+    "nix": rf"[0-9]+ store paths deleted, {_SIZE} freed",
+    "docker": rf"Total reclaimed space:\s*{_SIZE}",
+    "uv": rf"(?:Removed|Pruned) [0-9]+ (?:files?|directories|entries|packages?) \({_SIZE}\)",
+    "brew": rf"(?:==> )?This operation has freed approximately {_SIZE} of disk space\.",
+    "pip": rf"Files removed: [0-9]+ \({_SIZE}\)",
+    "npm": rf"Content garbage-collected: [0-9]+ \({_SIZE}\)",
+}
+
+
+def _reported_reclaimed(action: str, handle) -> int | None:
+    """Read only a bounded tail and retain only an unambiguous native byte count."""
+    pattern = _REPORT_PATTERNS.get(action)
+    if pattern is None:
+        return None
+    try:
+        end = handle.seek(0, os.SEEK_END)
+        start = max(0, end - _REPORT_TAIL_BYTES)
+        handle.seek(start)
+        tail = handle.read(_REPORT_TAIL_BYTES)
+    except OSError:
+        return None
+    # A truncated first line cannot prove a complete summary.
+    lines = tail.decode("utf-8", errors="replace").splitlines()
+    if start:
+        lines = lines[1:]
+    values = []
+    for line in lines:
+        match = re.fullmatch(pattern, line.strip())
+        if match:
+            unit = match["unit"]
+            exponent = "BKMGT".index(unit[0].upper()) if unit[0].upper() in "KMGT" else 0
+            multiplier = (1024 if "i" in unit else 1000) ** exponent
+            amount = Decimal(match["size"]) * multiplier
+            if amount > 2**64 - 1:
+                return None
+            values.append(int(amount))
+    return values[0] if len(values) == 1 else None
+
+
+def maintain(policy: Policy, actions: list[str] | None = None, *, approved_preview: dict | None = None,
+             report_reclaimed: bool = False,
+             on_progress: Callable[[dict], None] | None = None) -> dict:
     """Execute opted-in actions; approval receipts and locking belong to the caller."""
     if approved_preview is not None:
-        return _maintain_approved(policy, _selection(policy, actions), approved_preview)
+        return _maintain_approved(policy, _selection(policy, actions), approved_preview,
+                                  report_reclaimed=report_reclaimed, on_progress=on_progress)
     data = preview(policy, actions)
     for index, item in enumerate(data["items"]):
         if not item["available"]:
@@ -220,7 +269,9 @@ def _bound_preview(policy: Policy, selected: list[str]) -> dict:
     return {"execute": False, "items": items}
 
 
-def _maintain_approved(policy: Policy, selected: list[str], approved: dict) -> dict:
+def _maintain_approved(policy: Policy, selected: list[str], approved: dict, *,
+                       report_reclaimed: bool = False,
+                       on_progress: Callable[[dict], None] | None = None) -> dict:
     """Use the approved set unchanged and revalidate each native step before writing."""
     if (not isinstance(approved, dict) or approved.get("execute") is not False
             or not isinstance(approved.get("items"), list)):
@@ -242,8 +293,13 @@ def _maintain_approved(policy: Policy, selected: list[str], approved: dict) -> d
                                   or not isinstance(binding.get("roots"), list)):
             raise StorageError("Approved maintenance target is missing; generate a fresh preview")
     data = copy.deepcopy(approved)
+    if on_progress is not None:
+        data["execute"] = True
+        on_progress(data)
     stopped = False
     for item in data["items"]:
+        if report_reclaimed:
+            item["reportedReclaimedBytes"] = None
         if not item["available"]:
             stopped = True
             continue
@@ -257,30 +313,64 @@ def _maintain_approved(policy: Policy, selected: list[str], approved: dict) -> d
         # Step count comes from native semantics, never from saved JSON argv.
         for step in range(2 if action == "docker" else 1):
             argv = None
+            reclaimed = None
+            code, reason = 0, ""
             try:
                 current = native_context.verify(action, item["binding"], policy, platform=PLATFORM)
                 argv = native_context.commands(action, current, platform=PLATFORM)[step]
                 environment = native_context.execution_environment(action, current, platform=PLATFORM)
-                result = run_process(argv, capture=False, check=False, timeout=1800,
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                     env=environment, cwd=current["cwd"]["path"])
-                code = result.returncode
-                reason = _failure(code) if code else ""
             except StorageError as exc:
                 code, reason = 1, str(exc)
             except subprocess.TimeoutExpired:
                 code, reason = 124, "command timed out"
             except (OSError, ValueError, TypeError, KeyError, IndexError):
                 code, reason = 1, "Native target or command is unavailable; generate a fresh preview"
-            output = {"returncode": code}
+            output = {"returncode": None}
             if argv is not None:
                 output["command"] = shlex.join(argv)
             item["output"].append(output)
+            if not code:
+                if on_progress is not None:
+                    output["state"] = "running"
+                    # Persistence failures must propagate before any native side effect.
+                    on_progress(data)
+                try:
+                    if report_reclaimed:
+                        with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+                            result = run_process(argv, capture=False, check=False, timeout=1800,
+                                                 stdout=stdout, stderr=stderr,
+                                                 env=environment, cwd=current["cwd"]["path"])
+                            if result.returncode == 0:
+                                reclaimed = _reported_reclaimed(action, stderr if action in {"nix", "uv"} else stdout)
+                    else:
+                        result = run_process(argv, capture=False, check=False, timeout=1800,
+                                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                             env=environment, cwd=current["cwd"]["path"])
+                    code = result.returncode
+                    reason = _failure(code) if code else ""
+                except StorageError as exc:
+                    code, reason = 1, str(exc)
+                except subprocess.TimeoutExpired:
+                    code, reason = 124, "command timed out"
+                except (OSError, ValueError, TypeError, KeyError, IndexError):
+                    code, reason = 1, "Native target or command is unavailable; generate a fresh preview"
+            output["returncode"] = code
+            if report_reclaimed:
+                output["reportedReclaimedBytes"] = reclaimed if code == 0 else None
+            if on_progress is not None:
+                output["state"] = "failed" if code else "completed"
+                on_progress(data)
             if code:
                 item["available"] = False
                 item["note"] += " " + reason + "; remaining steps were skipped."
                 stopped = True
                 break
+        if report_reclaimed and item["available"]:
+            reports = [output["reportedReclaimedBytes"] for output in item["output"]]
+            if reports and all(value is not None for value in reports):
+                item["reportedReclaimedBytes"] = sum(reports)
     data["execute"] = True
     data["errors"] = [item["action"] for item in data["items"] if not item["available"]]
+    if on_progress is not None:
+        on_progress(data)
     return data

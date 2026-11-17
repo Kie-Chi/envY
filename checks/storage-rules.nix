@@ -90,9 +90,36 @@ let
       include.zotero-update-archive.minAgeDays = 45;
     };
   };
+  pruneIds = [
+    "vscode-gpu-cache" "codex-shader-cache" "chrome-shader-cache"
+    "feishu-shader-cache" "feishu-iron-shader-cache" "steam-shader-cache"
+  ];
+  prunePolicy = evaluate "darwin" {
+    envy.storage.rules = {
+      exclude = pruneIds;
+    };
+  };
+  revokedPrune = evaluate "darwin" {
+    envy.storage.rules.include.vscode-gpu-cache.prune = false;
+  };
   grants = lib.concatMap (entry: entry.protectedOverrides) changed.envy.storage.rules.effective;
 in
 assert valid darwin && valid linux && valid changed;
+assert valid prunePolicy && valid revokedPrune;
+assert lib.all (id:
+  let entry = rule darwin id;
+  in entry != null && entry.prune && entry.action == "quarantine"
+    && entry.targets == "dirs" && entry.depth == 1 && entry.names != [ ]
+    && entry.recursiveAge && entry.optionalRoot && entry.processes != [ ]
+) pruneIds;
+assert lib.all (entry: entry.prune == builtins.elem entry.id pruneIds)
+  darwin.envy.storage.rules.effective;
+assert lib.all (entry: !entry.prune) linux.envy.storage.rules.effective;
+assert !(rule changed "machine-cache").prune;
+assert lib.all (id: rule prunePolicy id == null) pruneIds;
+assert lib.all (entry: !entry.prune) prunePolicy.envy.storage.rules.effective;
+assert !(rule revokedPrune "vscode-gpu-cache").prune;
+assert (rule revokedPrune "vscode-gpu-cache").overriddenFields == [ "prune" ];
 assert valid mounted && valid sftp;
 assert darwin.envy.storage.archive.mountSource == "";
 assert !valid missingSource;

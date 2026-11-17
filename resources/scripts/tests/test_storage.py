@@ -16,7 +16,7 @@ from rich.console import Console
 from typer.testing import CliRunner
 
 from envy.storage import backend, cli, lifecycle, planner
-from envy.storage.model import StorageError, policy_from_manifest
+from envy.storage.model import Rule, StorageError, policy_from_manifest, rule_details
 from envy.storage.state import locked, read_record, records, write_record
 
 
@@ -715,6 +715,37 @@ class StorageSelectionTests(unittest.TestCase):
             result = CliRunner().invoke(cli.app, arguments)
         return result, json.loads(output.getvalue())
 
+    def test_prune_defaults_preserve_legacy_and_positional_rules(self):
+        legacy = Rule("legacy", str(self.root), "quarantine", "files", 1, (), False,
+                      (), (), 60, 0, (), True, "default:common", ("minAgeDays",))
+        self.assertFalse(legacy.prune)
+        self.assertEqual(legacy.overridden_fields, ("minAgeDays",))
+        self.assertFalse(self.policy().rules[0].prune)
+        self.assertFalse(rule_details(self.policy().rules[0])["prune"])
+        self.manifest["storage"]["rules"] = [self.rule]
+        self.assertFalse(self.policy().rules[0].prune)
+        self.rule["prune"] = True
+        self.assertTrue(self.policy().rules[0].prune)
+
+    def test_prune_boolean_changes_details_and_policy_fingerprint(self):
+        default = self.policy()
+        self.rule["prune"] = False
+        self.assertEqual(default.fingerprint, self.policy().fingerprint)
+        self.rule.update(prune=True, overriddenFields=["minAgeDays", "prune"])
+        enabled = self.policy()
+        self.assertTrue(enabled.rules[0].prune)
+        self.assertTrue(rule_details(enabled.rules[0])["prune"])
+        self.assertEqual(enabled.rules[0].action, "quarantine")
+        self.rule["prune"] = False
+        self.assertNotEqual(enabled.fingerprint, self.policy().fingerprint)
+
+    def test_prune_rejects_non_boolean_values(self):
+        for value in (None, 0, 1, "true", "false", [], {}):
+            with self.subTest(value=value):
+                self.rule["prune"] = value
+                with self.assertRaisesRegex(StorageError, "prune must be a boolean"):
+                    self.policy()
+
     def test_single_field_override_is_consumed_from_effective(self):
         policy = self.policy()
         self.assertEqual(policy.rules[0].min_age_days, 60)
@@ -865,7 +896,7 @@ class StorageSelectionTests(unittest.TestCase):
             self.assertEqual(set(data["ruleDetails"][0]), {
                 "id", "path", "action", "targets", "depth", "names", "recursiveAge", "processes",
                 "extensions", "minAgeDays", "minSizeBytes", "protectedOverrides", "optionalRoot",
-                "source", "overriddenFields"})
+                "source", "overriddenFields", "prune"})
             password.write_bytes(b"fixture")
             for mode, private in [(0o600, True), (0o644, False)]:
                 password.chmod(mode)

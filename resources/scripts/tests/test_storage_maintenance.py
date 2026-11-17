@@ -1,6 +1,7 @@
 """Native maintenance regressions never run real cleanup commands."""
 
 import contextlib
+import copy
 import io
 import json
 import os
@@ -374,6 +375,166 @@ class MaintenanceTests(unittest.TestCase):
         self.assertNotIn("fake native stdout", serialized)
         self.assertNotIn("fake native stderr", serialized)
         self.assertEqual(json.loads(serialized)["errors"], ["uv", "npm"])
+
+    def reported_run(self, action, outputs, *, report=True, on_progress=None):
+        binding = {"version": 1, "action": action, "target": {},
+                   "cwd": {"path": str(self.home)}, "executable": {}, "scope": {}, "roots": []}
+        approved = {"execute": False, "items": [
+            {"action": action, "available": True, "binding": binding}]}
+        remaining = iter(outputs)
+        handles = []
+
+        def command(argv, **kwargs):
+            self.assertEqual(argv, maintenance.COMMANDS[action][len(handles) // 2])
+            self.assertEqual(kwargs["cwd"], str(self.home))
+            self.assertEqual(kwargs["env"], {"PATH": "/fixture/bin"})
+            self.assertFalse(kwargs["capture"])
+            self.assertFalse(kwargs["check"])
+            self.assertEqual(kwargs["timeout"], 1800)
+            code, stdout, stderr = next(remaining)
+            for name, value in (("stdout", stdout), ("stderr", stderr)):
+                handle = kwargs[name]
+                if report:
+                    handle.write(value)
+                    handles.append(handle)
+                else:
+                    self.assertEqual(handle, subprocess.DEVNULL)
+            if isinstance(code, BaseException):
+                raise code
+            return subprocess.CompletedProcess(argv, code)
+
+        self.run.side_effect = command
+        with (
+            patch.object(maintenance.native_context, "verify", return_value=binding),
+            patch.object(maintenance.native_context, "commands", return_value=maintenance.COMMANDS[action]),
+            patch.object(maintenance.native_context, "execution_environment", return_value={"PATH": "/fixture/bin"}),
+            contextlib.redirect_stdout(io.StringIO()) as stdout,
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+        ):
+            data = maintenance.maintain(self.policy, [action], approved_preview=approved,
+                                        **({"report_reclaimed": True} if report else {}),
+                                        **({"on_progress": on_progress} if on_progress is not None else {}))
+        self.assertTrue(all(handle.closed for handle in handles))
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertNotIn("private.example", json.dumps(data))
+        return data["items"][0]
+
+    def test_native_reclaimed_summaries_and_decimal_units(self):
+        cases = [
+            ("nix", b"", b"3 store paths deleted, 1.5 MiB freed\n", 1572864),
+            ("nix", b"3 store paths deleted, 1 MB freed\n", b"", None),
+            ("uv", b"", b"Removed 12 files (1.5GiB)\n", 1610612736),
+            ("uv", b"", b"Pruned 2 entries (2 MiB)\n", 2097152),
+            ("brew", b"==> This operation has freed approximately 1.5GB of disk space.\n", b"", 1500000000),
+            ("pip", b"Files removed: 10 (1.25 MB)\n", b"", 1250000),
+            ("npm", b"Content garbage-collected: 3 (123 bytes)\n", b"", 123),
+            ("pip", b"Files removed: 3\n", b"", None),
+            ("go", b"Total reclaimed space: 1GB\n", b"", None),
+            ("npm", b"Content garbage-collected: 0 (0 bytes)\n", b"", 0),
+        ]
+        for action, stdout, stderr, expected in cases:
+            with self.subTest(action=action, expected=expected):
+                item = self.reported_run(action, [(0, stdout, stderr)])
+                self.assertEqual(item["reportedReclaimedBytes"], expected)
+                self.assertEqual(item["output"][0]["reportedReclaimedBytes"], expected)
+
+    def test_docker_reports_require_every_step_to_succeed_and_report(self):
+        for second, expected in (((0, b"Total reclaimed space: 2MB\n", b""), 3000000),
+                                 ((0, b"unrecognized summary", b""), None),
+                                 ((42, b"Total reclaimed space: 2MB\n", b"private.example"), None)):
+            with self.subTest(second=second):
+                item = self.reported_run("docker", [(0, b"Total reclaimed space: 1MB\n", b""), second])
+                self.assertEqual(item["reportedReclaimedBytes"], expected)
+                self.assertEqual(item["output"][0]["reportedReclaimedBytes"], 1000000)
+        item = self.reported_run("docker", [(42, b"Total reclaimed space: 1MB\n", b"private.example")])
+        self.assertEqual(len(item["output"]), 1)
+        self.assertIsNone(item["reportedReclaimedBytes"])
+        self.assertIsNone(item["output"][0]["reportedReclaimedBytes"])
+
+    def test_reclaimed_failures_and_unknown_output_do_not_leak(self):
+        for failure in (42, 124, subprocess.TimeoutExpired("fixture", 1800), OSError("private.example")):
+            with self.subTest(failure=failure):
+                item = self.reported_run("pip", [(failure, b"Files removed: 1 (99 MB)\n", b"private.example")])
+                self.assertFalse(item["available"])
+                self.assertIsNone(item["reportedReclaimedBytes"])
+                self.assertIsNone(item["output"][0]["reportedReclaimedBytes"])
+        item = self.reported_run("pip", [(0, b"private.example/Files removed: 1 (99 MB)\n", b"private.example")])
+        self.assertIsNone(item["reportedReclaimedBytes"])
+
+    def test_reclaimed_reads_only_bounded_tail_and_complete_summary_lines(self):
+        summary = b"Files removed: 1 (5 MB)\n"
+        for payload, expected in ((summary + b"x" * 70000, None),
+                                  (b"x" * 70000 + b"\n" + summary, 5000000),
+                                  (b"x" * 70000 + summary, None)):
+            with self.subTest(expected=expected):
+                item = self.reported_run("pip", [(0, payload, b"")])
+                self.assertEqual(item["reportedReclaimedBytes"], expected)
+        with tempfile.TemporaryFile() as handle:
+            handle.write(b"x" * 70000 + b"\n" + summary)
+            with patch.object(maintenance, "_REPORT_TAIL_BYTES", 64), patch.object(
+                handle, "read", wraps=handle.read
+            ) as read:
+                self.assertEqual(maintenance._reported_reclaimed("pip", handle), 5000000)
+            read.assert_called_once_with(64)
+
+    def test_progress_retains_intent_completed_and_interrupted_steps(self):
+        snapshots = []
+        def progress(data):
+            snapshots.append(copy.deepcopy(data))
+        with self.assertRaises(KeyboardInterrupt):
+            self.reported_run("docker", [(0, b"Total reclaimed space: 1MB\n", b""),
+                                          (KeyboardInterrupt(), b"", b"")], on_progress=progress)
+        self.assertEqual(len(snapshots), 4)
+        self.assertIn("target", snapshots[0]["items"][0]["binding"])
+        self.assertNotIn("output", snapshots[0]["items"][0])
+        output = snapshots[-1]["items"][0]["output"]
+        self.assertEqual(output[0]["state"], "completed")
+        self.assertEqual(output[0]["returncode"], 0)
+        self.assertEqual(output[0]["reportedReclaimedBytes"], 1000000)
+        self.assertEqual(output[1]["state"], "running")
+        self.assertIsNone(output[1]["returncode"])
+        self.assertIn("image prune", output[1]["command"])
+        self.assertNotIn("reportedReclaimedBytes", output[1])
+
+    def test_progress_persistence_failure_prevents_further_mutation(self):
+        for fail_at, expected_calls in ((1, 0), (2, 0), (3, 1), (4, 1)):
+            with self.subTest(fail_at=fail_at):
+                self.run.reset_mock()
+                snapshots = []
+                def progress(data):
+                    snapshots.append(copy.deepcopy(data))
+                    if len(snapshots) == fail_at:
+                        raise OSError("fixture persistence failure")
+                with self.assertRaisesRegex(OSError, "fixture persistence failure"):
+                    self.reported_run("docker", [(0, b"Total reclaimed space: 1MB\n", b"")],
+                                      on_progress=progress)
+                self.assertEqual(self.run.call_count, expected_calls)
+
+    def test_progress_reports_final_failures_and_skipped_actions(self):
+        binding = {"version": 1, "target": {}, "cwd": {}, "executable": {}, "scope": {}, "roots": []}
+        approved = {"execute": False, "items": [
+            {"action": action, "available": True, "binding": dict(binding, action=action)}
+            for action in ("go", "uv")]}
+        snapshots = []
+        with patch.object(maintenance.native_context, "verify", side_effect=StorageError("fixture changed")):
+            result = maintenance.maintain(self.policy, ["go", "uv"], approved_preview=approved,
+                on_progress=lambda data: snapshots.append(copy.deepcopy(data)))
+        self.run.assert_not_called()
+        self.assertEqual(snapshots[-1], result)
+        self.assertEqual(result["errors"], ["go", "uv"])
+        self.assertEqual(result["items"][0]["output"][0]["state"], "failed")
+        self.assertIn("skipped", result["items"][1]["note"])
+        self.assertEqual(result["items"][1]["output"], [])
+
+    def test_reclaimed_defaults_preserve_result_and_process_options(self):
+        item = self.reported_run("pip", [(0, b"", b"")], report=False)
+        self.assertNotIn("reportedReclaimedBytes", item)
+        self.assertNotIn("reportedReclaimedBytes", item["output"][0])
+        self.run.side_effect = self.command
+        item = maintenance.maintain(self.policy, ["npm"], report_reclaimed=True)["items"][0]
+        self.assertNotIn("reportedReclaimedBytes", item)
+        self.assertTrue(self.run.call_args.kwargs["capture"])
 
     def test_approved_preview_validates_every_item_shape_before_execution(self):
         for approved in ({}, {"execute": True, "items": []},

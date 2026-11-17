@@ -40,6 +40,7 @@ class Rule:
     optional_root: bool = False
     source: str = "machine"
     overridden_fields: tuple[str, ...] = ()
+    prune: bool = False
 
 
 @dataclass(frozen=True)
@@ -225,7 +226,7 @@ def policy_from_manifest(manifest: dict, state: Path, checkout: Path) -> Policy:
             raise StorageError("Excluded rule appears in effective rules: " + rule_id)
         allowed = {"id", "path", "action", "targets", "depth", "names", "recursiveAge",
                    "processes", "extensions", "minAgeDays", "minSizeBytes", "protectedOverrides",
-                   "optionalRoot", "source", "overriddenFields"}
+                   "optionalRoot", "source", "overriddenFields", "prune"}
         if set(entry) - allowed:
             raise StorageError("Unknown fields in rule " + rule_id)
         source = entry.get("source", "machine")
@@ -234,6 +235,9 @@ def policy_from_manifest(manifest: dict, state: Path, checkout: Path) -> Policy:
         optional_root = entry.get("optionalRoot", False)
         if type(optional_root) is not bool:
             raise StorageError("optionalRoot must be a boolean")
+        prune = entry.get("prune", False)
+        if type(prune) is not bool:
+            raise StorageError("prune must be a boolean")
         overridden = _strings(entry.get("overriddenFields", []), "overriddenFields")
         if set(overridden) - (allowed - {"id", "source", "overriddenFields"}):
             raise StorageError("Invalid overriddenFields in rule " + rule_id)
@@ -274,7 +278,7 @@ def policy_from_manifest(manifest: dict, state: Path, checkout: Path) -> Policy:
                           recursive_age, tuple(processes), tuple(extensions),
                           _integer(entry.get("minAgeDays", 30), "minAgeDays", 1),
                           _integer(entry.get("minSizeBytes", 0), "minSizeBytes", 0),
-                          tuple(rule_overrides), optional_root, source, tuple(overridden)))
+                          tuple(rule_overrides), optional_root, source, tuple(overridden), prune))
     maintenance_raw = raw.get("maintenance", {})
     if not isinstance(maintenance_raw, dict):
         raise StorageError("Invalid storage maintenance policy")
@@ -311,7 +315,7 @@ def rule_details(rule: Rule) -> dict:
             "processes": list(rule.processes), "extensions": list(rule.extensions),
             "minAgeDays": rule.min_age_days, "minSizeBytes": rule.min_size_bytes,
             "protectedOverrides": list(rule.protected_overrides), "optionalRoot": rule.optional_root,
-            "source": rule.source, "overriddenFields": list(rule.overridden_fields)}
+            "source": rule.source, "overriddenFields": list(rule.overridden_fields), "prune": rule.prune}
 
 
 def _walk_error(error: OSError) -> None:

@@ -47,11 +47,11 @@ def _recheck(policy: Policy, candidate: dict) -> None:
     path = Path(candidate["path"])
     info = validate_entry(path, Path(candidate["root"]), rule, policy)
     if signature(info) != candidate["signature"]:
-        raise StorageError("Candidate changed after the plan was created")
+        raise StorageError("Candidate changed after the plan was created", code="candidate_changed")
     if rule.targets == "dirs" and tree_digest(path) != candidate["treeHash"]:
-        raise StorageError("Candidate changed after the plan was created")
+        raise StorageError("Candidate changed after the plan was created", code="candidate_changed")
     if active_processes(rule):
-        raise StorageError("A declared process is running; candidate retained")
+        raise StorageError("A declared process is running; candidate retained", code="busy")
     assert_inactive(path)
 
 
@@ -75,7 +75,7 @@ def _stage(candidate: dict, destination: Path) -> None:
     try:
         info = os.stat(source.name, dir_fd=descriptor, follow_symlinks=False)
         if signature(info) != candidate["signature"]:
-            raise StorageError("Candidate changed before moving")
+            raise StorageError("Candidate changed before moving", code="candidate_changed")
         if info.st_dev != destination.parent.stat().st_dev:
             raise StorageError("Quarantine must be on the same filesystem as the source")
         os.rename(source.name, destination, src_dir_fd=descriptor)

@@ -2,6 +2,29 @@
 
 更新日期：2026-11-12 UTC。envY 提供共享默认规则，机器按稳定 ID 增加、排除和局部覆盖。最新变更补齐微信和 Zotero 的更新缓存规则，收紧飞书和 VS Code 的暂存选择范围，并补充后台更新器拦截。下文保留 2026-11-11 的 NAS 合成归档验证与只读报告，历史统计按各自记录时间解释。
 
+## 当前源码：立即回收入口
+
+`envy storage prune` 扫描当前符合条件的内容，显示范围后只确认一次，随后立即清理。无需手动创建 plan、选择 run 或复制 token：
+
+```bash
+envy storage prune
+envy storage prune --dry-run
+envy storage prune --yes
+envy storage prune -f
+envy storage prune --force
+envy storage prune --yes --json
+```
+
+`--yes`、`-f`、`--force` 是同一确认参数，跳过提示，仍保留年龄、路径、来源及占用检查。`--dry-run` 不清理，与确认参数互斥；JSON 和非交互执行必须显式确认。扫描会保存内部计划并锁定 storage state，不改动候选内容；执行结果使用现有 JSON envelope。
+
+每条规则的 `prune` 布尔字段默认 `false`。当前只给 `vscode-gpu-cache`、`codex-shader-cache`、`chrome-shader-cache`、`feishu-shader-cache`、`feishu-iron-shader-cache`、`steam-shader-cache` 六条精确 GPU/Shader 缓存规则标记 `prune = true`，它们的普通 `action` 仍为 `quarantine`。机器可通过同 ID 的 `prune = false` 撤销资格。未标记的隔离规则，包括更新包、日志和下载内容，不会被 prune 直接删除；旧 `run` 和 `purge` 继续原有保留期。
+
+显式 `archive` 规则在 NAS 上传后回读一次 SHA-256，执行前确认本地对象未变化，成功后同次释放本地副本；失败保留本地。归档仍限普通文件，不自动删除远端快照。专用 `prunes` 记录保存 repository ID、snapshot、文件 SHA-256 和逐项结果；这些记录目前不接入旧 `restore RUN`，远端恢复使用其中的快照信息。
+
+原生维护复用机器已启用的 Nix、Docker、Go、uv、npm、pip、Homebrew 动作及其目标绑定和保留边界，不删除 Nix generations，不把 Docker volumes 纳入回收。`--force` 是 envY 确认别名，不传给 uv 或扩大原生范围。
+
+占用、变化及消失的候选会跳过，全跳过且无其他失败返回成功；权限、工具或归档失败返回非零。若暂存后发现占用或删除中断，保留路径和状态会写入 `prunes`，不会自动加入旧 purge。结果分别报告删除、归档释放、跳过、暂存保留和错误，并给出候选大小估计、原生工具报告的回收量（未报告时为空）及观察到的可用空间变化；APFS 共享块及同时运行的其他进程会影响后者。完成删除的可丢弃缓存没有恢复副本。
+
 ## 2026-11-15 升级：操作预览与确认
 
 本节记录完整升级阶段 6 的源码实现；后文的真实隔离、NAS 与空间统计仍属于各自标注日期的历史证据。本次操作测试与故障注入使用合成临时文件和 fake providers；标准 Git 检查通过 Python 1347 项（47 跳过）、Storage 331 项（无跳过）、Rust 184 项（无跳过）、Codex 27 项（1 跳过）及 lint、agent、平台边界，独立复核确认已报告问题闭环。另有 Nix 2.33.1 本地 store 的只读元信息探针，仅验证 URI 与 feature 兼容性；未执行新的宿主清理、恢复、NAS 写入、apply 或调度启用。
@@ -80,6 +103,7 @@ envy.storage.rules.include.local-build-cache = {
 | `processes` | 必须退出的进程；带斜杠的模式匹配完整命令行 |
 | `extensions` / `minAgeDays` / `minSizeBytes` | 文件后缀、年龄和大小条件 |
 | `action` | quarantine 或 archive；目录仅支持 quarantine，archive 只支持普通文件 |
+| `prune` | 默认 false；显式 prune 可立即删除该规则匹配的可丢弃缓存，普通 run 仍使用 action |
 | `protectedOverrides` | 该有效规则所需的精确缓存/更新目录授权；排除规则会撤销其授权 |
 
 不放开整个 Application Support、Containers 或用户 profile。state、checkout、SSH/GPG/sops 密钥、Keychain、Mail、Messages 及显式保护路径不可豁免；候选包含这些路径的祖先目录也受保护。内部通配符可以定位用户缓存，但授权末段必须是明确目录。符号链接、硬链接、不安全所有者、权限未知及活动文件检查失败均拒绝操作。
@@ -88,9 +112,9 @@ envy.storage.rules.include.local-build-cache = {
 
 organize-tool 使用本地打包的 3.3.0，负责 check/sim/选择；envY 负责重验与实际修改，restic 负责归档和恢复。实测 organize 的 locations.path 不展开通配符，目录 lastmodified 只检查目录自身 mtime；envY 分别补充路径展开和 recursiveAge。walker 跳过符号链接，无法据此绕过 envY 的安全校验。
 
-## 及时释放空间设计（待实施）
+## 及时释放空间的历史设计
 
-本节是 design 范围内的方案，不是已实现的行为。工作计划与完整设计已通过独立 Reviewer、NixReviewer 审核，批准范围仅为 design。当前 Air 保持 manual/28，所有现有默认 action、30 天隔离、已隔离文件、NAS 合成演练及调度状态不变。本次不运行清理或 maintenance，不执行 apply、commit 或 push。
+本节保留此前 design 方案；当前实现以本文开头的 `storage prune` 为准，没有新增 `action = "delete"` 或改变旧 run/purge 的隔离期。本节后续阶段仍未实施。原方案仅获 design 范围批准，不代表当前行为。工作计划与完整设计已通过独立 Reviewer、NixReviewer 审核，批准范围仅为 design。当前 Air 保持 manual/28，所有现有默认 action、30 天隔离、已隔离文件、NAS 合成演练及调度状态不变。本次不运行清理或 maintenance，不执行 apply、commit 或 push。
 
 **目标与动作契约**
 

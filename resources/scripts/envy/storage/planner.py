@@ -277,7 +277,7 @@ def assert_inactive(path: Path, *, ancestors: bool = True) -> None:
     for argv in probes:
         result = run_process(argv, capture=True, check=False, timeout=10)
         if result.returncode == 0:
-            raise StorageError("File or its project directory is active")
+            raise StorageError("File or its project directory is active", code="busy")
         if result.returncode != 1 or (result.stderr or "").strip():
             raise StorageError("File activity could not be verified")
 
@@ -290,7 +290,7 @@ def file_hash(path: Path) -> str:
         before = signature(os.fstat(handle.fileno()))
         digest = hashlib.file_digest(handle, "sha256").hexdigest()
         if signature(os.fstat(handle.fileno())) != before:
-            raise StorageError("File changed while reading")
+            raise StorageError("File changed while reading", code="candidate_changed")
     return digest
 
 

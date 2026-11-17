@@ -60,6 +60,10 @@ def capabilities(manifest: dict) -> dict:
                         _flag("--preview-token", "Confirm the same request with --yes before expiry; one claim only."),
                         _flag("--scheduled", "Internal scheduler only: use machine mode; reject plan_id and --yes. "
                               "Auto mode executes and purges; report mode saves a plan; manual mode rejects."))),
+        _command("prune", tui="CLIhandoff",
+                 effect="Scan current disposable caches and archive rules; confirm once to delete immediately and run policy-enabled native maintenance.",
+                 flags=(_flag("--yes/--force", "Skip confirmation; -f is the same alias. Keep age, path and activity checks."),
+                        _flag("--dry-run", "Scan without cleanup; cannot be combined with --yes or --force."))),
         _command("purge", preview=True, effect="Preview expired quarantine; execution deletes unchanged expired files.",
                  flags=(_flag("--yes", "Execute quarantine deletion; retain archive snapshots."),
                         _flag("--preview", "Save a bound, metadata-only preview of selected expired runs."),
@@ -90,6 +94,15 @@ def capabilities(manifest: dict) -> dict:
             command["flags"].append(_flag("--json", "Emit one envY JSON envelope."))
         if command["tui"] == "CLIhandoff":
             name = command["id"]
+            if name == "prune":
+                command["handoff"] = {
+                    "argv": ["envy", "storage", "prune"],
+                    "target": {"kind": "disposable-caches-and-archives", "label": "Current machine prune policy", "status": "set"},
+                    "backend": {"program": "envy", "fixedArguments": ["storage", "prune"]},
+                    "exit": {"success": 0, "failure": "nonzero", "return": "Return to storage and refresh explicitly."},
+                    "sideEffects": command["sideEffects"], "interactive": True,
+                    "confirmation": "One CLI prompt or explicit --yes/-f/--force"}
+                continue
             command["handoff"] = {
                 "argv": ["envy", "storage", name, *(["--older-than", "30d", "--brew"] if name == "gc" else ["--json"])],
                 "target": {"kind": "nix-generations-and-caches", "label": "Local Nix generations and caches", "status": "set"} if name == "gc" else _archive_target(raw),

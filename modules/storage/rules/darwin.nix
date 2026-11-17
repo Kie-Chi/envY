@@ -292,6 +292,7 @@
     processes = [ "/Google Chrome[.]app/" ];
   };
   vscode-gpu-cache = {
+    prune = true;
     path = "${home}/Library/Application Support/Code";
     targets = "dirs";
     depth = 1;
@@ -308,6 +309,7 @@
     ];
   };
   codex-shader-cache = {
+    prune = true;
     path = "${home}/Library/Application Support/Codex";
     targets = "dirs";
     depth = 1;
@@ -320,6 +322,7 @@
     protectedOverrides = [ "${home}/Library/Application Support/Codex/GraphiteDawnCache" ];
   };
   chrome-shader-cache = {
+    prune = true;
     path = "${home}/Library/Application Support/Google/Chrome";
     targets = "dirs";
     depth = 1;
@@ -336,6 +339,7 @@
     ];
   };
   feishu-shader-cache = {
+    prune = true;
     path = "${home}/Library/Application Support/LarkShell";
     targets = "dirs";
     depth = 1;
@@ -352,6 +356,7 @@
     ];
   };
   feishu-iron-shader-cache = {
+    prune = true;
     path = "${home}/Library/Application Support/LarkShell/iron";
     targets = "dirs";
     depth = 1;
@@ -368,6 +373,7 @@
     ];
   };
   steam-shader-cache = {
+    prune = true;
     path = "${home}/Library/Application Support/Steam/config/htmlcache";
     targets = "dirs";
     depth = 1;

@@ -17,6 +17,11 @@ in
     type = types.enum [ "quarantine" "archive" ];
     description = "Action for matching entries.";
   };
+  prune = mkOption {
+    type = types.bool;
+    default = false;
+    description = "Allow explicit prune to delete matching entries without quarantine retention.";
+  };
   targets = mkOption {
     type = types.enum [ "files" "dirs" ];
     default = "files";

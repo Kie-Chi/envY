@@ -243,6 +243,60 @@
         ]
       },
       {
+        "id": "prune",
+        "argv": [
+          "storage",
+          "prune"
+        ],
+        "json": true,
+        "tui": "CLIhandoff",
+        "internal": false,
+        "preview": false,
+        "sideEffects": "Scan current disposable caches and archive rules; confirm once to delete immediately and run policy-enabled native maintenance.",
+        "arguments": [],
+        "flags": [
+          {
+            "flag": "--yes/--force",
+            "effect": "Skip confirmation; -f is the same alias. Keep age, path and activity checks."
+          },
+          {
+            "flag": "--dry-run",
+            "effect": "Scan without cleanup; cannot be combined with --yes or --force."
+          },
+          {
+            "flag": "--json",
+            "effect": "Emit one envY JSON envelope."
+          }
+        ],
+        "handoff": {
+          "argv": [
+            "envy",
+            "storage",
+            "prune"
+          ],
+          "target": {
+            "kind": "disposable-caches-and-archives",
+            "label": "Current machine prune policy",
+            "status": "set"
+          },
+          "backend": {
+            "program": "envy",
+            "fixedArguments": [
+              "storage",
+              "prune"
+            ]
+          },
+          "exit": {
+            "success": 0,
+            "failure": "nonzero",
+            "return": "Return to storage and refresh explicitly."
+          },
+          "sideEffects": "Scan current disposable caches and archive rules; confirm once to delete immediately and run policy-enabled native maintenance.",
+          "interactive": true,
+          "confirmation": "One CLI prompt or explicit --yes/-f/--force"
+        }
+      },
+      {
         "id": "purge",
         "argv": [
           "storage",

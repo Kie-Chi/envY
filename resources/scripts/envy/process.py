@@ -72,6 +72,9 @@ def _maybe_prime_flake_sources(
     )
     if nix_index is None:
         return
+    # Metadata only needs the root source; avoid prefetching every locked input.
+    if tuple(command[nix_index + 1:nix_index + 3]) == ("flake", "metadata"):
+        return
     nix_commands = {"build", "develop", "eval", "flake", "run", "search"}
     if not any(str(part) in nix_commands for part in command[nix_index + 1:]):
         return

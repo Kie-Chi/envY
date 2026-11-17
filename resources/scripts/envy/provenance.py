@@ -104,14 +104,15 @@ def reverify_source(source: dict, target: str) -> bool:
 def freeze_source(root: Path = ENVY_ROOT) -> dict[str, Any]:
     before = _git_evidence(root)
     lock = _lock_digest(root)
-    archive = _json_command(["nix", "flake", "archive", "--json", "--no-update-lock-file", f"path:{root}"], root)
-    path = archive.get("path") if isinstance(archive, dict) else None
+    # Freeze the root source without recursively fetching unused locked inputs.
+    metadata = _json_command(["nix", "flake", "metadata", "--json", "--no-update-lock-file", f"path:{root}"], root)
+    path = metadata.get("path") if isinstance(metadata, dict) else None
     if not isinstance(path, str) or not path.startswith("/nix/store/") or "#" in path:
-        raise SnapshotError("Nix archive did not return a frozen store source")
+        raise SnapshotError("Nix metadata did not return a frozen store source")
     source = {**before, "frozenPath": path, "narHash": nar_hash(path, root=root),
               "lockFingerprint": _lock_digest(Path(path)), "coverage": "path flake archive, including ignored files"}
-    # Re-archive, rather than using Git alone: path flakes include ignored files.
-    again = _json_command(["nix", "flake", "archive", "--json", "--no-update-lock-file", f"path:{root}"], root)
+    # Snapshot again, rather than using Git alone: path flakes include ignored files.
+    again = _json_command(["nix", "flake", "metadata", "--json", "--no-update-lock-file", f"path:{root}"], root)
     if (not isinstance(again, dict) or again.get("path") != path or _git_evidence(root) != before
             or _lock_digest(root) != lock or source["lockFingerprint"] != lock):
         raise SnapshotError("Source changed while freezing; retry the preview", partial={"source": source})
@@ -124,8 +125,9 @@ def build_snapshot(machine: str, *, root: Path = ENVY_ROOT) -> tuple[dict, dict 
     source = freeze_source(root)
     frozen = Path(source["frozenPath"])
     attr = machine_build_attr(machine, source=frozen)
+    # Keep flake commands outside the store cwd so Nix resolves the full target.
     try:
-        rows = _json_command(["nix", "build", "--no-link", "--json", "--impure", "--no-update-lock-file", attr], frozen)
+        rows = _json_command(["nix", "build", "--no-link", "--json", "--impure", "--no-update-lock-file", attr], root)
         if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
             raise SnapshotError("Nix build did not return one machine result")
         row = rows[0]
@@ -150,7 +152,7 @@ def build_snapshot(machine: str, *, root: Path = ENVY_ROOT) -> tuple[dict, dict 
         raise
     manifest = None
     try:
-        value = _json_command(["nix", "eval", "--impure", "--no-update-lock-file", machine_manifest_attr(machine, source=frozen), "--json"], frozen)
+        value = _json_command(["nix", "eval", "--impure", "--no-update-lock-file", machine_manifest_attr(machine, source=frozen), "--json"], root)
         if not isinstance(value, dict) or value.get("id") != machine:
             raise SnapshotError("Frozen manifest identity is invalid")
         manifest = value

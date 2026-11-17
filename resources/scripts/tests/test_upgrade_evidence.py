@@ -100,14 +100,15 @@ class SourceFreezeTests(FixtureCase):
             result = provenance.freeze_source(self.root)
         return result, run
 
-    def test_archive_checks_ignored_content_and_uses_no_update_lock(self):
+    def test_metadata_checks_ignored_content_without_archiving_inputs(self):
         result, run = self.freeze()
         self.assertTrue(result["verified"])
         self.assertEqual(result["frozenPath"], "/nix/store/frozen")
         self.assertIn("ignored", result["coverage"])
         self.assertEqual(run.call_count, 2)
-        self.assertIn("--no-update-lock-file", run.call_args.args[0])
-        self.assertIn(f"path:{self.root}", run.call_args.args[0])
+        for call in run.call_args_list:
+            self.assertEqual(call.args, (["nix", "flake", "metadata", "--json",
+                                          "--no-update-lock-file", f"path:{self.root}"], self.root))
 
     def test_ignored_content_race_rejects_even_when_git_is_unchanged(self):
         with self.assertRaisesRegex(provenance.SnapshotError, "Source changed") as error:
@@ -127,8 +128,10 @@ class SourceFreezeTests(FixtureCase):
 
     def test_build_and_manifest_use_only_the_same_frozen_source(self):
         calls = []
+        working_directories = []
         def command(arguments, root):
             calls.append(arguments)
+            working_directories.append(root)
             if arguments[1] == "build":
                 return [{"drvPath": "/nix/store/fixture.drv", "outputs": {"out": {"path": "/nix/store/fixture-output"}}}]
             if arguments[1] == "derivation":
@@ -144,6 +147,10 @@ class SourceFreezeTests(FixtureCase):
         self.assertIn("path:/nix/store/fixture-source#homeConfigurations.fixture.activationPackage", calls[0])
         self.assertIn("path:/nix/store/fixture-source#homeConfigurations.fixture.config.envy.machine.manifest", calls[2])
         self.assertFalse(any("path:.#" in arg for args in calls for arg in args))
+        # A store cwd can make Nix treat the frozen flake target as a store path.
+        for index in (0, 2):
+            with self.subTest(command=calls[index][1]):
+                self.assertEqual(working_directories[index], self.root)
 
     def test_derivation_json_shapes_and_missing_output(self):
         for value in ({"/nix/store/fixture.drv": {"outputs": {"out": {"path": "/nix/store/output"}}}},

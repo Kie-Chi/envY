@@ -165,15 +165,22 @@
       model = "stepcode-gpt-6.1-sol-eastus2";
     }
     {
+      profile = "mpo";
+      credential = "mp-go";
+      model = "gpt-6.1-sol-coding";
+    }
+    {
       profile = "mpa";
       credential = "mp-go";
       model = "claude-opus-5.5";
     }
     {
       profile = "stepfun-openai-new";
+      model = "gpt-6.1-sol-working";
     }
     {
       profile = "stepfun-anthropic";
+      model = "claude-opus-5-5-working";
     }
     {
       profile = "stepfun-openai-ds";

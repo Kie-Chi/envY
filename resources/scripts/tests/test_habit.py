@@ -186,6 +186,46 @@ class HabitTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         apply_configuration.assert_called_once_with()
 
+    def test_repair_allows_native_drift_without_spawning_readback(self):
+        entry = _entry("key-repeat", "darwin")
+        entry.update(kind="preference", gesture=None,
+                     readback={"adapter": "darwin.key-repeat", "expected": 1})
+        manifest = _manifest(entry)
+        manifest["platform"] = "darwin"
+        with patch("envy.habit.machine_manifest", return_value=manifest), patch(
+            "envy.habit.apply_configuration"
+        ) as apply_configuration, patch("envy.habit_verification.command.run_bounded") as probe:
+            result = CliRunner().invoke(cli, ["habit", "repair"])
+        self.assertEqual(result.exit_code, 0, result.output)
+        apply_configuration.assert_called_once_with()
+        probe.assert_not_called()
+
+    def test_repair_still_rejects_invalid_declarations_and_missing_software(self):
+        entry = _entry("terminal-scratchpad", "niri", requirements=[{"group": "nix.user.package", "item": "missing"}])
+        for manifest in (_manifest(entry), {"habits": [None]}):
+            with patch("envy.habit.machine_manifest", return_value=manifest), patch(
+                "envy.habit.apply_configuration"
+            ) as apply_configuration:
+                result = CliRunner().invoke(cli, ["habit", "repair"])
+            self.assertEqual(result.exit_code, 1)
+            apply_configuration.assert_not_called()
+
+    def test_check_json_success_failure_and_unavailable_preserve_aliases(self):
+        valid = _manifest(_entry("terminal-scratchpad", "niri"))
+        for manifest in (valid, {"habits": [None]}, None):
+            with patch("envy.habit.machine_manifest", return_value=manifest) as evaluate:
+                result = CliRunner().invoke(cli, ["habit", "check", "--json", "--refresh"])
+            payload = json.loads(result.output)
+            self.assertEqual(payload["command"], "habit.check")
+            self.assertEqual(payload["ok"], manifest is valid)
+            self.assertEqual(result.exit_code, 0 if manifest is valid else 1)
+            self.assertEqual(payload["results"], payload["data"]["results"])
+            self.assertEqual(payload["failed"], payload["data"]["failed"])
+            self.assertIsNotNone(payload["data"])
+            evaluate.assert_called_once_with(refresh=True)
+            if manifest is not valid:
+                self.assertIsInstance(payload["error"]["message"], str)
+
     def test_cli_list_json_uses_evaluated_manifest(self):
         manifest = _manifest(_entry("terminal-scratchpad", "niri"))
         with patch("envy.habit.machine_manifest", return_value=manifest):

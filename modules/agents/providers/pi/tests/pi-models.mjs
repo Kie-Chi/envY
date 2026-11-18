@@ -98,6 +98,7 @@ for (const fixture of fixtures.filter(item => item.modelListFixture)) {
         const declared = fixture.data.providers[model.provider].models.find(item => item.id === model.id);
         assert.equal(model.contextWindow, declared.contextWindow ?? 128000);
         assert.equal(model.maxTokens, declared.maxTokens ?? 16384);
+        assert.deepEqual(model.thinkingLevelMap, declared.thinkingLevelMap);
       }
     } finally {
       for (const [variable, value] of previous) {
@@ -121,15 +122,12 @@ for (const fixture of fixtures.filter(item => !item.modelListFixture)) {
     ...provider.models[0], api: provider.api, provider: "envy-pi", baseUrl: provider.baseUrl,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   };
-  const isSol = !fixture.expectedLevels.includes("minimal");
+  const omitsDefaultEffort = model.thinkingLevelMap?.off === null;
 
   test(fixture.name + ": managed schema and supported levels", () => {
     assert.equal(Check(ModelsConfigSchema, fixture.data), true);
     assert.equal(provider.apiKey, model.api === "anthropic-messages" ? "$ANTHROPIC_API_KEY" : "$OPENAI_API_KEY");
     assert.deepEqual(getSupportedThinkingLevels(model), fixture.expectedLevels);
-    if (isSol) {
-      for (const level of ["off", "minimal", "ultra"]) assert.equal(model.thinkingLevelMap[level], null, level);
-    }
   });
 
   test(fixture.name + ": actual btw default request", async () => {
@@ -163,7 +161,7 @@ for (const fixture of fixtures.filter(item => !item.modelListFixture)) {
     assert.ok(payload);
     assert.equal(effort(model.api, payload) ?? null, fixture.defaultEffort);
     assert.equal(payload.tools, undefined, "Btw must not expose tools");
-    if (isSol) {
+    if (omitsDefaultEffort && model.api !== "anthropic-messages") {
       assert.equal(payload.reasoning, undefined);
       assert.equal(payload.reasoning_effort, undefined);
     } else if (model.api === "anthropic-messages") {
@@ -171,16 +169,19 @@ for (const fixture of fixtures.filter(item => !item.modelListFixture)) {
     }
   });
 
-  const requestedLevels = ["low", "medium", "high"];
-  if (isSol) requestedLevels.push("off", "minimal", "xhigh", "max", "ultra");
+  const orderedLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+  const requestedLevels = model.api === "anthropic-messages" ? ["low", "medium", "high"] : orderedLevels;
   for (const reasoning of requestedLevels) {
     test(fixture.name + ": explicit " + reasoning + " uses a legal effort", async () => {
       const { payload } = await capture(model, { messages: [{ role: "user", content: "Offline", timestamp: 0 }] }, { reasoning });
+      const index = orderedLevels.indexOf(reasoning);
       const expected = fixture.expectedLevels.includes(reasoning) ? reasoning
-        : ["off", "minimal"].includes(reasoning) ? "low"
-          : fixture.expectedLevels.includes("max") ? "max" : "high";
+        : orderedLevels.slice(index).find(level => fixture.expectedLevels.includes(level))
+          ?? orderedLevels.slice(0, index).reverse().find(level => fixture.expectedLevels.includes(level));
       assert.equal(clampThinkingLevel(model, reasoning), expected);
-      assert.equal(effort(model.api, payload), expected);
+      const expectedEffort = expected === "off" ? fixture.defaultEffort
+        : model.thinkingLevelMap?.[expected] ?? expected;
+      assert.equal(effort(model.api, payload) ?? null, expectedEffort);
     });
   }
 }

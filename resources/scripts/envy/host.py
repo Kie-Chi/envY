@@ -11,7 +11,7 @@ from rich.text import Text
 
 from envy import log
 from envy.evaluation import informative_nix_error
-from envy.jsonio import emit, emit_error
+from envy.jsonio import emit, emit_error, write_document
 from envy.mutation import offer_mutation_commit
 from envy.process import CommandError, render_command_error, run_process
 from envy.secure_io import atomic_write_bytes, atomic_write_text
@@ -353,7 +353,7 @@ def cmd_list(
                 "file": str(path),
             } for platform, machine_id, path in entries],
         }
-        log.console.print_json(json.dumps(payload, ensure_ascii=False))
+        write_document(payload)
         return
     for platform, machine_id, path in entries:
         table.add_row(
@@ -440,7 +440,7 @@ def cmd_status(
             "flakeTarget": flake_target(),
             "gitBranch": branch or None,
         }
-        log.console.print_json(json.dumps(payload, ensure_ascii=False))
+        write_document(payload)
         return
     table.add_row("Git branch", branch or "<detached>")
     log.console.print(table)
@@ -481,7 +481,7 @@ def cmd_diff(
         "diff": differences,
     }
     if json_output:
-        log.console.print_json(json.dumps(payload, ensure_ascii=False))
+        write_document(payload)
         return
     settings = differences["settings"]
     software = differences["software"]
@@ -544,7 +544,7 @@ def cmd_matrix(
         "software": rows,
     }
     if json_output:
-        log.console.print_json(json.dumps(payload, ensure_ascii=False))
+        write_document(payload)
         return
     table = Table(title="Machine software matrix")
     table.add_column("Group")

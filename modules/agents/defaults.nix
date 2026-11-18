@@ -80,7 +80,7 @@
     adapter = lib.mkDefault "codex";
     endpoint = lib.mkDefault "stepfun-openai";
     credential = lib.mkDefault "stepfun";
-    model = lib.mkDefault "step-3.7-flash";
+    model = lib.mkDefault (if config.envy.agents.codex.models == [] then "step-3.7-flash" else null);
   };
 
   envy.agents.cc = {

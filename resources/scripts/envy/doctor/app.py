@@ -14,10 +14,14 @@ def _run(
     *,
     strict: bool,
     json_output: bool,
+    command: str | None = None,
 ) -> None:
     results = run_sections(sections, only, log_progress=not json_output)
     if json_output:
-        render_json(results, strict=strict)
+        if command is None:
+            render_json(results, strict=strict)
+        else:
+            render_json(results, strict=strict, command=command)
     else:
         render(results)
     raise typer.Exit(exit_code(results, strict=strict))
@@ -145,3 +149,12 @@ def cmd_agents(
 ):
     """Check managed Pi links, MCP executables, and offline extension loading."""
     _run(["agents"], only, strict=strict, json_output=json_output)
+
+
+@app.command(name="habits")
+def cmd_habits(
+    strict: bool = typer.Option(False, "--strict", help="Exit non-zero when warnings are present."),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+):
+    """Read back supported native habits without reading application state."""
+    _run(["habits"], None, strict=strict, json_output=json_output, command="doctor.habits")

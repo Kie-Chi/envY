@@ -5,7 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import sys
 import signal
+import stat
 import subprocess
 import tempfile
 import threading
@@ -14,6 +17,50 @@ from pathlib import Path
 from envy.process import run_process
 from envy.secure_io import secure_temporary_path
 from envy.storage.model import Policy, StorageError, absolute_path, no_symlinks
+
+
+_SFTP_SSH_OPTIONS = (
+    "-oBatchMode=yes", "-oStrictHostKeyChecking=yes", "-oConnectTimeout=8",
+    "-oUpdateHostKeys=no",
+    "-oPreferredAuthentications=publickey", "-oPasswordAuthentication=no",
+    "-oKbdInteractiveAuthentication=no",
+)
+
+
+def _mount_unescape(value: str) -> str:
+    return re.sub(r"\\(040|011|012|134)", lambda match: chr(int(match[1], 8)), value)
+
+
+def _mount_source(mount: Path) -> str:
+    """Read the OS mount table and fail closed on missing or ambiguous identity."""
+    sources = []
+    try:
+        if sys.platform == "darwin":
+            result = run_process(["/sbin/mount"], capture=True, check=False, timeout=10)
+            if result.returncode:
+                raise StorageError("Cannot verify archive mount source")
+            pattern = r"(.+) on " + re.escape(str(mount)) + r" \([^()\n]+\)"
+            for line in (result.stdout or "").splitlines():
+                match = re.fullmatch(pattern, _mount_unescape(line))
+                if match:
+                    sources.append(match[1])
+        elif sys.platform.startswith("linux"):
+            for line in Path("/proc/self/mountinfo").read_text().splitlines():
+                fields = line.split()
+                if "-" not in fields:
+                    raise StorageError("Cannot verify archive mount source")
+                separator = fields.index("-")
+                if separator < 6 or len(fields) < separator + 4:
+                    raise StorageError("Cannot verify archive mount source")
+                if _mount_unescape(fields[4]) == str(mount):
+                    sources.append(_mount_unescape(fields[separator + 2]))
+        else:
+            raise StorageError("Cannot verify archive mount source on this platform")
+    except (OSError, UnicodeError) as exc:
+        raise StorageError("Cannot read archive mount identity") from exc
+    if len(sources) != 1 or not sources[0]:
+        raise StorageError("Cannot uniquely verify archive mount source")
+    return sources[0]
 
 
 class Archive:
@@ -25,26 +72,37 @@ class Archive:
         if not self.policy.repository or not self.policy.password_file:
             raise StorageError("Configure the archive repository and sops password first")
         # sops-nix publishes secrets through managed symlink directories.
-        password = Path(self.policy.password_file).resolve(strict=True)
-        info = password.stat()
+        try:
+            password = Path(self.policy.password_file).resolve(strict=True)
+            info = password.stat()
+        except (OSError, RuntimeError) as exc:
+            raise StorageError("Archive password file is unavailable") from exc
         if (not password.is_file() or info.st_mode & 0o077
                 or info.st_uid not in {0, os.getuid()}):
             raise StorageError("Archive password file must be private")
         if self.policy.repository.startswith("/"):
+            if not self.policy.mount_source:
+                raise StorageError("Configure archive mountSource for the mounted repository")
             repository = absolute_path(self.policy.repository)
             no_symlinks(repository)
             mount = next((parent for parent in [repository, *repository.parents]
                           if parent.is_mount()), None)
             if mount is None or mount == Path("/") or str(mount).startswith("/System/"):
                 raise StorageError("Archive destination is not on an available mounted volume")
+            if _mount_source(mount) != self.policy.mount_source:
+                raise StorageError("Archive mounted volume source does not match mountSource")
         env = {key: value for key, value in os.environ.items() if not key.startswith("RESTIC_")}
         env.update(RESTIC_REPOSITORY=self.policy.repository,
                    RESTIC_PASSWORD_FILE=self.policy.password_file,
                    RESTIC_CACHE_DIR=str(self.state / "restic-cache"))
         return env
 
+    def _argv(self, args: list[str]) -> list[str]:
+        options = ["-o", "sftp.args=" + " ".join(_SFTP_SSH_OPTIONS)] if self.policy.repository.startswith("sftp:") else []
+        return ["restic", *options, *args]
+
     def command(self, args: list[str], *, timeout: int = 3600) -> str:
-        result = run_process(["restic", *args], env=self.environment(),
+        result = run_process(self._argv(args), env=self.environment(),
                              capture=True, check=False, timeout=timeout)
         if result.returncode:
             raise StorageError(f"restic {args[0]} failed (exit {result.returncode}); local files retained")
@@ -66,8 +124,10 @@ class Archive:
                                    "--tag", "envy-archive", "--tag", f"envy-run:{batch_id}",
                                    "--files-from-raw", str(listing)])
         try:
-            summaries = [entry for line in output.splitlines() if line.strip()
-                         if (entry := json.loads(line)).get("message_type") == "summary"]
+            entries = [json.loads(line) for line in output.splitlines() if line.strip()]
+            if any(not isinstance(entry, dict) for entry in entries):
+                raise ValueError("Invalid backup progress record")
+            summaries = [entry for entry in entries if entry.get("message_type") == "summary"]
             snapshot = summaries[-1]["snapshot_id"]
             if not isinstance(snapshot, str) or len(snapshot) != 64:
                 raise ValueError("Invalid snapshot ID")
@@ -75,10 +135,10 @@ class Archive:
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise StorageError("restic did not return a complete snapshot") from exc
 
-    def content_hash(self, snapshot: str, path: str) -> str:
-        # Dump to a streaming hash rather than restoring a second large local copy.
+    def _dump(self, snapshot: str, path: str, destination_fd: int | None = None) -> str:
+        # The native process receives only the archive source, never the destination path.
         with tempfile.TemporaryFile() as errors:
-            with subprocess.Popen(["restic", "dump", snapshot, path], env=self.environment(),
+            with subprocess.Popen(self._argv(["dump", snapshot, path]), env=self.environment(),
                                   stdout=subprocess.PIPE, stderr=errors, start_new_session=True) as process:
                 def terminate():
                     try:
@@ -89,13 +149,41 @@ class Archive:
                 timer.daemon = True
                 timer.start()
                 try:
-                    digest = hashlib.file_digest(process.stdout, "sha256").hexdigest()
+                    digest = hashlib.sha256()
+                    while chunk := process.stdout.read(1024 * 1024):
+                        digest.update(chunk)
+                        if destination_fd is not None:
+                            remaining = memoryview(chunk)
+                            while remaining:
+                                written = os.write(destination_fd, remaining)
+                                if written <= 0:
+                                    raise StorageError("Archive restore write failed")
+                                remaining = remaining[written:]
                     code = process.wait()
+                except BaseException:
+                    terminate()
+                    process.wait()
+                    raise
                 finally:
                     timer.cancel()
                 if code:
                     raise StorageError("Archive content verification failed; local file retained")
-                return digest
+                return digest.hexdigest()
+
+    def content_hash(self, snapshot: str, path: str) -> str:
+        return self._dump(snapshot, path)
+
+    def restore_file(self, snapshot: str, path: str, destination_fd: int, expected_sha256: str) -> None:
+        info = os.fstat(destination_fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid()
+                or info.st_size != 0 or os.lseek(destination_fd, 0, os.SEEK_CUR) != 0
+                or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)):
+            raise StorageError("Archive restore requires a new exclusive regular file")
+        if self._dump(snapshot, path, destination_fd) != expected_sha256:
+            raise StorageError("Restored archive content did not match its record")
+        after = os.fstat(destination_fd)
+        if (after.st_dev, after.st_ino, after.st_nlink) != (info.st_dev, info.st_ino, 1):
+            raise StorageError("Archive restore destination identity changed")
 
     def restore(self, snapshot: str, target: Path, paths: list[str]) -> None:
         args = ["restore", snapshot, "--target", str(target), "--verify"]

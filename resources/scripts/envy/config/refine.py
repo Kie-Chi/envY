@@ -222,6 +222,8 @@ def refine_config(*, write: bool = True, strict: bool = False) -> RefineReport:
             log.fix("machine", "added missing field", field=f.path)
 
     for f in MACHINE_FIELDS:
+        if f.condition and not f.condition(values):
+            continue
         _validate_field(f, values.get(f.path, ""), report, "machine")
 
     needs_managed_block = machine_nix.MANAGED_START not in path.read_text()

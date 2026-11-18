@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
+use crate::storage::{StorageReport, StorageRequest, StorageRow};
+
 /// The persistent navigation level. Leaf screens keep their own backend data
 /// routes, while this enum defines the small, stable top-level information
 /// architecture shown in the header.
@@ -41,6 +43,7 @@ pub enum Screen {
     Doctor,
     History,
     Journal,
+    Storage,
     Hosts,
     Mirror,
     Config,
@@ -59,7 +62,9 @@ impl Screen {
             | Self::Hosts
             | Self::Mirror
             | Self::Config => NavigationSection::Configure,
-            Self::Doctor | Self::History | Self::Journal => NavigationSection::Activity,
+            Self::Doctor | Self::History | Self::Journal | Self::Storage => {
+                NavigationSection::Activity
+            }
         }
     }
 
@@ -72,6 +77,7 @@ impl Screen {
             Self::Doctor => "Doctor",
             Self::History => "History",
             Self::Journal => "Journal",
+            Self::Storage => "Storage",
             Self::Hosts => "Hosts",
             Self::Mirror => "Mirror",
             Self::Config => "Config",
@@ -101,6 +107,7 @@ impl HistoryView {
 pub enum LoadTarget {
     Screen(Screen),
     Search(String),
+    Storage(StorageRequest),
 }
 
 impl LoadTarget {
@@ -108,6 +115,7 @@ impl LoadTarget {
         match self {
             Self::Screen(screen) => screen.title(),
             Self::Search(_) => "Search",
+            Self::Storage(_) => "Storage",
         }
     }
 }
@@ -121,11 +129,16 @@ pub struct PageState {
     /// Unix time the payload was saved at when it was restored from an earlier
     /// session rather than loaded now.
     pub saved_at: Option<i64>,
+    /// Unix time of the accepted response, independent of rendering and cache access.
+    pub received_at: Option<i64>,
+    /// Storage retains the entire envelope and native process result.
+    pub storage_report: Option<StorageReport>,
+    pub workflow_report: Option<WorkflowReport>,
 }
 
 impl PageState {
     pub fn has_content(&self) -> bool {
-        self.payload.is_some()
+        self.payload.is_some() || self.storage_report.is_some()
     }
 
     /// Whether to request the page: forced, never loaded, or only restored
@@ -150,6 +163,7 @@ pub enum SoftwareAction {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkflowAction {
     Plan,
+    RetryVerification(String),
     Apply,
     Doctor,
     SyncSource(String),
@@ -161,6 +175,7 @@ impl WorkflowAction {
     pub fn title(&self) -> String {
         match self {
             Self::Plan => "Preview configuration".to_string(),
+            Self::RetryVerification(_) => "Verify recorded generation".to_string(),
             Self::Apply => "Apply configuration".to_string(),
             Self::Doctor => "Verify with doctor".to_string(),
             Self::SyncSource(id) => format!("Sync source {id}"),
@@ -171,7 +186,8 @@ impl WorkflowAction {
 
     pub fn command(&self, envy: String) -> (String, Vec<String>) {
         match self {
-            Self::Plan => (envy, vec!["plan".to_string()]),
+            Self::Plan => (envy, vec!["plan".to_string(), "--json".to_string()]),
+            Self::RetryVerification(id) => (envy, vec!["log".into(), "--retry".into(), id.clone(), "--step".into(), "verify-generation".into(), "--json".into()]),
             Self::Apply => (envy, vec!["apply".to_string()]),
             Self::Doctor => (envy, vec!["doctor".to_string()]),
             Self::SyncSource(id) => (
@@ -200,7 +216,8 @@ impl WorkflowAction {
 
     pub fn display_command(&self) -> String {
         match self {
-            Self::Plan => "envy plan".to_string(),
+            Self::Plan => "envy plan --json".to_string(),
+            Self::RetryVerification(id) => format!("envy log --retry {id:?} --step verify-generation --json"),
             Self::Apply => "envy apply".to_string(),
             Self::Doctor => "envy doctor".to_string(),
             Self::SyncSource(id) => format!("envy sw source sync {id:?} --yes"),
@@ -212,10 +229,14 @@ impl WorkflowAction {
     /// Workflows that produce streamable terminal output can render inside a
     /// TUI log popup. GUI launchers (`open …`) have no output worth streaming
     /// and keep the existing leave-screen path.
+    pub fn is_json(&self) -> bool {
+        matches!(self, Self::Plan | Self::RetryVerification(_))
+    }
+
     pub fn is_streamable(&self) -> bool {
         matches!(
             self,
-            Self::Plan | Self::Apply | Self::Doctor | Self::SyncSource(_)
+            Self::Plan | Self::RetryVerification(_) | Self::Apply | Self::Doctor | Self::SyncSource(_)
         )
     }
 }
@@ -345,13 +366,89 @@ impl SettingKey {
             Self::Config(path) => path.clone(),
         }
     }
+
+    /// Presentation names never replace the path used by the backend setter.
+    pub fn title(&self) -> String {
+        let Self::Config(path) = self else { return "Machine".into(); };
+        for prefix in ["envy.llm.endpoints.", "envy.llm.credentials.", "envy.agents.", "envy.agentProfiles."] {
+            if let Some((owner, field)) = path.strip_prefix(prefix).and_then(|rest| rest.rsplit_once('.')) {
+                let field = match field {
+                    "baseUrl" => "Base URL", "protocol" => "Protocol",
+                    "kind" => "Kind", "secretPath" => "Secret path",
+                    "adapter" => "Adapter", "endpoint" => "Endpoint",
+                    "credential" => "Credential", "model" => "Model",
+                    "contextWindow" => "Context window", "maxTokens" => "Output limit",
+                    "command" => "Command", "api" => "API",
+                    "thinkingLevelMap" => "Thinking levels", "moreThinking" => "Extra thinking",
+                    "models" => "Model candidates", other => other,
+                };
+                let profile = if prefix == "envy.agentProfiles." { "profile/" } else { "" };
+                return format!("{profile}{owner} · {field}");
+            }
+        }
+        match path.as_str() {
+            "envy.user.name" => "Username", "envy.user.home" => "Home directory",
+            "envy.git.name" => "Git · Name", "envy.git.email" => "Git · Email",
+            "envy.repository.path" => "Repository", "envy.vscode.mode" => "VS Code · Mode",
+            "envy.mirrors.mode" => "Mirrors · Profile",
+            "envy.amux.skipPermissions" => "amux · Skip permissions",
+            "envy.storage.mode" => "Storage · Mode",
+            "envy.storage.maintenance.go-modcache" => "Go · Remove module downloads",
+            "envy.storage.archive.repository" => "Archive · Repository",
+            "envy.storage.archive.mountSource" => "Archive · Mount source",
+            "envy.habits.terminalScratchpad.gesture" => "Terminal · Shortcut",
+            "envy.habits.globalLauncher.gesture" => "Launcher · Shortcut",
+            "envy.darwin.services.mihomo.mode" => "Mihomo · Mode",
+            "envy.darwin.services.mihomo.tun" => "Mihomo · TUN",
+            "envy.darwin.services.openssh.mode" => "SSH · Mode",
+            _ => return path.clone(),
+        }.into()
+    }
+}
+
+/// Setter metadata is authoritative when present. Only missing metadata uses
+/// the compatibility route; null and unknown setters never become config.set.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SettingSetter {
+    Legacy,
+    Config,
+    Agent,
+    Disabled,
+    Unknown(String),
+}
+
+impl SettingSetter {
+    fn from_field(field: &Value, secret: bool) -> Self {
+        if secret { return Self::Disabled; }
+        match field.get("setter") {
+            None => Self::Legacy,
+            Some(Value::Null) => Self::Disabled,
+            Some(Value::String(value)) if value == "config.set" => Self::Config,
+            Some(Value::String(value)) if value == "agent.set" => Self::Agent,
+            Some(value) => Self::Unknown(value.to_string()),
+        }
+    }
+
+    pub fn editable(&self) -> bool {
+        matches!(self, Self::Legacy | Self::Config | Self::Agent)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SettingRow {
     pub key: SettingKey,
+    pub setter: SettingSetter,
     pub label: String,
     pub value: String,
+    pub group: String,
+    pub nix_type: String,
+    pub required: Option<bool>,
+    pub active: Option<bool>,
+    pub condition_state: String,
+    pub activation_hint: String,
+    pub change_kind: String,
+    /// Secret rows contain only set status and never enter the edit flow.
+    pub secret: bool,
     /// Non-empty = enumerated (dropdown); empty = freeform (text input).
     pub choices: Vec<String>,
 }
@@ -360,12 +457,46 @@ impl SettingRow {
     pub fn freeform(&self) -> bool {
         self.choices.is_empty()
     }
+
+    pub fn title(&self) -> String {
+        let title = self.key.title();
+        if title == self.key.label() { self.label.clone() } else { title }
+    }
+
+    pub fn section(&self) -> &str {
+        if self.secret { return "Secrets"; }
+        let SettingKey::Config(path) = &self.key else { return "Device"; };
+        for (prefix, section) in [
+            ("envy.llm.endpoints.", "Endpoints"), ("envy.llm.credentials.", "Credentials"),
+            ("envy.agents.", "Agents"), ("envy.agentProfiles.", "Profiles"),
+        ] {
+            if path.starts_with(prefix) { return section; }
+        }
+        match self.group.as_str() {
+            "BASE" | "ENV" => "Device", "GIT" => "Git", "HABITS" => "Shortcuts",
+            "STORAGE" => "Storage", "DARWIN_SERVICES" => "Services", other => other,
+        }
+    }
+
+    pub fn effect_hint(&self) -> &str {
+        if self.secret { return "Edit with envy config secret-set."; }
+        if !self.setter.editable() { return "Read only · reload Settings."; }
+        match self.activation_hint.as_str() {
+            "Select the local machine target; machine policy stays in its host file." => "Select the local machine target.",
+            "Changes take effect after envy apply." => "Run envy apply to activate.",
+            "The setter refreshes runtime overrides when credentials are available; changes apply to newly started agent processes." => "Applies to new sessions after runtime refresh.",
+            "The current condition is not met; this value is retained." => "Inactive · value retained.",
+            "Applicability is unknown because condition inputs are unavailable." => "Applicability unknown · missing condition inputs.",
+            other => other,
+        }
+    }
 }
 
 /// A dropdown over an enumerated setting or the known host list.
 #[derive(Clone, Debug)]
 pub struct SettingChooser {
     pub key: SettingKey,
+    pub setter: SettingSetter,
     pub title: String,
     pub options: Vec<String>,
     pub selected: usize,
@@ -376,6 +507,7 @@ pub struct SettingChooser {
 #[derive(Clone, Debug)]
 pub struct SettingEdit {
     pub key: SettingKey,
+    pub setter: SettingSetter,
     pub title: String,
     pub buffer: String,
     pub previous: String,
@@ -385,16 +517,28 @@ pub struct SettingEdit {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingSetting {
     pub key: SettingKey,
+    pub setter: SettingSetter,
     pub value: String,
     pub previous: String,
+    pub scroll: usize,
 }
 
 #[derive(Clone, Debug)]
 pub enum DetailView {
-    Loading { title: String },
+    Loading {
+        title: String,
+    },
     Software(Value),
     Doctor(Value),
-    HistoryDiff(Value),
+    Report {
+        title: String,
+        report: WorkflowReport,
+        selected: Option<Value>,
+    },
+    Storage {
+        report: Box<StorageReport>,
+        row: StorageRow,
+    },
 }
 
 /// Live output buffer for a streamed workflow (`envy plan`/`apply`/`doctor`)
@@ -408,10 +552,55 @@ pub struct WorkflowLog {
     pub scroll: usize,
     /// While true the popup pins to the newest line; a manual scroll unpins it.
     pub follow: bool,
+    pub json: bool,
+    pub scroll_max: usize,
+    pub report: Option<WorkflowReport>,
+}
+
+#[derive(Clone, Debug)]
+pub struct WorkflowReport {
+    pub response: Option<crate::transport::JsonResponse>,
+    pub error: Option<String>,
+    pub stderr: String,
+}
+
+impl WorkflowReport {
+    pub fn from_result(result: Result<crate::transport::JsonResponse, crate::transport::TransportError>) -> Self {
+        match result {
+            Ok(response) => Self { stderr: response.stderr.clone(), response: Some(response), error: None },
+            Err(error) => {
+                let message = error.to_string();
+                Self { stderr: error.stderr, response: error.response.map(|value| *value), error: Some(message) }
+            },
+        }
+    }
+
+    pub fn is_success(&self) -> bool {
+        self.error.is_none() && self.response.as_ref().is_some_and(|response| response.is_success())
+    }
 }
 
 #[derive(Debug)]
 pub enum Message {
+    StorageActionFinished {
+        request: u64,
+        result: Result<crate::transport::JsonResponse, crate::transport::TransportError>,
+    },
+    StorageActionOutput { request: u64, chunk: String },
+    ReportFinished {
+        request: u64,
+        target: LoadTarget,
+        result: Result<crate::transport::JsonResponse, crate::transport::TransportError>,
+    },
+    JsonWorkflowFinished {
+        request: u64,
+        result: Result<crate::transport::JsonResponse, crate::transport::TransportError>,
+    },
+    StorageFinished {
+        request: u64,
+        target: StorageRequest,
+        result: Result<StorageReport, String>,
+    },
     Loaded {
         request: u64,
         target: LoadTarget,
@@ -439,7 +628,7 @@ pub enum Message {
     },
     HistoryDiffFinished {
         request: u64,
-        result: Result<Value, String>,
+        result: Result<crate::transport::JsonResponse, crate::transport::TransportError>,
     },
     SettingApplied {
         request: u64,
@@ -634,8 +823,30 @@ pub fn result_rows(payload: Option<&Value>) -> usize {
         .unwrap_or(0)
 }
 
+/// Preserve envelopes in cache while supporting old bare report payloads.
+pub fn report_data(payload: &Value) -> &Value {
+    payload.get("data").filter(|value| value.is_object()).unwrap_or(payload)
+}
+
+/// A fixed backend-supported step, never an argv from a journal record.
+pub fn journal_retry(entry: &Value) -> Result<WorkflowAction, String> {
+    let retry = entry.get("retry");
+    let reason = retry.and_then(|value| value.get("reason")).and_then(Value::as_str)
+        .filter(|value| !value.is_empty()).unwrap_or("Retry availability is unknown; no backend permission was provided");
+    if retry.and_then(|value| value.get("allowed")).and_then(Value::as_bool) != Some(true) {
+        return Err(reason.into());
+    }
+    if retry.and_then(|value| value.get("step")).and_then(Value::as_str) != Some("verify-generation") {
+        return Err("Backend retry step is unsupported; reload the journal".into());
+    }
+    let id = entry.get("operationId").and_then(Value::as_str)
+        .filter(|id| !id.is_empty() && !id.starts_with('-'))
+        .ok_or_else(|| "Operation identity is unavailable; retry is disabled".to_string())?;
+    Ok(WorkflowAction::RetryVerification(id.into()))
+}
+
 pub fn generation_rows(payload: Option<&Value>) -> usize {
-    payload
+    payload.map(report_data)
         .and_then(|value| value.get("generations"))
         .and_then(Value::as_array)
         .map(Vec::len)
@@ -643,7 +854,7 @@ pub fn generation_rows(payload: Option<&Value>) -> usize {
 }
 
 pub fn generation_number(payload: Option<&Value>, index: usize) -> Option<u64> {
-    payload
+    payload.map(report_data)
         .and_then(|value| value.get("generations"))
         .and_then(Value::as_array)
         .and_then(|generations| generations.get(index))
@@ -747,7 +958,7 @@ pub fn short_timestamp(value: &str) -> String {
 }
 
 /// Doctor results in display order: errors, then warnings, then everything
-/// else as reported. `problems_only` keeps just the errors and warnings.
+/// else as reported. `problems_only` also retains unknown outcomes.
 pub fn doctor_results(payload: Option<&Value>, problems_only: bool) -> Vec<&Value> {
     let rank = |result: &Value| match result.get("status").and_then(Value::as_str) {
         Some("error") => 0,
@@ -755,18 +966,19 @@ pub fn doctor_results(payload: Option<&Value>, problems_only: bool) -> Vec<&Valu
         _ => 2,
     };
     let mut results = payload
+        .map(report_data)
         .and_then(|value| value.get("results"))
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter(|result| !problems_only || rank(result) < 2)
+        .filter(|result| !problems_only || !matches!(result.get("status").and_then(Value::as_str), Some("ok" | "info")))
         .collect::<Vec<_>>();
     results.sort_by_key(|result| rank(result));
     results
 }
 
 pub fn journal_entries(payload: Option<&Value>) -> Vec<JournalEntry> {
-    payload
+    payload.map(report_data)
         .and_then(|value| value.get("entries"))
         .and_then(Value::as_array)
         .map(|entries| {
@@ -786,7 +998,7 @@ pub fn journal_entries(payload: Option<&Value>) -> Vec<JournalEntry> {
 }
 
 pub fn journal_rows(payload: Option<&Value>) -> usize {
-    payload
+    payload.map(report_data)
         .and_then(|value| value.get("entries"))
         .and_then(Value::as_array)
         .map(Vec::len)
@@ -938,12 +1150,11 @@ pub fn mirror_measurements(payload: Option<&Value>) -> Vec<MirrorSource> {
 /// Build the Configure/Settings list from the cached host list and
 /// config payloads. Row 0 is the active host; the rest are managed config fields
 /// (`fields[]` from `config show --json`), where a non-empty `choices` marks an
-/// enumerated field that should render as a dropdown.
+/// enumerated field that should render as a dropdown. Secret fields are status-only.
 pub fn settings_rows(hosts: Option<&Value>, config: Option<&Value>) -> Vec<SettingRow> {
-    let mut rows = Vec::new();
+    let config = config.map(|payload| payload.get("data").unwrap_or(payload));
     let current_host = config
-        .and_then(|value| value.get("device"))
-        .and_then(|device| device.get("machineId"))
+        .and_then(|value| value.pointer("/device/machineId"))
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
@@ -952,46 +1163,75 @@ pub fn settings_rows(hosts: Option<&Value>, config: Option<&Value>) -> Vec<Setti
         .map(|host| host.machine)
         .filter(|machine| machine != "—" && !machine.is_empty())
         .collect::<Vec<_>>();
-    rows.push(SettingRow {
+    let mut rows = vec![SettingRow {
         key: SettingKey::Host,
+        setter: SettingSetter::Legacy,
         label: "host".to_string(),
         value: current_host,
+        group: "Device".to_string(),
+        nix_type: String::new(),
+        required: None,
+        active: None,
+        condition_state: String::new(),
+        activation_hint: "Select the local machine target; machine policy stays in its host file."
+            .to_string(),
+        change_kind: String::new(),
+        secret: false,
         choices: machine_ids,
-    });
-    if let Some(fields) = config
-        .and_then(|value| value.get("fields"))
-        .and_then(Value::as_array)
-    {
-        for field in fields {
-            let path = field
-                .get("path")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
+    }];
+    for (section, secret) in [("fields", false), ("secretFields", true)] {
+        let fields = config
+            .and_then(|value| value.get(section))
+            .and_then(Value::as_array);
+        for field in fields.into_iter().flatten() {
+            let string = |key| {
+                field
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string()
+            };
+            let path = string("path");
             if path.is_empty() {
                 continue;
             }
-            let value = field
-                .get("value")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let choices = field
-                .get("choices")
-                .and_then(Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_string)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
+            let prompt = string("prompt");
+            let value = if secret {
+                match field.get("set").and_then(Value::as_bool) {
+                    Some(true) => "set",
+                    Some(false) => "unset",
+                    None => "unknown",
+                }
+                .to_string()
+            } else {
+                string("value")
+            };
+            let choices = if secret {
+                Vec::new()
+            } else {
+                field
+                    .get("choices")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            };
             rows.push(SettingRow {
                 key: SettingKey::Config(path.clone()),
-                label: path,
+                setter: SettingSetter::from_field(field, secret),
+                label: if prompt.is_empty() { path } else { prompt },
                 value,
                 choices,
+                group: string("group"),
+                nix_type: string("nixType"),
+                required: field.get("required").and_then(Value::as_bool),
+                active: field.get("active").and_then(Value::as_bool),
+                condition_state: string("conditionState"),
+                activation_hint: string("activationHint"),
+                change_kind: string("changeKind"),
+                secret,
             });
         }
     }
@@ -1059,7 +1299,7 @@ mod tests {
     }
 
     #[test]
-    fn doctor_problems_come_first_in_reported_order() {
+    fn doctor_problem_filter_preserves_reported_order_and_unknown_outcomes() {
         let payload = json!({"results": [
             {"name": "a", "status": "ok"}, {"name": "b", "status": "warn"},
             {"name": "c", "status": "info"}, {"name": "d", "status": "error"},
@@ -1072,7 +1312,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(names(false), ["d", "b", "e", "a", "c", "f"]);
-        assert_eq!(names(true), ["d", "b", "e"]);
+        assert_eq!(names(true), ["d", "b", "e", "f"]);
         assert!(doctor_results(None, false).is_empty());
     }
 
@@ -1190,6 +1430,74 @@ mod tests {
             .unwrap();
         assert!(name.freeform());
     }
+    #[test]
+    fn settings_metadata_preserves_identity_and_backend_applicability() {
+        let config = json!({"data": {
+            "device": {"machineId": "mac"},
+            "fields": [
+                {"path": "envy.agents.one.model", "prompt": "Model", "value": "one",
+                 "group": "AGENTS", "nixType": "nullOr string", "required": true,
+                 "active": false, "conditionState": "inactive", "changeKind": "live",
+                 "activationHint": "Backend condition explanation"},
+                {"path": "envy.agents.two.model", "prompt": "Model", "value": "two",
+                 "active": null, "conditionState": "unknown", "choices": ["two", "three"]}
+            ]
+        }});
+        let rows = settings_rows(None, Some(&config));
+        assert_eq!(rows[0].value, "mac");
+        assert_eq!(rows[1].label, rows[2].label);
+        assert_ne!(rows[1].key, rows[2].key);
+        assert_eq!(rows[1].group, "AGENTS");
+        assert_eq!(rows[1].nix_type, "nullOr string");
+        assert_eq!(rows[1].required, Some(true));
+        assert_eq!(rows[1].active, Some(false));
+        assert_eq!(rows[1].condition_state, "inactive");
+        assert_eq!(rows[1].change_kind, "live");
+        assert_eq!(rows[1].activation_hint, "Backend condition explanation");
+        assert!(!rows[1].secret);
+        assert_eq!(rows[2].active, None);
+        assert_eq!(rows[2].condition_state, "unknown");
+        assert!(!rows[2].freeform());
+    }
+
+    #[test]
+    fn setter_presence_distinguishes_legacy_null_and_unknown_metadata() {
+        let config = json!({"fields": [
+            {"path":"envy.agentProfiles.a.model","setter":"agent.set"},
+            {"path":"envy.agentProfiles.b.model"},
+            {"path":"envy.agentProfiles.c.model","setter":null},
+            {"path":"envy.agentProfiles.d.model","setter":"future.set"},
+            {"path":"envy.agentProfiles.e.model","setter":false}
+        ], "secretFields":[{"path":"secret/value","setter":"agent.set","set":true}]});
+        let rows = settings_rows(None, Some(&config));
+        assert_eq!(rows[1].setter, SettingSetter::Agent);
+        assert_eq!(rows[2].setter, SettingSetter::Legacy);
+        assert_eq!(rows[3].setter, SettingSetter::Disabled);
+        assert!(matches!(rows[4].setter, SettingSetter::Unknown(_)));
+        assert!(matches!(rows[5].setter, SettingSetter::Unknown(_)));
+        assert_eq!(rows[6].setter, SettingSetter::Disabled);
+        assert!(rows[6].secret);
+    }
+
+    #[test]
+    fn settings_secret_rows_only_expose_set_status() {
+        let config = json!({"secretFields": [
+            {"path": "proxy/url", "set": true, "value": "must-never-be-shown",
+             "choices": ["must-never-be-shown"]},
+            {"path": "other/token", "set": false},
+            {"path": "missing/status"}
+        ]});
+        let rows = settings_rows(None, Some(&config));
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[1].value, "set");
+        assert_eq!(rows[2].value, "unset");
+        assert_eq!(rows[3].value, "unknown");
+        assert!(rows[1..]
+            .iter()
+            .all(|row| row.secret && row.choices.is_empty()));
+        assert!(!format!("{rows:?}").contains("must-never-be-shown"));
+    }
+
     #[test]
     fn discovery_only_search_has_no_install_groups() {
         let payload = serde_json::json!({"results":[{"source":"cargo","sourceId":"cargo:crates.io",

@@ -3,8 +3,10 @@ import fcntl
 import json
 import os
 import pty
+import re
 import select
 import shlex
+import shutil
 import signal
 import struct
 import subprocess
@@ -53,6 +55,8 @@ class CompletionRuntimeTests(unittest.TestCase):
     def launch(self, arguments, home, width=80, extra=None):
         environment = isolated_environment(home)
         environment["SHELL"] = "/bin/sh"
+        environment["TMPDIR"] = str(home)
+        environment["TMPPREFIX"] = str(home / "zsh")
         environment["PATH"] = os.pathsep.join(
             [str(Path(self.fixture[key]).parent) for key in ("zsh", "fzf", "zoxide")]
             + ["/usr/bin", "/bin"]
@@ -172,41 +176,91 @@ class CompletionRuntimeTests(unittest.TestCase):
             finally:
                 self.close(process, master)
 
-    def test_preview_switches_between_wide_side_and_narrow_bottom_panels(self):
-        window = next(value for value in shlex.split(self.fixture["fzfFlags"]) if value.startswith("--preview-window="))
-        for width in (80, 120):
-            with self.subTest(width=width), tempfile.TemporaryDirectory(prefix="envy-preview-layout-") as directory:
-                home = Path(directory).resolve()
-                sizes = home / "sizes"
-                script = home / "preview.sh"
-                script.write_text('printf "%s %s" "$FZF_PREVIEW_COLUMNS" "$FZF_PREVIEW_LINES" > "$SIZES"' + chr(10) + 'printf "synthetic preview"')
-                process, master = self.launch(
-                    [self.fixture["fzf"], window, "--border=rounded", "--preview", "sh " + shlex.quote(str(script))],
-                    home, width, {"FZF_DEFAULT_COMMAND": "printf 'one\ntwo\n'", "SIZES": str(sizes)},
-                )
+    def test_real_tab_keeps_candidates_visible_in_dynamic_height_menus(self):
+        tmux = shutil.which("tmux")
+        self.assertIsNotNone(tmux, "Completion runtime checks require tmux")
+        for count in (6, 12, 30):
+            for width in (80, 120):
+                for height in (12, 24):
+                    with self.subTest(count=count, width=width, height=height):
+                        self.check_visible_candidates(tmux, count, width, height)
+
+    def check_visible_candidates(self, tmux, count, width, height):
+        with tempfile.TemporaryDirectory(prefix="envy-tab-layout-") as directory:
+            home = Path(directory).resolve()
+            environment = isolated_environment(home)
+            environment["SHELL"] = self.fixture["zsh"]
+            environment["TMPDIR"] = str(home)
+            environment["TMPPREFIX"] = str(home / "zsh")
+            environment["PATH"] = os.pathsep.join(
+                [str(Path(self.fixture[key]).parent) for key in ("zsh", "fzf")]
+                + ["/usr/bin", "/bin"]
+            )
+            socket = str(home / "tmux.sock")
+
+            def run(*arguments):
+                return subprocess.run(
+                    [tmux, "-S", socket, "-f", os.devnull, *arguments],
+                    env=environment, cwd=home, check=True, capture_output=True,
+                    text=True, timeout=5,
+                ).stdout
+
+            def screen_until(predicate):
+                deadline = time.monotonic() + 8
+                screen = ""
+                while time.monotonic() < deadline:
+                    screen = run("capture-pane", "-p", "-t", "fixture:0.0")
+                    if predicate(screen):
+                        return screen
+                    time.sleep(0.05)
+                self.fail("Timed out waiting for completion screen:\n" + screen)
+
+            candidates = " ".join(
+                f"{'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'[number]}-option-{number:02d}"
+                for number in range(count)
+            )
+            rc = home / "fixture.zsh"
+            rc.write_text(chr(10).join([
+                "export PATH=" + shlex.quote(environment["PATH"]),
+                "bindkey -e", 'autoload -Uz compinit; compinit -d "$HOME/compdump"',
+                "source " + shlex.quote(self.fixture["fzfTab"]),
+                "source " + shlex.quote(str(ROOT / "files/zsh/fzf-preview.zsh")),
+                self.fixture["fzfFlags"],
+                "_fixture_complete() { local -a values=(" + candidates + "); "
+                "_describe -t fixture-items 'Fixture entries' values; }",
+                "fixture-cmd() { :; }", "compdef _fixture_complete fixture-cmd",
+                # Synthetic preview exercises the layout without reading host files.
+                "zstyle ':fzf-tab:complete:*:*' fzf-preview 'print ENVY_SYNTHETIC_PREVIEW'",
+                "PROMPT='READY> '",
+            ]))
+            try:
+                run("new-session", "-d", "-s", "fixture", "-x", str(width), "-y", str(height),
+                    shlex.quote(self.fixture["zsh"]) + " -dfi")
+                run("send-keys", "-t", "fixture:0.0", "source " + shlex.quote(str(rc)), "Enter")
+                screen_until(lambda screen: "READY>" in screen)
+                run("send-keys", "-t", "fixture:0.0", "fixture-cmd ", "Tab")
+                # Capture only the current pane, never scrollback or raw output history.
+                expected = min(count, 3 if height == 12 else 10)
+                screen = screen_until(lambda screen: len(set(re.findall(r"option-\d{2}", screen))) >= expected)
+                visible = set(re.findall(r"option-\d{2}", screen))
+                self.assertGreaterEqual(len(visible), expected, screen)
+                if width >= 100 and height >= 20:
+                    screen = screen_until(lambda screen: "ENVY_SYNTHETIC_PREVIEW" in screen)
+                    self.assertGreaterEqual(len(set(re.findall(r"option-\d{2}", screen))), expected, screen)
+                else:
+                    self.assertNotIn("ENVY_SYNTHETIC_PREVIEW", screen)
+            finally:
                 try:
-                    deadline = time.monotonic() + 5
-                    values = []
-                    while time.monotonic() < deadline:
-                        if sizes.exists():
-                            values = sizes.read_text().split()
-                            if len(values) == 2:
-                                break
-                        self.read_until(master, b"synthetic preview", timeout=0.05)
-                    self.assertEqual(len(values), 2)
-                    columns, rows = map(int, values)
-                    if width == 80:
-                        self.assertGreaterEqual(columns, width - 8)
-                        self.assertLessEqual(rows, 12)
-                    else:
-                        self.assertLess(columns, 80)
-                        self.assertGreater(rows, 12)
-                    os.write(master, b"\x03")
-                    self.read_until(master, None, timeout=3)
-                    process.wait(timeout=3)
-                    self.assertEqual(process.returncode, 130)
+                    # Let fzf finish its temporary-file writes before removing HOME.
+                    closed = subprocess.run(
+                        [tmux, "-S", socket, "send-keys", "-t", "fixture:0.0", "Escape"],
+                        env=environment, capture_output=True, timeout=5, check=False,
+                    )
+                    if closed.returncode == 0:
+                        screen_until(lambda screen: not re.search(r"option-\d{2}", screen))
                 finally:
-                    self.close(process, master)
+                    subprocess.run([tmux, "-S", socket, "kill-server"], env=environment,
+                                   capture_output=True, timeout=5, check=False)
 
     def test_preview_fallback_handles_chinese_spaces_and_leading_dashes(self):
         with tempfile.TemporaryDirectory(prefix="envy-preview-content-") as directory:
@@ -225,6 +279,63 @@ class CompletionRuntimeTests(unittest.TestCase):
                 cwd=home, env=env, check=True, capture_output=True, text=True, timeout=10,
             )
             self.assertIn(file.name, result.stdout)
+
+    def test_real_systemctl_completion_expands_system_and_user_service_names(self):
+        with tempfile.TemporaryDirectory(prefix="envy-systemctl-tab-") as directory:
+            home = Path(directory).resolve()
+            binary = home / "bin"
+            binary.mkdir()
+            systemctl = binary / "systemctl"
+            systemctl.write_text(
+                "#!" + self.fixture["zsh"] + "\n"
+                'print -r -- "$*" >> "$HOME/systemctl-calls"\n'
+                'case " $* " in\n'
+                '  *" list-units "*|*" list-unit-files "*) '
+                "print -r -- 'envy-fixture.service loaded active running' ;;\n"
+                '  *" show "*) print -rl -- "Id=envy-fixture.service" "CanStop=yes" ;;\n'
+                '  *) print -u2 UNEXPECTED_SYSTEMCTL_EXECUTION; exit 99 ;;\nesac\n'
+            )
+            systemctl.chmod(0o755)
+            path = os.pathsep.join([str(binary), str(Path(self.fixture["zsh"]).parent), "/usr/bin"])
+            rc = home / "fixture.zsh"
+            rc.write_text("\n".join([
+                "export PATH=" + shlex.quote(path),
+                "bindkey -e",
+                "fpath=(" + shlex.quote(self.fixture["systemctlCompletion"]) + " $fpath)",
+                "autoload -Uz compinit; compinit -D -i",
+                "source " + shlex.quote(str(ROOT / "files/zsh/func.zsh")),
+                'sudo() { print -u2 UNEXPECTED_SUDO_EXECUTION; return 99; }',
+                '_fixture_inspect() { print -r -- "BUFFER=$BUFFER"; zle reset-prompt; }',
+                "zle -N _fixture_inspect; bindkey '^X' _fixture_inspect",
+                "PROMPT='SERVICE> '", "print -r -- ENVY_SERVICE_READY",
+            ]))
+            process, master = self.launch([self.fixture["zsh"], "-dfi"], home, extra={"PATH": path})
+            try:
+                os.write(master, ("source " + shlex.quote(str(rc)) + "\r").encode())
+                startup = self.read_until(master, b"SERVICE> ")
+                self.assertNotIn("command not found", startup)
+                for wrapper, action in (("sc", "st"), ("usc", "st"), ("sc", "stop")):
+                    command = wrapper + " " + action
+                    os.write(master, (command + " envy-fixt\t").encode())
+                    completed = self.read_until(master, b"envy-fixture.service")
+                    self.assertIn("envy-fixture.service", completed)
+                    os.write(master, b"\x18")
+                    inspected = self.read_until(master, b"BUFFER=" + command.encode() + b" envy-fixture.service")
+                    self.assertIn("BUFFER=" + command + " envy-fixture.service", inspected)
+                    self.assertNotIn("function definition file not found", completed + inspected)
+                    self.assertNotIn("UNEXPECTED_SYSTEMCTL_EXECUTION", completed + inspected)
+                    self.assertNotIn("UNEXPECTED_SUDO_EXECUTION", completed + inspected)
+                    os.write(master, b"\x15")
+                queries = (home / "systemctl-calls").read_text().splitlines()
+                self.assertTrue(any("--user" in query for query in queries))
+                self.assertTrue(any("--system" in query for query in queries))
+                self.assertTrue(any(" show " in query for query in queries))
+                os.write(master, b"exit\r")
+                self.read_until(master, None, timeout=2)
+                process.wait(timeout=3)
+                self.assertEqual(process.returncode, 0)
+            finally:
+                self.close(process, master)
 
     def test_tty_cat_falls_back_when_bat_is_excluded(self):
         with tempfile.TemporaryDirectory(prefix="envy-cat-fallback-") as directory:

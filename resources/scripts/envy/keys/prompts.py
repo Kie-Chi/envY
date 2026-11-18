@@ -117,30 +117,44 @@ def _select_menu(items: list, title: str = "Select") -> Optional[tuple]:
 # ==========================================
 
 
-def scan_usb_key_files() -> List[Path]:
+def _is_dir(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+def _iter_entries(path: Path) -> List[Path]:
+    """List a directory, ignoring volumes we cannot read (for example SMB mounts)."""
+    try:
+        return sorted(path.iterdir())
+    except OSError:
+        return []
+
+
+def scan_usb_key_files(mount_dirs: List[Path] | None = None) -> List[Path]:
     """Scan mounted USB drives for .age/.age.txt files."""
     candidates = []
-    mount_dirs = []
-
-    if sys.platform == "darwin":
-        mount_dirs = [Path("/Volumes")]
-    else:
-        mount_dirs = [Path(f"/media/{os.getenv('USER', '')}"), Path("/mnt")]
+    if mount_dirs is None:
+        if sys.platform == "darwin":
+            mount_dirs = [Path("/Volumes")]
+        else:
+            mount_dirs = [Path(f"/media/{os.getenv('USER', '')}"), Path("/mnt")]
 
     for mount_dir in mount_dirs:
         if not mount_dir.exists():
             continue
-        for volume in mount_dir.iterdir():
-            if not volume.is_dir():
+        for volume in _iter_entries(mount_dir):
+            if not _is_dir(volume):
                 continue
 
             recovery_dir = volume / "recovery"
-            if recovery_dir.exists() and recovery_dir.is_dir():
-                for f in sorted(recovery_dir.iterdir()):
+            if _is_dir(recovery_dir):
+                for f in _iter_entries(recovery_dir):
                     if f.is_file() and (f.name.endswith(".age") or f.name.endswith(".age.txt")):
                         candidates.append(f)
 
-            for f in sorted(volume.iterdir()):
+            for f in _iter_entries(volume):
                 if f.is_file() and (f.name.endswith(".age") or f.name.endswith(".age.txt")):
                     candidates.append(f)
 

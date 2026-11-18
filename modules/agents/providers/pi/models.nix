@@ -1,6 +1,6 @@
 # Normalize legacy and list selections before rendering Pi configuration.
 { lib }:
-{ agent, profiles ? {}, endpoints ? {}, credentials ? {}, agentName ? "pi" }:
+{ agent, profiles ? {}, endpoints ? {}, credentials ? {}, agentName ? "pi", defaultApi ? "openai-completions" }:
 let
   root = "envy.agents.${agentName}";
   fields = {
@@ -10,10 +10,12 @@ let
     model = null;
     contextWindow = null;
     maxTokens = null;
+    thinkingLevelMap = null;
   };
   defaults = {
     contextWindow = agent.contextWindow or null;
     maxTokens = agent.maxTokens or null;
+    thinkingLevelMap = agent.thinkingLevelMap or null;
   };
   fail = code: path: message: hint:
     throw ("[envy-config] " + builtins.toJSON { inherit code path message hint; }
@@ -23,10 +25,11 @@ let
     profile = value.profile or null;
     prefix = "envy.agentProfiles.${profile}";
     inherited = if profile == null then {} else if builtins.hasAttr profile profiles
-      then lib.filterAttrs (field: v: !(builtins.hasAttr field defaults) || v != null) profiles.${profile}
+      then lib.filterAttrs (field: v: field == "thinkingLevelMap" || !(builtins.hasAttr field defaults) || v != null) profiles.${profile}
       else fail "unknown-reference" "${path}.profile" "profile '${profile}' is not declared"
         "Declare ${prefix} first, or correct the reference at ${path}.profile.";
-    explicit = if overrides then builtins.intersectAttrs fields value else {};
+    explicit = if overrides then builtins.intersectAttrs fields value
+      else lib.optionalAttrs (value ? thinkingLevelMap) { inherit (value) thinkingLevelMap; };
   in {
     inherit path;
     selection = if profile == null then select value else select inherited // explicit;
@@ -48,7 +51,17 @@ let
     problem = field: code: message: hint: fail code "${path}.${field}" (withSource field message) hint;
     endpointPath = "envy.llm.endpoints.${selection.endpoint}.baseUrl";
     credentialPath = "envy.llm.credentials.${selection.credential}.secretPath";
-    valid = if multi && (selection.model == null || selection.model == "") then
+    validMap = selection.thinkingLevelMap == null || (builtins.isAttrs selection.thinkingLevelMap
+      && lib.all (key: builtins.elem key [ "off" "minimal" "low" "medium" "high" "xhigh" "max" "ultra" ])
+        (builtins.attrNames selection.thinkingLevelMap)
+      && lib.all (value: value == null || (builtins.isString value && value != ""))
+        (builtins.attrValues selection.thinkingLevelMap));
+    valid = if !validMap then
+        fail "invalid-type" origins.thinkingLevelMap "expected a Pi thinking level map or null"
+          "Use Pi thinking level keys mapped to non-empty provider efforts or null."
+      else if (agent.adapter or "pi") != "pi" && selection.thinkingLevelMap != null then
+        problem "thinkingLevelMap" "invalid-value" "thinkingLevelMap requires the pi adapter" "Clear the Pi-only capability or select the pi adapter."
+      else if multi && (selection.model == null || selection.model == "") then
         problem "model" "missing-required" "model is not set" "Set ${origins.model} to the intended model ID."
       else if multi && selection.endpoint == null then
         problem "endpoint" "missing-required" "endpoint is not set" "Set ${origins.endpoint} to a declared endpoint name."
@@ -67,7 +80,7 @@ let
       else true;
     api = if selection.api != null then selection.api
       else if endpoint != null && endpoint.protocol == "anthropic-compatible" then "anthropic-messages"
-      else "openai-completions";
+      else defaultApi;
     identity = builtins.substring 0 16 (builtins.hashString "sha256"
       (builtins.toJSON [ selection.endpoint api selection.credential ]));
     provider = if multi then "envy-pi-${identity}" else "envy-pi";

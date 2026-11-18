@@ -6,7 +6,7 @@ use crate::{
     backend::{
         apply_needs_tty, spawn_history_diff, spawn_mirror_measure, spawn_mirror_mutation,
         spawn_mirror_sources, spawn_mutation, spawn_search_groups, spawn_setting,
-        spawn_software_why, spawn_workflow,
+        spawn_software_why, spawn_workflow, spawn_json_workflow,
     },
     model::{
         compatible_groups, doctor_results, generation_number, mirror_target_rows, search_entries,
@@ -18,6 +18,84 @@ use crate::{
 use super::{App, InputMode};
 
 impl App {
+    pub(super) fn switch_storage_view(&mut self, direction: isize) {
+        let views = crate::storage::StorageView::ALL;
+        let current = views
+            .iter()
+            .position(|view| *view == self.storage_view)
+            .unwrap_or(0);
+        self.storage_view = if direction == 1 {
+            self.storage_view.next()
+        } else {
+            views[super::cycle_index(current, views.len(), direction)]
+        };
+        self.storage_selected = 0;
+        self.scroll = 0;
+        self.load_current(false);
+    }
+
+    pub(super) fn begin_storage_project(&mut self) {
+        if self.storage_view != crate::storage::StorageView::Inspect {
+            self.status = "Switch to Inspection with [ / ] to edit project scope".into();
+            return;
+        }
+        self.storage_project_input.clear();
+        self.input_mode = InputMode::StorageProject;
+        self.status = "Enter a project directory".into();
+    }
+
+    pub(super) fn commit_storage_project(&mut self) {
+        let path = self.storage_project_input.clone();
+        if path.trim().is_empty() || path.contains(['\0', '\r', '\n']) {
+            self.status = "Enter one non-empty directory without NUL or line breaks".into();
+            return;
+        }
+        self.input_mode = InputMode::Normal;
+        self.storage_project_input.clear();
+        if self.storage_projects.contains(&path) {
+            self.status = "Project already added".into();
+            return;
+        }
+        self.storage_projects.push(path);
+        self.storage_selected = 0;
+        self.scroll = 0;
+        self.load_current(false);
+    }
+
+    pub(super) fn remove_storage_project(&mut self, all: bool) {
+        if self.storage_view != crate::storage::StorageView::Inspect {
+            self.status = "Switch to Inspection with [ / ] to edit project scope".into();
+            return;
+        }
+        if self.storage_projects.is_empty() {
+            self.status = "No projects selected".into();
+            return;
+        }
+        if all {
+            self.storage_projects.clear();
+        } else {
+            self.storage_projects.pop();
+        }
+        self.storage_selected = 0;
+        self.scroll = 0;
+        self.load_current(false);
+    }
+
+    pub(super) fn open_storage_detail(&mut self) {
+        let Some(report) = self.storage_report() else {
+            return;
+        };
+        let Some(row) = report.rows().get(self.storage_selected).cloned() else {
+            return;
+        };
+        self.detail = Some(DetailView::Storage {
+            report: Box::new(report.clone()),
+            row,
+        });
+        self.detail_scroll = 0;
+        self.detail_scroll_max = 0;
+    }
+
     fn begin_mutation(&mut self, intent: MutationIntent) {
         self.request_id += 1;
         let request = self.request_id;
@@ -221,7 +299,7 @@ impl App {
             return;
         };
         let current = self
-            .payload()
+            .payload().map(crate::model::report_data)
             .and_then(|payload| payload.get("generations"))
             .and_then(Value::as_array)
             .and_then(|generations| {
@@ -256,6 +334,23 @@ impl App {
         spawn_history_diff(self.tx.clone(), request, before, after);
     }
 
+    pub(super) fn open_activity_detail(&mut self) {
+        let (key, index, title) = if self.history_view == crate::model::HistoryView::Generations {
+            ("generations", self.history_selected, "GENERATION DETAILS")
+        } else { ("entries", self.journal_selected, "OPERATION RECEIPT") };
+        let Some(state) = self.current_state() else { return; };
+        let selected = state.payload.as_ref().map(crate::model::report_data)
+            .and_then(|payload| payload.get(key)).and_then(Value::as_array)
+            .and_then(|rows| rows.get(index)).cloned();
+        if selected.is_none() && state.workflow_report.is_none() { return; }
+        let report = state.workflow_report.clone().unwrap_or(crate::model::WorkflowReport {
+            response: None, error: None, stderr: String::new(),
+        });
+        self.detail = Some(DetailView::Report { title: title.into(), report, selected });
+        self.detail_scroll = 0;
+        self.detail_scroll_max = 0;
+    }
+
     pub(super) fn invalidate_after_mutation(&mut self) {
         for screen in [
             Screen::Home,
@@ -278,15 +373,25 @@ impl App {
             self.status = "No setting selected".to_string();
             return;
         };
+        if row.secret {
+            self.status = "◆ Secret · edit with envy config secret-set".to_string();
+            return;
+        }
+        if !row.setter.editable() {
+            self.status = "Read only · reload Settings".to_string();
+            return;
+        }
+        let title = row.title();
         if row.freeform() {
             self.setting_edit = Some(SettingEdit {
                 key: row.key,
-                title: row.label,
+                setter: row.setter,
+                title,
                 buffer: row.value.clone(),
                 previous: row.value,
             });
             self.input_mode = InputMode::SettingValue;
-            self.status = "Edit value; Enter saves, Esc cancels".to_string();
+            self.status = "Edit value".to_string();
         } else {
             let selected = row
                 .choices
@@ -295,12 +400,13 @@ impl App {
                 .unwrap_or(0);
             self.setting_chooser = Some(SettingChooser {
                 key: row.key,
-                title: row.label,
+                setter: row.setter,
+                title,
                 options: row.choices,
                 selected,
                 current: row.value,
             });
-            self.status = "Choose a value; Enter confirms, Esc cancels".to_string();
+            self.status = "Choose a value".to_string();
         }
     }
 
@@ -312,13 +418,15 @@ impl App {
             return;
         };
         if value == chooser.current {
-            self.status = format!("{} unchanged", chooser.key.label());
+            self.status = format!("{} unchanged", chooser.key.title());
             return;
         }
         self.pending_setting = Some(PendingSetting {
             key: chooser.key,
+            setter: chooser.setter,
             value,
             previous: chooser.current,
+            scroll: 0,
         });
     }
 
@@ -329,17 +437,19 @@ impl App {
         self.input_mode = InputMode::Normal;
         let value = edit.buffer.trim().to_string();
         if value.is_empty() {
-            self.status = format!("{} left unchanged (empty)", edit.key.label());
+            self.status = format!("{} unchanged · empty input", edit.key.title());
             return;
         }
         if value == edit.previous {
-            self.status = format!("{} unchanged", edit.key.label());
+            self.status = format!("{} unchanged", edit.key.title());
             return;
         }
         self.pending_setting = Some(PendingSetting {
             key: edit.key,
+            setter: edit.setter,
             value,
             previous: edit.previous,
+            scroll: 0,
         });
     }
 
@@ -349,18 +459,44 @@ impl App {
         };
         self.request_id += 1;
         let request = self.request_id;
+        self.invalidate_setting_context();
         self.setting_request = Some(request);
         self.setting_loading = true;
-        self.status = format!("Applying {}", pending.key.label());
-        spawn_setting(self.tx.clone(), request, pending.key, pending.value);
+        self.status = format!("Saving {}", pending.key.title());
+        spawn_setting(self.tx.clone(), request, pending.key, pending.setter, pending.value);
     }
 
-    /// Host/config edits change the selected machine file, so drop and reload the
-    /// Home snapshot plus the Configure/Settings payloads that reflect it.
+    /// A failed write can have saved declarations or partially refreshed runtime.
+    /// Reject every old machine response without starting scans or mutations.
+    pub(super) fn invalidate_setting_context(&mut self) {
+        self.storage_actions.invalidate();
+        self.pages.clear();
+        self.search_cache.clear();
+        self.search_order.clear();
+        self.storage_cache.clear();
+        self.storage_order.clear();
+        self.storage_selected = 0;
+        self.detail_request = None;
+        self.group_request = None;
+        self.group_chooser = None;
+        self.mutation_request = None;
+        self.pending_mutation = None;
+        self.mutation_loading = false;
+        self.mirror_loading = false;
+        self.mirror_measuring = false;
+        self.mirror_chooser = None;
+        self.pending_mirror = None;
+        self.mirror_request = None;
+        self.mirror_measure_request = None;
+        self.detail = None;
+        self.detail_scroll = 0;
+        self.cancel_json_workflow();
+        self.workflow_log = None;
+        self.workflow_confirmation = None;
+    }
+
     pub(super) fn refresh_after_setting(&mut self) {
-        for screen in [Screen::Home, Screen::Hosts, Screen::Config] {
-            self.pages.remove(&screen);
-        }
+        self.invalidate_setting_context();
         self.load_current(true);
     }
 
@@ -464,6 +600,7 @@ impl App {
     /// leave-screen path. GUI launchers and `apply` runs that need an
     /// interactive sudo prompt fall back to leaving the alternate screen.
     pub(super) fn start_workflow(&mut self, action: WorkflowAction) {
+        if self.workflow_stream_request.is_some() || self.setting_loading || self.mutation_loading { return; }
         if !action.is_streamable() || (action == WorkflowAction::Apply && apply_needs_tty()) {
             self.workflow_action = Some(action);
             return;
@@ -478,9 +615,18 @@ impl App {
             success: None,
             scroll: 0,
             follow: true,
+            json: action.is_json(),
+            scroll_max: 0,
+            report: None,
         });
         self.status = format!("Running {}", action.display_command());
-        spawn_workflow(self.tx.clone(), request, action);
+        if action.is_json() {
+            let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            self.workflow_cancel = Some(cancelled.clone());
+            spawn_json_workflow(self.tx.clone(), request, action, cancelled);
+        } else {
+            spawn_workflow(self.tx.clone(), request, action);
+        }
     }
 
     /// Scroll the workflow log popup; any manual move unpins auto-follow so the
@@ -488,7 +634,7 @@ impl App {
     pub(super) fn scroll_workflow_log(&mut self, delta: isize) {
         if let Some(log) = self.workflow_log.as_mut() {
             log.follow = false;
-            let max = log.lines.len().saturating_sub(1);
+            let max = log.scroll_max;
             log.scroll = if delta.is_negative() {
                 log.scroll.saturating_sub(delta.unsigned_abs())
             } else {
@@ -497,7 +643,33 @@ impl App {
         }
     }
 
+    /// User cancellation keeps the request identity until transport returns its
+    /// captured stderr/error. Context changes use cancel_json_workflow instead.
+    pub(super) fn request_json_cancel(&mut self) {
+        if let Some(cancelled) = &self.workflow_cancel {
+            if !cancelled.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                if let Some(log) = self.workflow_log.as_mut() {
+                    log.lines.push("Cancelling backend request and stopping its process group…".into());
+                }
+                self.status = "Cancelling backend request".into();
+            }
+        }
+    }
+
+    pub(super) fn cancel_json_workflow(&mut self) {
+        if let Some(cancelled) = self.workflow_cancel.take() {
+            cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+            self.workflow_stream_request = None;
+            if let Some(log) = self.workflow_log.as_mut() {
+                log.running = false;
+                log.success = Some(false);
+                log.lines.push("Cancelled; the backend may have completed earlier stages. Reload before retrying.".into());
+            }
+        }
+    }
+
     pub(super) fn close_workflow_log(&mut self) {
+        self.cancel_json_workflow();
         self.workflow_log = None;
         self.workflow_stream_request = None;
         self.sync_status();
@@ -507,9 +679,9 @@ impl App {
         self.invalidate_after_mutation();
         self.load_current(true);
         self.status = if success {
-            format!("{} completed; refreshing data", action.title())
+            format!("✓ {} completed", action.title())
         } else {
-            format!("{} failed; inspect the command output", action.title())
+            format!("! {} failed · see output", action.title())
         };
     }
 

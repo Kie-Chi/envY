@@ -36,6 +36,10 @@ in
         binding = tilixQuake.binding;
         ownership = "declarative";
         note = "GNOME delegates the overlay lifecycle to Tilix --quake.";
+        readback = {
+          adapter = "linux.gnome-scratchpad";
+          expected = config.dconf.settings."org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom-tilix-quake".binding;
+        };
         requirements = [
           {
             group = "nix.user.package";

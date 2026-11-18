@@ -258,6 +258,126 @@ class ConfigShowTests(unittest.TestCase):
         self.assertNotIn("hidden-key", output.getvalue())
 
 
+class ConfigMetadataTests(unittest.TestCase):
+    def render(self, fields, settings, *, evaluated=True, dynamic_fields=None):
+        output = io.StringIO()
+        manifest = {"settings": settings} if evaluated else None
+        with patch.object(cli, "MACHINE_FIELDS", fields), patch.object(
+            cli, "machine_manifest", return_value=manifest
+        ), patch.object(machine_nix, "read_machine_nix", return_value=settings), patch.object(
+            cli, "read_device_metadata", return_value={}
+        ), patch.object(secret_store, "read_secrets_yaml", return_value=({"password": "never-output"}, True)), patch.object(
+            secret_store, "read_secrets_data", return_value=({}, False)
+        ), patch("envy.agent.config_view", return_value={
+            "values": {entry["path"]: entry["value"] for entry in dynamic_fields or []},
+            "fields": dynamic_fields or [], "llm": {}, "agents": {},
+        }), patch.object(cli.log, "console", Console(file=output, width=220)):
+            cli.cmd_show(refresh=False, json_output=True)
+        self.assertNotIn("never-output", output.getvalue())
+        return json.loads(output.getvalue())
+
+    def test_envelope_retains_all_legacy_aliases_for_both_sources(self):
+        from envy.schemas.config import FieldDef
+
+        field = FieldDef(group="TEST", dest="machine", path="envy.test", prompt="Test value")
+        for evaluated in (True, False):
+            with self.subTest(evaluated=evaluated):
+                payload = self.render([field], {field.path: "kept"}, evaluated=evaluated)
+                self.assertEqual(payload["command"], "config.show")
+                self.assertTrue(payload["ok"])
+                self.assertEqual(bool(payload["warnings"]), not evaluated)
+                self.assertNotIn("data", payload["data"])
+                self.assertEqual(payload["data"], {
+                    key: value for key, value in payload.items()
+                    if key not in {"command", "ok", "data", "warnings"}
+                })
+                self.assertEqual(payload["values"][field.path], "kept")
+
+    def test_conditions_use_current_values_keep_inactive_fields_and_report_unknown(self):
+        from envy.schemas.config import FieldDef
+
+        field = FieldDef(
+            group="TEST", dest="machine", path="envy.test.value", prompt="Dependent value",
+            choices=["one", "two"], nix_type="bool", required=True,
+            condition=lambda values: values.get("envy.test.mode", "off") == "on",
+            default_fn=lambda: self.fail("Metadata must not evaluate defaults"),
+        )
+        for evaluated in (True, False):
+            for dependency, state, active in (("on", "active", True), ("off", "inactive", False), (None, "unknown", None)):
+                with self.subTest(evaluated=evaluated, state=state):
+                    settings = {field.path: "one"}
+                    if dependency is not None:
+                        settings["envy.test.mode"] = dependency
+                    payload = self.render([field], settings, evaluated=evaluated)
+                    entry = payload["fields"][0]
+                    self.assertEqual(entry["conditionState"], state)
+                    self.assertIs(entry["active"], active)
+                    self.assertEqual(entry["value"], "one")
+                    for key, expected in {"group": "TEST", "prompt": "Dependent value", "nixType": "bool", "required": True, "choices": ["one", "two"]}.items():
+                        self.assertEqual(entry[key], expected)
+                    self.assertTrue(entry["activationHint"])
+
+    def test_platform_schema_conditions_and_secret_metadata(self):
+        from envy.schemas.darwin.config import MACHINE_FIELDS, SECRET_FIELDS
+
+        tun = next(field for field in MACHINE_FIELDS if field.path.endswith(".tun"))
+        for mode, state in (("none", "inactive"), ("keep", "active"), (None, "unknown")):
+            with self.subTest(mode=mode), patch.object(cli, "SECRET_FIELDS", SECRET_FIELDS):
+                settings = {tun.path: "false"}
+                if mode is not None:
+                    settings["envy.darwin.services.mihomo.mode"] = mode
+                payload = self.render([tun], settings)
+                self.assertEqual(payload["fields"][0]["conditionState"], state)
+                secret = payload["secretFields"][0]
+                self.assertEqual(secret["conditionState"], state)
+                self.assertEqual(secret["path"], "proxy/url")
+                self.assertIs(secret["set"], False)
+                self.assertNotIn("value", secret)
+
+    def test_dynamic_activation_hints_follow_the_actual_setter(self):
+        entries = [
+            {"path": "envy.agents.custom.adapter", "value": "pi", "choices": []},
+            {"path": "envy.agents.custom.model", "value": "fixture-model", "choices": []},
+            {"path": "envy.agentProfiles.shared.model", "value": "profile-model", "choices": []},
+        ]
+        fields = {entry["path"]: entry for entry in self.render([], {}, dynamic_fields=entries)["fields"]}
+        adapter = fields[entries[0]["path"]]
+        model = fields[entries[1]["path"]]
+        self.assertEqual(adapter["changeKind"], "apply")
+        self.assertIn("envy apply", adapter["activationHint"])
+        self.assertEqual(model["changeKind"], "live")
+        self.assertIn("newly started", model["activationHint"])
+        profile = fields[entries[2]["path"]]
+        self.assertEqual(profile["group"], "AGENT PROFILES")
+        self.assertEqual(profile["changeKind"], "live")
+        self.assertIn("newly started", profile["activationHint"])
+        self.assertEqual(profile["setter"], "agent.set")
+        self.assertEqual(model["setter"], "agent.set")
+
+    def test_dynamic_fields_have_descriptions_types_choices_and_unknown_dependencies(self):
+        entries = [
+            {"path": "envy.agents.custom.adapter", "value": "pi", "choices": []},
+            {"path": "envy.agents.custom.endpoint", "value": "local", "choices": []},
+            {"path": "envy.agents.custom.contextWindow", "value": "8192", "choices": []},
+            {"path": "envy.agents.custom.moreThinking", "value": "true", "choices": ["true", "false"]},
+            {"path": "envy.agents.missing.api", "value": "", "choices": ["openai-responses"]},
+            {"path": "envy.llm.endpoints.local.baseUrl", "value": "https://example.test", "choices": []},
+        ]
+        payload = self.render([], {}, dynamic_fields=entries)
+        fields = {entry["path"]: entry for entry in payload["fields"]}
+        self.assertIn("pi", fields[entries[0]["path"]]["choices"])
+        self.assertEqual(fields[entries[1]["path"]]["choices"], ["local"])
+        self.assertEqual(fields[entries[2]["path"]]["nixType"], "nullOr positiveInt")
+        self.assertEqual(fields[entries[3]["path"]]["choices"], ["true", "false"])
+        self.assertEqual(fields[entries[3]["path"]]["conditionState"], "active")
+        self.assertEqual(fields[entries[4]["path"]]["conditionState"], "unknown")
+        self.assertIsNone(fields[entries[4]["path"]]["active"])
+        for entry in fields.values():
+            self.assertTrue(entry["prompt"])
+            self.assertTrue(entry["nixType"])
+            self.assertTrue(entry["group"])
+
+
 class ConfigSetTests(unittest.TestCase):
     def test_set_json_emits_result_and_suppresses_command_logs(self):
         output = io.StringIO()

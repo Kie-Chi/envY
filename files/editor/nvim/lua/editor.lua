@@ -121,6 +121,9 @@ vim.keymap.set('c', '<C-N>', '<Down>')
 vim.keymap.set('c', 'w!!', 'w !sudo tee >/dev/null %')
 
 -- terminal
+-- Preserve macOS line navigation when forwarding keys to the shell.
+vim.keymap.set('t', '<D-Left>', '<C-a>', { desc = 'Terminal line start' })
+vim.keymap.set('t', '<D-Right>', '<C-e>', { desc = 'Terminal line end' })
 vim.keymap.set('t', '<C-g>', '<C-\\><C-N>', {
   desc = 'Exit terminal mode',
 })
@@ -144,11 +147,26 @@ vim.keymap.set('n', '<Leader>J', '<C-w>J', { desc = 'Move window down' })
 vim.keymap.set('n', '<Leader>K', '<C-w>K', { desc = 'Move window up' })
 vim.keymap.set('n', '<Leader>L', '<C-w>L', { desc = 'Move window right' })
 local terminal = vim.api.nvim_create_augroup('terminal', {})
+local function update_line_numbers()
+  if vim.bo.buftype == 'terminal' then
+    vim.wo.number = false
+    vim.wo.relativenumber = false
+    vim.wo.signcolumn = 'no'
+  elseif vim.bo.buftype == '' then
+    vim.wo.number = true
+    vim.wo.signcolumn = 'yes'
+  end
+end
+
+vim.api.nvim_create_autocmd({ 'TermOpen', 'BufWinEnter', 'WinEnter' }, {
+  group = terminal,
+  callback = update_line_numbers,
+})
+
 vim.api.nvim_create_autocmd('TermOpen', {
   pattern = '*',
   group = terminal,
   callback = function ()
-    vim.wo.number = false
     -- Restore normal j/k in terminal buffer (gj/gk doesn't work well in terminal)
     vim.keymap.set('n', 'j', 'j', { buffer = true })
     vim.keymap.set('n', 'k', 'k', { buffer = true })
@@ -157,6 +175,11 @@ vim.api.nvim_create_autocmd('TermOpen', {
     vim.keymap.set('n', '<CR>',  'i<CR><C-\\><C-N>G', { buffer = true })
   end
 })
+
+-- Refresh existing windows when the configuration is reloaded.
+for _, win in ipairs(vim.api.nvim_list_wins()) do
+  vim.api.nvim_win_call(win, update_line_numbers)
+end
 
 -- restore last edit position
 vim.api.nvim_create_autocmd('BufReadPost', {

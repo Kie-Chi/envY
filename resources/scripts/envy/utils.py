@@ -203,19 +203,21 @@ def machine_config_file(machine_id: str | None = None, platform: str | None = No
     return machine_config_dir(platform) / f"{machine_id or current_machine_id()}.nix"
 
 
-def machine_manifest_attr(machine_id: str | None = None) -> str:
+def machine_manifest_attr(machine_id: str | None = None, *, source: Path | None = None) -> str:
     selected = machine_id or current_machine_id()
+    root = f"path:{source}" if source is not None else "path:."
     if platform_name() == "darwin":
-        return f"path:.#darwinConfigurations.{selected}.config.envy.machine.manifest"
-    return f"path:.#homeConfigurations.{selected}.config.envy.machine.manifest"
+        return f"{root}#darwinConfigurations.{selected}.config.envy.machine.manifest"
+    return f"{root}#homeConfigurations.{selected}.config.envy.machine.manifest"
 
 
-def machine_build_attr(machine_id: str | None = None, *, drv_path: bool = False) -> str:
+def machine_build_attr(machine_id: str | None = None, *, drv_path: bool = False, source: Path | None = None) -> str:
     selected = machine_id or current_machine_id()
+    root = f"path:{source}" if source is not None else "path:."
     if platform_name() == "darwin":
-        attr = f"path:.#darwinConfigurations.{selected}.config.system.build.toplevel"
+        attr = f"{root}#darwinConfigurations.{selected}.config.system.build.toplevel"
     else:
-        attr = f"path:.#homeConfigurations.{selected}.activationPackage"
+        attr = f"{root}#homeConfigurations.{selected}.activationPackage"
     return f"{attr}.drvPath" if drv_path else attr
 
 
@@ -391,9 +393,11 @@ def run_hm(*args: str) -> None:
         ], capture=False, activity="Home Manager activation")
 
 
-def run_darwin_switch() -> None:
-    """Run nix-darwin switch with sudo."""
-    etc_migration = ENVY_ROOT / "resources" / "scripts" / "nix-darwin-etc.sh"
+def run_darwin_switch(*, source: Path | None = None, machine: str | None = None) -> None:
+    """Run nix-darwin switch with sudo, optionally from a frozen source."""
+    target = f"path:{source}#{machine or current_machine_id()}" if source is not None else flake_target()
+    inputs_from = f"path:{source}" if source is not None else "path:."
+    etc_migration = (source if source is not None else ENVY_ROOT) / "resources" / "scripts" / "nix-darwin-etc.sh"
     if not etc_migration.is_file():
         raise RuntimeError(f"missing nix-darwin /etc migration script: {etc_migration}")
     log.step("darwin", "preparing /etc for nix-darwin")
@@ -406,15 +410,15 @@ def run_darwin_switch() -> None:
     runner = shutil.which("darwin-rebuild")
     if runner:
         log.info("darwin", "using installed runner", path=runner)
-        command = [runner, "switch", "--flake", flake_target(), "--impure"]
+        command = [runner, "switch", "--flake", target, "--impure"]
     else:
         log.warn("darwin", "darwin-rebuild not found, using repository-locked fallback")
         command = [
             # sudo does not retain bootstrap's NIX_CONFIG or the user's Nix
             # configuration, so enable flake support on this invocation too.
             "nix", "--extra-experimental-features", "nix-command flakes",
-            "run", "--inputs-from", "path:.", "darwin", "--", "switch",
-            "--flake", flake_target(), "--impure",
+            "run", "--inputs-from", inputs_from, "darwin", "--", "switch",
+            "--flake", target, "--impure",
         ]
     esudo(
         "--preserve-env=HOME,NIX_CONFIG", *command, capture=False,
@@ -424,13 +428,10 @@ def run_darwin_switch() -> None:
 
 
 def run_apply() -> None:
-    """Apply configuration — routes to platform-appropriate method."""
-    if PLATFORM == "darwin":
-        run_darwin_switch()
-    else:
-        log.step("hm", "applying Home Manager configuration")
-        run_hm("switch", "--flake", flake_target(), "--impure")
-        log.ok("hm", "configuration applied, new generation created")
+    """Build and activate a frozen source, recording only verified baselines."""
+    from envy.workflows.system import apply_frozen_configuration
+
+    apply_frozen_configuration()
 
 
 def _command_exists(name: str) -> bool:

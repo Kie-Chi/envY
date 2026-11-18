@@ -4,12 +4,12 @@ let
   hasPackage = name: config: builtins.elem name (map lib.getName config.home.packages);
   homeUser = config: config.home-manager.users.${config.envy.user.name};
   hasConfig = name: config: builtins.hasAttr name config.xdg.configFile;
-  profileNames = config:
+  profiles = config:
     if builtins.hasAttr "iterm2-tokyo-night-profile" config.home.file then
-      map (profile: profile.Name)
-        (builtins.fromJSON (builtins.unsafeDiscardStringContext
-          config.home.file.iterm2-tokyo-night-profile.text)).Profiles
+      (builtins.fromJSON (builtins.unsafeDiscardStringContext
+        config.home.file.iterm2-tokyo-night-profile.text)).Profiles
     else [ ];
+  profileNames = config: map (profile: profile.Name) (profiles config);
   checkShell = config:
     let
       init = config.programs.zsh.initContent;
@@ -37,7 +37,14 @@ let
       && lib.hasInfix "/bin/zoxide init zsh" init == zoxideSelected
       && lib.hasInfix "/share/fzf-tab/fzf-tab.plugin.zsh" init == fzfSelected
       && (!fzfSelected || (
-        position "oh-my-zsh.sh" < position "/bin/fzf --zsh"
+        lib.hasInfix "zstyle ':fzf-tab:*' fzf-min-height 12" init
+        && lib.hasInfix "zstyle ':fzf-tab:*' fzf-pad 4" init
+        && lib.hasInfix "COLUMNS >= 100 && LINES >= 20" init
+        && lib.hasInfix "--preview-window=right:55%:wrap" init
+        && lib.hasInfix "--preview-window=hidden" init
+        && !(lib.hasInfix "down:45%" init)
+        && !(lib.hasInfix "--preview-window" (config.home.sessionVariables.FZF_DEFAULT_OPTS or ""))
+        && position "oh-my-zsh.sh" < position "/bin/fzf --zsh"
         && position "/bin/fzf --zsh" < position "/share/fzf-tab/fzf-tab.plugin.zsh"
         && position "/share/fzf-tab/fzf-tab.plugin.zsh" < position "zsh-syntax-highlighting.zsh"));
   checkHome = config:
@@ -102,6 +109,12 @@ let
       && !hasPackage "atuin" excluded
       && !(builtins.hasAttr ".tmux.conf.local" excluded.home.file)
       && profileNames excluded == builtins.filter (name: name != "BtopDashboard") (profileNames home)
+      && lib.all (profile:
+        !(builtins.elem profile.Name [ "Tokyo Night" "Quake" ]) || (
+          (profile."Keyboard Map"."0xf702-0x300000" or { }) == { Action = 11; Text = "0x1"; }
+          && (profile."Keyboard Map"."0xf703-0x300000" or { }) == { Action = 11; Text = "0x5"; }
+        )
+      ) (profiles home)
       && (home.envy.vscode.mode != "remote"
         || !(builtins.hasAttr "default" home.programs.vscode.profiles))
       && (!local.programs.vscode.enable || (

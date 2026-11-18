@@ -38,6 +38,17 @@ in
     envy.linux.software.native.packages.effective = selectItems policy.software.native.packages;
     envy.linux.software.url.artifacts.effective = selectItems policy.software.url.artifacts;
 
+    envy.machine.activationActions = [ {
+      id = "home-manager-activation";
+      owner = "modules/envy/linux.nix";
+      manager = "home-manager";
+      summary = "Activate the managed Linux home generation for ${config.envy.user.name}.";
+      effects = [ "Switch Home Manager links and run Linux home activation hooks, including declared system package backends." ];
+      verification = "Inspect the Home Manager activation derivation and active generation; metadata inspection does not switch generations or execute activation hooks.";
+      repeatability = "Hooks can affect writable files, services, and external managers on each activation. This description does not authorize a retry.";
+      rollbackBoundary = "A generation rollback can restore declarative links but does not guarantee restoration of native packages, repositories, preferences, or writable application data.";
+    } ];
+
     envy.machine.manifest = {
       schemaVersion = 3;
       id = config.envy.machine.id;
@@ -56,6 +67,7 @@ in
         "envy.linux.option" = policy.option;
         "envy.mirrors.mode" = config.envy.mirrors.mode;
         "envy.storage.mode" = config.envy.storage.mode;
+        "envy.storage.maintenance.go-modcache" = config.envy.storage.maintenance.go-modcache;
         "envy.storage.archive.repository" = config.envy.storage.archive.repository;
         "envy.amux.skipPermissions" = config.envy.amux.skipPermissions;
       };
@@ -96,6 +108,15 @@ in
         probes = mirrorProfile.probes.common ++ mirrorProfile.probes.linux;
       };
       habits = config.envy.machine.habits;
+      behavior = {
+        actions = config.envy.machine.activationActions;
+        coverage = "partial";
+        unknowns = [
+          "Other feature activation hooks, secret deployment, and application-specific migrations have no action declarations yet."
+          "Service changes, native manager selection, package scripts, network responses, and concurrent application writes cannot be simulated by this metadata."
+          "Linux system services outside Home Manager and generation rollback of external installations, preferences, or writable application data are not covered."
+        ];
+      };
       software.sources = config.envy.software.sources;
       software.groups = {
         "nix.user.package" = manifestLib.group {

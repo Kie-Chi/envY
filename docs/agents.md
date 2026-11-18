@@ -18,6 +18,28 @@ envY 的 modules/agents 管理 agent 安装、provider wrapper、skill catalog �
 - linux/：Codex wrapper（Darwin 用 cask 安装 Codex）、rtk 与桌面机的 Cursor。
 - files/agents/：非 Nix 静态文件，包括 provider prompt（prompts/）和 Pi 补丁（patches/）。
 
+## 可写配置预览与冲突保护
+
+`sys.mergeWritable` 继续调用 `envy.structured_config`，仅合并 feature 声明的键及命名空间。独立预览可在开发环境运行 `python -m envy.structured_config --source /path/to/declared.json --target /path/to/settings.json --dry-run --json`；TOML/YAML 目标需要对应的 `--format`，托管键参数与 activation 一致。dry-run 不创建目录、临时文件或修改权限。
+
+预览只列最终变化的键路径及 add/change/remove，以及 create/write/replace_symlink/chmod 操作，不输出旧值、新值、正文或内容摘要。JSON envelope 的 command 为 `structured-config.merge`，并明确提示并发限制。普通 activation 保持成功时静默及原有 bool 返回语义。
+
+准备阶段读取文件与父路径身份，写入前在临时文件 fsync 后复核；内容、身份、权限或链接发生变化时以 conflict 停止并保留当前文件。有效链接读取源内容后替换链接自身，悬空链接、特殊文件或无法解析的配置不会覆盖。幂等返回和仅权限调整也进行检查；私密模式及非托管字段继续保留。
+
+即时 agent 刷新检测到冲突时会保留整个运行态文件事务，不再用旧快照自动回滚；此前已完成的写入可能保留，CLI 以 conflict 失败说明 partial 状态。其他错误继续使用原有回滚流程。
+
+这属于乐观复核，复核与替换之间仍有窗口，无法代替应用配合的原子锁。冲突后应关闭相关应用、重新预览再执行；接口不自动覆盖竞争者写入，也不为应用会话、历史或数据库增加托管范围。
+
+## Codex 配置与凭据
+
+`providers/codex.nix` 把 `envy.agents.codex`（先经 `envy.agentProfiles` 解析）渲染成 Codex 自己的 `~/.codex/config.toml`：托管 `model`、`model_context_window`、`model_max_output_tokens`、`model_provider` 和 `model_providers.envy-<endpoint>`。Codex 只允许 OpenAI 兼容 endpoint 上的 `openai-responses`，未设置 api 时也使用 Responses；Chat Completions 和 Anthropic 在写入前报错。`runtime-files.nix` 按 adapter 聚合所有 codex 实例后只写一次，机器 `additionalSettings` 仍覆盖生成值；`managedKeyPrefixes.model_providers = "envy"` 只替换 envY 命名的 provider，保留 Codex 的 `projects`、`tui`、`plugins` 等键。
+
+Codex 多模型模式由 activation 和即时刷新共用 `envy.agent_codex` 生成 `~/.codex/envy-models.json`，通过 `model_catalog_json` 加载。生成器在临时 `CODEX_HOME` 中运行已安装客户端的 `codex debug models --bundled`，离线复用原生指令和匹配模型的元数据；不调用模型接口，不读取真实认证。模型不在内置目录时沿用原生指令，并使用保守的能力声明。多模型目录在启动时加载，修改后需重启对应客户端；桌面端模型选择器是否展示候选项取决于其内嵌 Codex 版本。
+
+默认选择沿用顶层 profile/model；未指定默认模型时使用列表第一项。多模型的 `contextWindow` 写入各模型元数据，避免全局上下文窗口覆盖切换后的模型；`maxTokens` 保留全局映射，因此候选项必须一致。移除候选项会重写目录，清空列表会解除 envY 生成的目录引用，并清除过期的全局模型限制，保留用户的其他配置。
+
+Codex 从 `~/.codex/auth.json` 读取 API key，而不是 `OPENAI_API_KEY`。activation 的 `mergeCodexAuth` 与 `envy agent refresh` 都会把解密后的 `envy.llm.credentials.<name>` 写入该文件的 `OPENAI_API_KEY`（`auth_mode = "apikey"`）并保留其他 Codex 字段；这是 envY 唯一写入应用 auth 文件的位置，`codex login` 之后需要重新 apply 或 refresh。`envy agent` 用同一套渲染规则即时写 `config.toml` 和 `auth.json`，`tests/test_agent_codex.py` 对比 Nix 与 Python 输出。
+
 ## Pi 补丁
 
 pi/package.nix 在 Pi 的 workspace 构建阶段打补丁，库和打包后的 CLI 会一起重新编译。上游求值时会从 `source` 读取 package 与 lock 文件，所以不能给 `source` 套补丁派生，否则会变成 import-from-derivation，导致在另一平台上无法求值那个平台的机器。
@@ -30,15 +52,19 @@ pi/package.nix 在 Pi 的 workspace 构建阶段打补丁，库和打包后的 C
 
 ### 模型档位与 btw
 
-`pi/default.nix` 为 OpenAI Completions/Responses 下的 `gpt-6.1-sol` 及其带 `-` 后缀的别名、快照声明合法思考档位：排除 `off`、`minimal`、`ultra`，保留 `low/medium/high`；开启 `moreThinking` 时还保留 `xhigh/max`。显式请求不支持的档位由 Pi 钳制到合法档位，其他模型和 Anthropic 兼容设置保持原样。
+`pi/default.nix` 为 OpenAI Completions/Responses 下的 `gpt-6.1-sol` 及其带 `-` 后缀的快照，以及已知网关别名 `stepcode-gpt-6.1-sol`、`stepcode-gpt-6.1-sol-eastus2` 声明合法思考档位：排除 `off`、`minimal`、`ultra`，保留 `low/medium/high`；开启 `moreThinking` 时还保留 `xhigh/max`。显式请求不支持的档位由 Pi 钳制到合法档位。
+
+自定义模型可在 Pi 默认配置、profile 或 `models` 条目中声明 `thinkingLevelMap`，无需继续扩展模型名称匹配。显式映射整体替换兼容默认值；映射中的 `null` 禁用对应档位，整个字段设为 `null` 则清除继承映射并恢复兼容默认值。例如，采用相同 Sol 能力限制的网关模型可声明 `thinkingLevelMap = { off = null; minimal = null; ultra = null; };`。模型 ID 原样用于网关路由，Nix 部署与 Python 即时刷新采用同一语义；其他 adapter 拒绝这项 Pi 专属能力配置。
 
 `/btw` 不继承主会话的思考档位。未指定档位的 Sol 请求省略推理 effort，由服务端采用默认值，避免发送会被拒绝的 `none`；不改扩展的认证、上下文、无工具或会话隔离边界。
+
+`pi-btw-scroll.patch` 在扩展解包时修正弹层的滚动方向和边界。长回答使用 ↑/↓、PageUp/PageDown、Home/End 浏览；全屏模式下，指针位于弹层内时也可用滚轮，抵达边界仍由弹层消费事件。关闭弹层后焦点恢复到编辑器。`pi-coexist-tests` 使用真实 BTW、Goal 和宿主输入分发验证这些边界，其 `.tui` 入口覆盖隔离 CLI/PTY 交互。
 
 `envy agent` 的 Python 运行时生成器使用相同兼容规则，切换 profile 时不会把不支持的档位重新写回 `models.json`。`tests/models.nix` 求值实际 provider 的托管配置；`tests/pi-models.py` 对比 Nix 与运行时配置；`tests/model-lists.nix` 通过实际选项 schema 和共享默认值验证模型列表、profile 覆盖、显式 null、去重及非法输入；`tests/pi-models.mjs` 用真实 `/btw` 执行函数与 Pi 请求编码器执行离线回归，检查模型 schema、档位钳制及两种 OpenAI API 和 Anthropic 的参数。两平台的 `pi-model-tests` flake check 和 CI 运行这些检查；使用假凭据，在请求发送前捕获参数并禁止 fetch，不调用模型。
 
 ### Pi 多模型列表
 
-`envy.agents.pi.models` 可以同时注册多个模型，混用 `openai-completions`、`openai-responses` 和 `anthropic-messages`。只有 Pi 实例支持非空列表，其他 adapter 的配置不变。
+`envy.agents.pi.models` 可以同时注册多个模型，混用 `openai-completions`、`openai-responses` 和 `anthropic-messages`。`envy.agents.codex.models` 也支持同样的 profile 继承、显式覆盖和去重，但所有候选项（含默认选择）必须使用同一个 endpoint、credential 和 `maxTokens`，且 API 必须为 Responses；其他 adapter 不支持非空列表。
 
 ```nix
 envy.agents.pi.models = [
@@ -124,6 +150,8 @@ envy.agents.pi.models = [
 - 全局 `~/.pi/agent/pi-goal-x-settings.json` 通过 writable merge 只管理 `hideUnfocusedBanner = true`、`hideUnfocusedPrompt = true`、`autoSelectSingleGoal = false`，保留其他字段。没有焦点的会话不被自动提示阻拦，也不自动接管旧目标。仍可用 `/goal-list`、`/goal-focus`、`/goal-resume` 手动选择。扩展自身的环境变量与项目设置仍按上游优先级覆盖全局默认。
 - 普通 goal 与 Sisyphus 都保留完整阶段、顺序、约束和完成条件；不再要求正文只写一句。`create_goal` 支持与正文一起保存经过校验的父子任务树；未显式提供任务树时，从编号、清单及中英文阶段标记中派生任务，单步骤工作不强制拆分。直接创建时仍尊重关闭任务跟踪的设置。引导草拟还校验用户原始阶段数，拒绝阶段更少的摘要提案。
 - 界面短标题和 `get_goal` 默认摘要不是完整需求；正文用 `get_goal section=objective`、任务用 `section=tasks` 分页读取。补丁不反向重建以前已被模型压缩的目标，也不能仅凭阶段数判断每个阶段的语义是否完整，仍需核对确认提案。
+
+Goal 紧凑任务列表使用 `Ctrl+Shift+↑/↓` 滚动；envY 将 Pi 全屏主聊天的上一条／下一条导航限定为 `Ctrl+↑/↓`，避免宿主先消费 Goal 按键。只有任务数超过紧凑窗口时才发生列表滚动。键位通过现有 writable merge 部署，重启 Pi 后加载。
 
 ### 子 Agent 角色与工具
 

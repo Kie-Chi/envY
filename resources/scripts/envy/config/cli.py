@@ -1,6 +1,5 @@
 """The envy config command group."""
 
-import json
 import os
 import sys
 from getpass import getpass
@@ -11,7 +10,7 @@ from rich.text import Text
 
 from envy import log
 from envy.evaluation import machine_manifest, manifest_settings
-from envy.jsonio import emit, emit_error
+from envy.jsonio import emit, emit_error, write_document
 from envy.schemas.config import MACHINE_FIELDS, SECRET_FIELDS
 from envy.process import run_process
 from envy.mutation import offer_mutation_commit
@@ -23,6 +22,7 @@ from envy.utils import (
     read_device_metadata,
 )
 from envy.config import machine_nix, refine, secret_store, updates
+from envy.config.metadata import dynamic_field_metadata, field_metadata
 
 
 app = typer.Typer(
@@ -196,6 +196,7 @@ def cmd_show(
     secret_values_for_fields: dict[str, str] = {}
     for secret_field in SECRET_FIELDS:
         secret_values_for_fields[secret_field.path] = str(secret_values.get(secret_field.path, ""))
+    all_values = config_values | dynamic_values
     payload = {
         "schemaVersion": 1,
         "source": "evaluated" if evaluated_values else "source-fallback",
@@ -214,10 +215,18 @@ def cmd_show(
             {
                 "path": field.path,
                 "value": config_values.get(field.path, ""),
-                "choices": list(field.choices),
+                **field_metadata(field, all_values),
             }
             for field in MACHINE_FIELDS
-        ] + dynamic_fields,
+        ] + [dynamic_field_metadata(field, all_values) for field in dynamic_fields],
+        "secretFields": [
+            {
+                "path": field.yaml_path,
+                "set": bool(secret_values_for_fields.get(field.path, "")),
+                **field_metadata(field, all_values),
+            }
+            for field in SECRET_FIELDS
+        ],
         "llm": manifest_llm,
         "agents": manifest_agents,
         "secrets": {
@@ -226,7 +235,15 @@ def cmd_show(
         },
     }
     if json_output:
-        log.console.print_json(json.dumps(payload, ensure_ascii=False))
+        envelope = payload | {
+            "command": "config.show",
+            "ok": True,
+            "data": dict(payload),
+            "warnings": [] if evaluated_values else [
+                "Nix evaluation unavailable; showing source assignments without imported defaults."
+            ],
+        }
+        write_document(envelope)
         return
 
     table = Table(title="envy config (evaluated)" if evaluated_values else "envy config (source fallback)")

@@ -6,20 +6,49 @@ let
     else if builtins.hasAttr agent.adapter config.agents.settingsFiles
       then config.agents.settingsFiles.${agent.adapter}
       else null;
-  missingTargets = lib.attrNames (lib.filterAttrs
-    (_: agent: agent.additionalSettings != {} && settingsFileFor agent == null)
-    config.envy.agents);
-  runtimeFiles = lib.concatLists (lib.mapAttrsToList (agentName: agent:
-    let settingsFile = settingsFileFor agent;
-    in map (file: file // { name = "${agentName}-${file.name}"; }) (
-      (lib.optional (agent.additionalSettings != {} && settingsFile != null) {
+
+  renderFor = settingsFile: agent:
+    let render = settingsFile.render or null;
+    in if render == null then {} else render agent;
+
+  dataFor = agent: renderFor (settingsFileFor agent) agent // agent.additionalSettings;
+
+  settingsEntry = { name, settingsFile, data }: {
+    inherit name data;
+    inherit (settingsFile) target format;
+    managedKeyPrefixes = settingsFile.managedKeyPrefixes or {};
+    managedKeys = settingsFile.managedKeys or [];
+  };
+
+  perAgentEntries = lib.concatLists (lib.mapAttrsToList (agentName: agent:
+    let settingsFile = settingsFileFor agent; in
+    if settingsFile == null || (settingsFile.aggregate or false) then [] else
+    let data = dataFor agent; in
+    map (file: file // { name = "${agentName}-${file.name}"; }) (
+      (lib.optional (data != {}) (settingsEntry {
         name = "settings";
-        target = settingsFile.target;
-        format = settingsFile.format;
-        data = agent.additionalSettings;
-      }) ++ agent.runtimeFiles
+        inherit settingsFile data;
+      })) ++ agent.runtimeFiles
     )
   ) config.envy.agents);
+
+  # Aggregate adapters own one file for every instance, so a per-instance
+  # write cannot erase the provider definitions contributed by its siblings.
+  aggregatedEntries = lib.concatLists (lib.mapAttrsToList (adapter: agents:
+    let settingsFile = settingsFileFor (builtins.head agents); in
+    if settingsFile == null || !(settingsFile.aggregate or false) then [] else
+    let data = lib.foldl' (acc: agent: lib.recursiveUpdate acc (dataFor agent)) {} agents; in
+    lib.optional (data != {}) (settingsEntry {
+      name = "${adapter}-settings";
+      inherit settingsFile data;
+    })
+  ) (lib.groupBy (agent: agent.adapter) (lib.attrValues config.envy.agents)));
+
+  runtimeFiles = perAgentEntries ++ aggregatedEntries;
+
+  missingTargets = lib.attrNames (lib.filterAttrs
+    (_: agent: dataFor agent != {} && settingsFileFor agent == null)
+    config.envy.agents);
 in
 {
   options.agents.settingsFiles = lib.mkOption {
@@ -34,6 +63,26 @@ in
           default = "json";
           description = "Application configuration format.";
         };
+        render = lib.mkOption {
+          type = lib.types.nullOr (lib.types.functionTo (lib.types.attrsOf lib.types.anything));
+          default = null;
+          description = "Adapter renderer for one agent; runs before machine additionalSettings.";
+        };
+        aggregate = lib.mkOption {
+          type = lib.types.bool;
+          default = false;
+          description = "Merge every instance of this adapter into one settings file.";
+        };
+        managedKeys = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [];
+          description = "Top-level keys replaced or removed with each declaration.";
+        };
+        managedKeyPrefixes = lib.mkOption {
+          type = lib.types.attrsOf lib.types.str;
+          default = {};
+          description = "Object sections whose adapter-owned key namespaces are replaced.";
+        };
       };
     });
     default = {};
@@ -41,11 +90,26 @@ in
   };
 
   config = {
+    envy.machine.activationActions = map (file: {
+      id = "agent-runtime-${file.name}";
+      owner = "modules/agents/runtime-files.nix";
+      manager = "structured-merge";
+      summary = "Merge declared agent configuration into ${file.target}.";
+      effects = [ "Update a writable application-owned ${file.format} file while retaining unmanaged keys." ];
+      verification = "Compare the declared JSON artifact with the target using the existing structured merge rules; inspection does not write the target or run activation.";
+      repeatability = "The existing merge reapplies declared keys; concurrent application edits may change the result. This description does not authorize a retry.";
+      rollbackBoundary = "A generation rollback does not restore the previous writable file or application preferences; removed declarations do not restore overwritten values.";
+      merge = {
+        target = "${config.home.homeDirectory}/${file.target}";
+        inherit (file) format managedKeyPrefixes;
+        source = toString (sys.config.mergeWritableSource { inherit (file) name data; });
+        managedKeys = file.managedKeys or [];
+      };
+    }) runtimeFiles;
     home.activation = lib.listToAttrs (map (file:
       lib.nameValuePair "mergeAgentRuntime-${file.name}" (sys.mergeWritable {
-        name = "mergeAgentRuntime-${file.name}";
-        inherit (file) target format data;
-        managedKeyPrefixes = file.managedKeyPrefixes or {};
+        inherit (file) name target format data managedKeyPrefixes;
+        managedKeys = file.managedKeys or [];
       })
     ) runtimeFiles);
     assertions = [

@@ -285,6 +285,34 @@
               tmuxConfig = config.home.file.".tmux.conf.local".text;
             }) tmuxHomes;
           });
+          completionHome = lib.findFirst
+            (home: lib.any (package: lib.getName package == "fzf") home.home.packages)
+            (throw "Completion tests require a machine selecting fzf") (builtins.attrValues homes);
+          shellLines = lib.splitString "\n" completionHome.programs.zsh.initContent;
+          styleStart = lib.lists.findFirstIndex
+            (lib.hasInfix "zstyle -e ':fzf-tab:*' fzf-flags '") (-1) shellLines;
+          styleLines = assert styleStart >= 0; lib.drop styleStart shellLines;
+          styleEnd = lib.lists.findFirstIndex
+            (line: builtins.match "[[:space:]]*'[[:space:]]*" line != null) (-1) (builtins.tail styleLines);
+          completionFixtures = pkgs.writeText "envy-completion-fixtures.json" (builtins.toJSON {
+            zsh = lib.getExe pkgs.zsh;
+            fzf = lib.getExe pkgs.fzf;
+            zoxide = lib.getExe pkgs.zoxide;
+            ohMyZsh = "${pkgs.oh-my-zsh}/share/oh-my-zsh";
+            suggestions = "${pkgs.zsh-autosuggestions}/share/zsh-autosuggestions/zsh-autosuggestions.zsh";
+            syntax = "${pkgs.zsh-syntax-highlighting}/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh";
+            fzfTab = "${pkgs.zsh-fzf-tab}/share/fzf-tab/fzf-tab.plugin.zsh";
+            systemctlCompletion = "${pkgs.callPackage ./modules/cores/packages/systemd-completions.nix { }}/share/zsh/site-functions";
+            omzPlugins = completionHome.programs.zsh.oh-my-zsh.plugins;
+            # Limit this fixture to completion integrations, excluding prompt and history UIs.
+            initLines = builtins.filter (line: lib.any (text: lib.hasInfix text line) [
+              "zsh-autosuggestions.zsh" "oh-my-zsh.sh" "/bin/zoxide init zsh"
+              "/bin/fzf --zsh" "/share/fzf-tab/fzf-tab.plugin.zsh" "zsh-syntax-highlighting.zsh"
+            ]) shellLines;
+            fzfOptions = completionHome.home.sessionVariables.FZF_DEFAULT_OPTS;
+            fzfFlags = assert styleEnd >= 0;
+              lib.concatStringsSep "\n" (lib.take (styleEnd + 2) styleLines);
+          });
           python = pkgs.python3.withPackages (ps: [
             ps.typer
             ps.rich
@@ -293,7 +321,8 @@
             ps.tomli-w
           ]);
         in pkgs.runCommand "envy-python-tests" {
-          nativeBuildInputs = [ python pkgs.git pkgs.tmux pkgs.perl ];
+          passthru.completionFixtures = completionFixtures;
+          nativeBuildInputs = [ python pkgs.git pkgs.tmux pkgs.neovim-unwrapped pkgs.perl pkgs.zsh pkgs.fzf pkgs.zoxide ];
         } ''
           export HOME="$TMPDIR/home"
           mkdir -p "$HOME"
@@ -301,6 +330,7 @@
           export PYTHONPATH="${./resources/scripts}"
           export ENVY_TEST_ROOT="${./.}"
           export ENVY_TERMINAL_THEME_FIXTURES=${terminalFixtures}
+          export ENVY_COMPLETION_FIXTURES=${completionFixtures}
           export ENVY_REQUIRE_TMUX_TESTS=1
           cd ${./.}
           python -m compileall -q ${./resources/scripts/envy}
@@ -313,13 +343,21 @@
           pkgs = nixpkgs.legacyPackages.${system};
           python = mkEnvyPython system;
           organize = pkgs.callPackage ./modules/storage/organize.nix { };
+          ruleFixture = pkgs.writeText "envy-storage-update-rules.json" (builtins.toJSON {
+            home = "/envy-storage-fixture-home";
+            rules = (import ./modules/storage/rules {
+              home = "/envy-storage-fixture-home";
+              machinePlatform = "darwin";
+            }).rules;
+          });
         in pkgs.runCommand "envy-storage-tests" {
-          nativeBuildInputs = [ python organize pkgs.restic pkgs.lsof ];
+          nativeBuildInputs = [ python organize pkgs.restic pkgs.lsof pkgs.git ];
         } ''
           export PYTHONPYCACHEPREFIX="$TMPDIR/pycache"
           export PYTHONPATH="${./resources/scripts}"
           export ENVY_ROOT="${./.}"
-          python -m unittest discover -s ${./resources/scripts/tests} -p 'test_storage.py'
+          export ENVY_STORAGE_RULES_FIXTURE="${ruleFixture}"
+          python -m unittest discover -s ${./resources/scripts/tests} -p 'test_storage*.py'
           touch "$out"
         '';
 
@@ -361,6 +399,26 @@
           cd ${./.}
           pyflakes setup.py resources/scripts/envy resources/scripts/tests resources/helpers modules/agents
           deadnix --fail .
+          touch "$out"
+        '';
+
+      # Parity between the Nix Codex provider and `envy agent` runtime writes.
+      mkEnvyCodexCheck = system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          python = pkgs.python3.withPackages (ps: [
+            ps.typer ps.rich ps.prompt-toolkit ps.pyyaml ps.tomli-w
+          ]);
+          fixtures = pkgs.writeText "codex-config-fixtures.json" (builtins.toJSON
+            (import ./modules/agents/providers/codex/tests/fixtures.nix { inherit lib pkgs; }));
+        in pkgs.runCommand "codex-config-tests" {
+          nativeBuildInputs = [ python ];
+        } ''
+          export HOME="$TMPDIR/home"
+          mkdir -p "$HOME"
+          export PYTHONPYCACHEPREFIX="$TMPDIR/pycache"
+          export PYTHONPATH="${./resources/scripts}"
+          python ${./resources/scripts/tests/test_agent_codex.py} ${fixtures}
           touch "$out"
         '';
 
@@ -441,6 +499,34 @@
           pkgs = nixpkgs.legacyPackages.${system};
           piPackage = inputs.pi.packages.${system}.default;
         };
+
+      mkEnvySourceCheck = system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          python = pkgs.python3.withPackages (ps: [
+            ps.typer ps.rich ps.prompt-toolkit ps.pyyaml ps.tomli-w
+          ]);
+        in pkgs.runCommand "envy-source-tests" {
+          passthru.bootProbe = import ./checks/runtime/boot.nix { inherit pkgs; };
+          passthru.installProbe = import ./checks/runtime/install.nix { inherit pkgs; };
+          passthru.fullProbe = import ./checks/runtime/full.nix { inherit pkgs; };
+          nativeBuildInputs = [ python pkgs.git (lib.getBin pkgs.nix) ]
+            ++ lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ pkgs.ps ];
+        } ''
+          export HOME="$TMPDIR/home"
+          export PYTHONPYCACHEPREFIX="$TMPDIR/pycache"
+          mkdir -p "$HOME"
+          ${lib.optionalString pkgs.stdenv.hostPlatform.isDarwin ''
+            export ENVY_RUNTIME_TEST_DARWIN_PS=${pkgs.ps}/bin/ps
+            export ENVY_RUNTIME_DARWIN_PS=${pkgs.ps}/bin/ps
+          ''}
+          python -m unittest discover -s ${./.}/checks/runtime -p 'test_*.py'
+          python ${./.}/checks/runtime/source_visibility.py \
+            --scripts ${./.}/resources/scripts \
+            --nixpkgs-lib ${nixpkgs}/lib \
+            --nix ${lib.getBin pkgs.nix}/bin/nix \
+            --git ${pkgs.git}/bin/git > "$out"
+        '';
 
       mkGithubActionsCheck = system:
         import ./checks/github-actions.nix {
@@ -570,6 +656,9 @@
           sources = lib.mapAttrsToList (_: file: toString file.source)
             (lib.filterAttrs (target: _: lib.hasPrefix ".pi/agent/extensions/" target) files);
           sourceJson = lib.escapeShellArg (builtins.toJSON sources);
+          keybindings = (lib.findFirst (file: file.target == ".pi/agent/keybindings.json")
+            (throw "Pi navigation tests require managed keybindings") extensions.envy.agents.pi.runtimeFiles).data;
+          bindingsJson = lib.escapeShellArg (builtins.toJSON keybindings);
           views = import ./modules/agents/providers/pi/views.nix { inherit lib pkgs; };
           lsp = import ./modules/agents/providers/pi/lsp.nix { inherit lib pkgs; };
           tui = pkgs.writeShellApplication {
@@ -579,7 +668,7 @@
               exec python3 ${./modules/agents/providers/pi/tests/pi-context-tui.py} \
                 ${pkgs.nodejs_24}/bin/node \
                 ${patchedPi}/lib/pi/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js \
-                ${views.context} ${views.diff} ${pkgs.git}/bin/git ${sourceJson}
+                ${views.context} ${views.diff} ${pkgs.git}/bin/git ${sourceJson} ${bindingsJson}
             '';
           };
         in pkgs.runCommand "pi-coexist-tests" {
@@ -589,6 +678,10 @@
           node ${./modules/agents/providers/pi/tests/pi-coexist.mjs} \
             ${patchedPi}/lib/pi/node_modules ${sourceJson} \
             ${builtins.head lsp.serverCommand} ${./files/agents/subagents}
+          node ${./modules/agents/providers/pi/tests/pi-navigation.mjs} \
+            ${patchedPi}/lib/pi/node_modules \
+            ${extensions.home.file.".pi/agent/extensions/envy-btw".source} \
+            ${extensions.home.file.".pi/agent/extensions/envy-goal-x".source} ${bindingsJson}
           touch "$out"
         '';
 
@@ -626,6 +719,7 @@
           ENVY_READER_PATH=${./modules/agents/skills/read/scripts/read.py} python ${./modules/agents/tests/test_reader.py}
           ENVY_DEEPSEEK_SEARCH_PATH=${./modules/agents/tools/deepseek_search.py} python ${./modules/agents/tests/test_deepseek_search.py}
           ${import ./modules/agents/tests/wrappers.nix { inherit lib pkgs; }}
+          ${import ./modules/agents/tests/runtime-files.nix { inherit lib pkgs; }}
           touch "$out"
         '';
 
@@ -763,9 +857,16 @@
           ++ map (configuration: configuration.config) (builtins.attrValues homeConfigurations));
       mkPlatformOptionCheck = system:
         assert import ./checks/agent-skills.nix { inherit inputs; };
+        assert import ./checks/agent-tools.nix { inherit lib; };
+        assert import ./checks/habit-readback.nix { inherit inputs; };
         assert platformOptionBoundaries;
         assert import ./checks/terminal-themes.nix { inherit lib darwinConfigurations homeConfigurations; };
         nixpkgs.legacyPackages.${system}.runCommand "envy-platform-option-boundaries" { } ''
+          touch $out
+        '';
+      mkStorageRulesCheck = system:
+        assert import ./checks/storage-rules.nix { inherit lib; };
+        nixpkgs.legacyPackages.${system}.runCommand "envy-storage-rule-selection" { } ''
           touch $out
         '';
       linuxPolicyCheck = import ./checks/linux-policy.nix { inherit inputs; };
@@ -803,17 +904,20 @@
       checks.aarch64-darwin.platform-option-boundaries = mkPlatformOptionCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-python-tests = mkEnvyPythonCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-storage-tests = mkEnvyStorageCheck "aarch64-darwin";
+      checks.aarch64-darwin.storage-rule-selection = mkStorageRulesCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-tui-tests = mkEnvyTuiCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-shell-checks = mkEnvyShellCheck "aarch64-darwin";
       checks.aarch64-darwin.secret-safety = mkSecretSafetyCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-lint = mkEnvyLintCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-github-actions = mkGithubActionsCheck "aarch64-darwin";
+      checks.aarch64-darwin.envy-source-tests = mkEnvySourceCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-agent-tests = mkEnvyAgentCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-powerline-tests = mkEnvyPiPowerlineCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-auto-assigned-tests = mkEnvyPiAutoAssignedCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-queue-tests = mkEnvyPiQueueCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-goal-tests = mkEnvyPiGoalCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-model-tests = mkEnvyPiModelCheck "aarch64-darwin";
+      checks.aarch64-darwin.codex-config-tests = mkEnvyCodexCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-subagent-tests = mkEnvyPiSubagentCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-doctor-tests = mkEnvyPiDoctorCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-lsp-tests = mkEnvyPiLspCheck "aarch64-darwin";
@@ -824,17 +928,20 @@
       checks.x86_64-linux.linux-policy-boundaries = linuxPolicyCheck;
       checks.x86_64-linux.envy-python-tests = mkEnvyPythonCheck "x86_64-linux";
       checks.x86_64-linux.envy-storage-tests = mkEnvyStorageCheck "x86_64-linux";
+      checks.x86_64-linux.storage-rule-selection = mkStorageRulesCheck "x86_64-linux";
       checks.x86_64-linux.envy-tui-tests = mkEnvyTuiCheck "x86_64-linux";
       checks.x86_64-linux.envy-shell-checks = mkEnvyShellCheck "x86_64-linux";
       checks.x86_64-linux.secret-safety = mkSecretSafetyCheck "x86_64-linux";
       checks.x86_64-linux.envy-lint = mkEnvyLintCheck "x86_64-linux";
       checks.x86_64-linux.envy-github-actions = mkGithubActionsCheck "x86_64-linux";
+      checks.x86_64-linux.envy-source-tests = mkEnvySourceCheck "x86_64-linux";
       checks.x86_64-linux.envy-agent-tests = mkEnvyAgentCheck "x86_64-linux";
       checks.x86_64-linux.pi-powerline-tests = mkEnvyPiPowerlineCheck "x86_64-linux";
       checks.x86_64-linux.pi-auto-assigned-tests = mkEnvyPiAutoAssignedCheck "x86_64-linux";
       checks.x86_64-linux.pi-queue-tests = mkEnvyPiQueueCheck "x86_64-linux";
       checks.x86_64-linux.pi-goal-tests = mkEnvyPiGoalCheck "x86_64-linux";
       checks.x86_64-linux.pi-model-tests = mkEnvyPiModelCheck "x86_64-linux";
+      checks.x86_64-linux.codex-config-tests = mkEnvyCodexCheck "x86_64-linux";
       checks.x86_64-linux.pi-subagent-tests = mkEnvyPiSubagentCheck "x86_64-linux";
       checks.x86_64-linux.pi-doctor-tests = mkEnvyPiDoctorCheck "x86_64-linux";
       checks.x86_64-linux.pi-lsp-tests = mkEnvyPiLspCheck "x86_64-linux";

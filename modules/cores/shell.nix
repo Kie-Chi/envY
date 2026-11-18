@@ -1,6 +1,7 @@
 { pkgs, lib, config, machinePlatform, sys, ... }:
 
 let
+  systemdCompletions = pkgs.callPackage ./packages/systemd-completions.nix { };
   machineEnvironment = config.envy.environment;
   machineZsh = config.envy.shell.zsh;
   selectedPackage = name: lib.findFirst
@@ -80,6 +81,9 @@ in
 
 
     initContent = lib.mkMerge [
+      (lib.mkIf (machinePlatform == "linux") (lib.mkOrder 550 ''
+        fpath=(${systemdCompletions}/share/zsh/site-functions $fpath)
+      ''))
       (lib.mkIf zoxideSelected (lib.mkOrder 851 ''
         eval "$(${lib.getExe zoxidePackage} init zsh)"
       ''))
@@ -110,11 +114,18 @@ in
 
         ${lib.optionalString fzfSelected ''
           ${builtins.readFile ../../files/zsh/fzf-preview.zsh}
-          zstyle ':fzf-tab:*' fzf-flags ${lib.escapeShellArg "--color=${fzfColors}"} '--border=rounded' '--preview-window=right:55%:wrap:<50(down:45%:wrap)'
+          zstyle -e ':fzf-tab:*' fzf-flags '
+            reply=( "--color=${fzfColors}" --border=rounded )
+            if (( COLUMNS >= 100 && LINES >= 20 )); then
+              reply+=( --preview-window=right:55%:wrap )
+            else
+              reply+=( --preview-window=hidden )
+            fi
+          '
         ''}
 
         ${builtins.readFile ../../files/zsh/opt.zsh}
-        ${builtins.readFile ../../files/zsh/func.zsh}
+        source ${../../files/zsh}/func.zsh
       ''
       (lib.mkOrder 2000 machineZsh.initContent)
     ];

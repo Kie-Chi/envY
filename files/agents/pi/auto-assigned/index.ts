@@ -24,6 +24,13 @@ const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(va
 const messageText = (message: any): string => typeof message.content === "string" ? message.content
   : (message.content ?? []).filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n");
 
+const scopeCompletions = (prefix: string) => /^\s*on\s/.test(prefix) ? [{
+  // A hint is an identity completion, never a placeholder granting new scope.
+  value: prefix,
+  label: "Task scope (free text)",
+  description: "Type the task scope; leave empty to use the latest user message",
+}] : null;
+
 export default function autoAssigned(pi: ExtensionAPI) {
   let enabled = false;
   let scope = "";
@@ -148,6 +155,8 @@ export default function autoAssigned(pi: ExtensionAPI) {
   pi.registerCommand("auto-assigned", {
     description: "Delegate in-scope plan approval: on [task scope], off, status (session only)",
     getArgumentCompletions: prefix => {
+      const scopeItems = scopeCompletions(prefix);
+      if (scopeItems) return scopeItems;
       const action = prefix.trimStart();
       if (/\s/.test(action)) return null;
       const items = [
@@ -188,7 +197,28 @@ export default function autoAssigned(pi: ExtensionAPI) {
     },
   });
 
-  pi.on("session_start", (_event, ctx) => reset(ctx));
+  pi.on("session_start", (_event, ctx) => {
+    reset(ctx);
+    if (ctx.mode !== "tui") return;
+    ctx.ui.addAutocompleteProvider(current => {
+      const scopeAtCursor = (lines: string[], line: number, col: number) => {
+        const args = /^\s*\/auto-assigned (.*)$/.exec((lines[line] ?? "").slice(0, col))?.[1];
+        return args === undefined ? null : scopeCompletions(args);
+      };
+      return {
+        triggerCharacters: current.triggerCharacters,
+        async getSuggestions(lines, line, col, options) {
+          const items = scopeAtCursor(lines, line, col);
+          // Pi's forced Tab branch skips command argument completions entirely.
+          // Handle this command before both file and @ attachment completion.
+          return items ? { items, prefix: items[0].value } : current.getSuggestions(lines, line, col, options);
+        },
+        applyCompletion: (lines, line, col, item, prefix) => current.applyCompletion(lines, line, col, item, prefix),
+        shouldTriggerFileCompletion: (lines, line, col) => !!scopeAtCursor(lines, line, col)
+          || (current.shouldTriggerFileCompletion?.(lines, line, col) ?? true),
+      };
+    });
+  });
   pi.on("session_shutdown", (_event, ctx) => reset(ctx));
   pi.on("input", event => {
     // A newer real user instruction invalidates a review already in flight.

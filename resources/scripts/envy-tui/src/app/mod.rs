@@ -1,8 +1,11 @@
 mod flows;
 mod keys;
 mod loading;
+mod storage_actions;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod workflow_tests;
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -22,9 +25,11 @@ use crate::{
         WorkflowLog,
     },
     snapshot,
+    storage::{StorageReport, StorageRequest, StorageView},
 };
 
 const SEARCH_CACHE_LIMIT: usize = 12;
+const STORAGE_CACHE_LIMIT: usize = 6;
 const CHOOSER_PAGE_STEP: isize = 8;
 /// Upper bound on streamed workflow log lines kept in memory; large Nix builds
 /// can emit tens of thousands of lines, so we retain only the newest ones.
@@ -47,6 +52,7 @@ pub enum InputMode {
     Search,
     SoftwareFilter,
     SettingValue,
+    StorageProject,
 }
 
 pub struct App {
@@ -56,6 +62,13 @@ pub struct App {
     pub pages: Pages,
     pub search_cache: HashMap<String, PageState>,
     search_order: VecDeque<String>,
+    pub storage_cache: HashMap<StorageRequest, PageState>,
+    storage_order: VecDeque<StorageRequest>,
+    pub storage_actions: crate::storage::actions::Actions,
+    pub storage_view: StorageView,
+    pub storage_projects: Vec<String>,
+    pub storage_project_input: String,
+    pub storage_selected: usize,
     pub status: String,
     pub query: String,
     pub submitted_query: String,
@@ -96,6 +109,7 @@ pub struct App {
     workflow_action: Option<WorkflowAction>,
     pub workflow_log: Option<WorkflowLog>,
     workflow_stream_request: Option<u64>,
+    workflow_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     setting_request: Option<u64>,
     pub setting_loading: bool,
     pub setting_chooser: Option<SettingChooser>,
@@ -122,6 +136,13 @@ impl App {
             pages: HashMap::new(),
             search_cache: HashMap::new(),
             search_order: VecDeque::new(),
+            storage_cache: HashMap::new(),
+            storage_order: VecDeque::new(),
+            storage_actions: crate::storage::actions::Actions::default(),
+            storage_view: StorageView::default(),
+            storage_projects: Vec::new(),
+            storage_project_input: String::new(),
+            storage_selected: 0,
             status: "Loading home".to_string(),
             query: String::new(),
             submitted_query: String::new(),
@@ -161,6 +182,7 @@ impl App {
             workflow_action: None,
             workflow_log: None,
             workflow_stream_request: None,
+            workflow_cancel: None,
             setting_request: None,
             setting_loading: false,
             setting_chooser: None,
@@ -220,6 +242,7 @@ impl App {
 
     pub fn current_target(&self) -> Option<LoadTarget> {
         match self.screen {
+            Screen::Storage => Some(LoadTarget::Storage(self.storage_request())),
             Screen::Search if self.submitted_query.is_empty() => None,
             Screen::Search => Some(LoadTarget::Search(self.submitted_query.clone())),
             // History merges two time-ordered views; the active sub-view decides
@@ -233,6 +256,7 @@ impl App {
         match target {
             LoadTarget::Screen(screen) => self.pages.get(screen),
             LoadTarget::Search(query) => self.search_cache.get(query),
+            LoadTarget::Storage(request) => self.storage_cache.get(request),
         }
     }
 
@@ -240,7 +264,19 @@ impl App {
         match target {
             LoadTarget::Screen(screen) => self.pages.get_mut(screen),
             LoadTarget::Search(query) => self.search_cache.get_mut(query),
+            LoadTarget::Storage(request) => self.storage_cache.get_mut(request),
         }
+    }
+
+    pub fn storage_request(&self) -> StorageRequest {
+        StorageRequest {
+            view: self.storage_view,
+            projects: self.storage_projects.clone(),
+        }
+    }
+
+    pub fn storage_report(&self) -> Option<&StorageReport> {
+        self.current_state()?.storage_report.as_ref()
     }
 
     pub fn current_state(&self) -> Option<&PageState> {
@@ -272,6 +308,12 @@ impl App {
     }
 
     fn set_screen(&mut self, screen: Screen) {
+        if screen != self.screen {
+            self.cancel_json_workflow();
+            self.detail_request = None;
+            self.detail = None;
+            if self.workflow_log.as_ref().is_some_and(|log| log.json) { self.workflow_log = None; }
+        }
         self.screen = screen;
         match screen.section() {
             NavigationSection::Configure if screen != Screen::Hosts => {
@@ -326,19 +368,21 @@ impl App {
                 let current = match (self.activity_screen, self.history_view) {
                     (Screen::History, HistoryView::Generations) => 1,
                     (Screen::History, HistoryView::Operations) => 2,
+                    (Screen::Storage, _) => 3,
                     _ => 0,
                 };
-                let next = (current + 1) % 3;
+                let next = (current + 1) % 4;
                 match next {
                     0 => self.set_screen(Screen::Doctor),
                     1 => {
                         self.history_view = HistoryView::Generations;
                         self.set_screen(Screen::History);
                     }
-                    _ => {
+                    2 => {
                         self.history_view = HistoryView::Operations;
                         self.set_screen(Screen::History);
                     }
+                    _ => self.set_screen(Screen::Storage),
                 }
             }
         }
@@ -375,6 +419,10 @@ impl App {
             Screen::Mirror => mirror_target_rows(self.payload()).len(),
             Screen::Config => self.settings_rows().len(),
             Screen::Home => 0,
+            Screen::Storage => self
+                .storage_report()
+                .map(|report| report.rows().len())
+                .unwrap_or(0),
         }
     }
 
@@ -392,6 +440,7 @@ impl App {
             Screen::Hosts => self.hosts_selected,
             Screen::Mirror => self.mirror_selected,
             Screen::Config => self.settings_selected,
+            Screen::Storage => self.storage_selected,
             Screen::Home => 0,
         }
     }
@@ -410,6 +459,7 @@ impl App {
             Screen::Hosts => self.hosts_selected = value,
             Screen::Mirror => self.mirror_selected = value,
             Screen::Config => self.settings_selected = value,
+            Screen::Storage => self.storage_selected = value,
             Screen::Home => {}
         }
     }
@@ -458,6 +508,13 @@ impl App {
 
     pub fn input_bar_height(&self) -> u16 {
         match self.screen {
+            Screen::Storage => {
+                2 + if self.input_mode == InputMode::StorageProject {
+                    3
+                } else {
+                    0
+                } + if self.current_error().is_some() { 2 } else { 0 }
+            }
             Screen::Search => 3,
             Screen::Software
                 if self.input_mode == InputMode::SoftwareFilter
@@ -480,5 +537,16 @@ impl App {
             self.scroll = selected.saturating_add(1).saturating_sub(self.visible_rows);
         }
         self.scroll = self.scroll.min(count.saturating_sub(self.visible_rows));
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        if let Some(pending) = &self.storage_actions.pending {
+            pending.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        if let Some(cancelled) = &self.workflow_cancel {
+            cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 }

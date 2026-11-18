@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from rich.panel import Panel
 from rich.table import Table
 
 from envy import log
+from envy.jsonio import write_document
 from envy.config.machine_nix import read_machine_nix
 from envy.config.secret_store import read_secrets_yaml
 from envy.doctor.runner import DEFAULT_CHECKS, exit_code, run_sections
@@ -308,6 +308,6 @@ def render(payload: dict[str, Any]) -> None:
 def show(*, json_output: bool = False, refresh: bool = False) -> None:
     payload = snapshot(refresh=refresh)
     if json_output:
-        log.console.print_json(json.dumps(payload, ensure_ascii=False, default=str))
+        write_document(payload)
     else:
         render(payload)

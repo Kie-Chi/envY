@@ -27,6 +27,10 @@ def check_model_list(fixture) -> None:
                     assert field not in models[model_id], (fixture["name"], model_id, field)
                 else:
                     assert models[model_id][field] == value, (fixture["name"], model_id, field)
+    if "expectedThinking" in fixture:
+        models = {model["id"]: model for provider in providers.values() for model in provider["models"]}
+        for model_id, expected in fixture["expectedThinking"].items():
+            assert models[model_id].get("thinkingLevelMap") == expected, (fixture["name"], model_id)
     bindings = model_bindings(values, agent)
     default = bindings[0]
     assert default["provider"] == fixture["defaultProvider"]

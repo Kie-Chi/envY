@@ -33,7 +33,7 @@ envy apply
 |---|---|
 | envy status | 查看机器、Git、generation、软件和 doctor 状态 |
 | envy check [--all|--changed|--build] | 求值或构建 target |
-| envy plan | 构建并比较 active generation |
+| envy plan | 从冻结来源构建，比较 closure、声明行为与已绑定基线，标明未知项和回滚边界 |
 | envy sync --no-apply | 同步共享 master，不应用配置 |
 | envy update inputs [name] | 更新 input，验证失败则回滚 lock |
 | envy software / envy sw | 查看 manifest 与 include/exclude 状态 |

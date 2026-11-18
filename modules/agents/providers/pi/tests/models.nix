@@ -6,7 +6,7 @@ let
   extended = ordinary ++ [ "xhigh" "max" "ultra" ];
   sol = [ "low" "medium" "high" ];
   solExtended = sol ++ [ "xhigh" "max" ];
-  fixture = name: model: api: moreThinking: expectedLevels: defaultEffort:
+  fixtureWith = overrides: name: model: api: moreThinking: expectedLevels: defaultEffort:
     let
       agent = {
         adapter = "pi";
@@ -15,7 +15,7 @@ let
         contextWindow = 8192;
         maxTokens = 1024;
         inherit model api moreThinking;
-      };
+      } // overrides;
       provider = import ../default.nix {
         inherit lib pkgs piPackage;
         config.envy = {
@@ -31,11 +31,26 @@ let
       inherit name agent expectedLevels defaultEffort;
       data = managed.data;
     };
+  fixture = fixtureWith {};
+  restricted = { off = null; minimal = null; ultra = null; high = "medium"; };
 in
 [
   (fixture "sol-responses" "gpt-6.1-sol" "openai-responses" false sol null)
   (fixture "sol-alias-responses" "gpt-6.1-sol-qiye" "openai-responses" true solExtended null)
   (fixture "sol-snapshot-responses" "gpt-6.1-sol-2026-09-29" "openai-responses" true solExtended null)
+  (fixture "stepcode-sol-responses" "stepcode-gpt-6.1-sol" "openai-responses" false sol null)
+  (fixture "stepcode-sol-eastus2-responses-default" "stepcode-gpt-6.1-sol-eastus2" "openai-responses" false sol null)
+  (fixture "stepcode-sol-eastus2-completions-default" "stepcode-gpt-6.1-sol-eastus2" "openai-completions" false sol null)
+  (fixture "stepcode-sol-eastus2-responses" "stepcode-gpt-6.1-sol-eastus2" "openai-responses" true solExtended null)
+  (fixture "stepcode-sol-completions" "stepcode-gpt-6.1-sol" "openai-completions" false sol null)
+  (fixture "stepcode-sol-eastus2-completions" "stepcode-gpt-6.1-sol-eastus2" "openai-completions" true solExtended null)
+  (fixture "unknown-sol-alias" "stepcode-gpt-6.1-sol-other" "openai-responses" false ordinary "none")
+  (fixture "sol-substring" "other-sol-model" "openai-responses" false ordinary "none")
+  (fixtureWith { thinkingLevelMap = restricted; } "explicit-responses" "custom-model" "openai-responses" true sol null)
+  (fixtureWith { thinkingLevelMap = { off = "low"; }; } "explicit-default-effort" "custom-model" "openai-responses" false ordinary "low")
+  (fixtureWith { thinkingLevelMap = restricted; } "explicit-completions" "custom-model" "openai-completions" true sol null)
+  (fixtureWith { thinkingLevelMap = {}; } "explicit-overrides-sol" "gpt-6.1-sol" "openai-responses" true ordinary "none")
+  (fixtureWith { thinkingLevelMap = null; } "explicit-null-sol" "stepcode-gpt-6.1-sol" "openai-responses" true solExtended null)
   (fixture "sol-completions" "gpt-6.1-sol" "openai-completions" false sol null)
   (fixture "sol-alias-completions" "gpt-6.1-sol-qiye" "openai-completions" true solExtended null)
   (fixture "other-responses" "gpt-6-astra" "openai-responses" false ordinary "none")

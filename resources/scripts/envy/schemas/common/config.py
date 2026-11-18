@@ -35,8 +35,15 @@ COMMON_MACHINE_FIELDS = [
     FieldDef(group="STORAGE", dest="machine", path="envy.storage.mode",
              prompt="Storage lifecycle mode", default_fn=lambda: "manual",
              choices=["manual", "report", "auto"]),
+    FieldDef(group="STORAGE", dest="machine", path="envy.storage.maintenance.go-modcache",
+             prompt="Allow explicit removal of all Go module downloads",
+             default_fn=lambda: "false", choices=["true", "false"], nix_type="bool"),
     FieldDef(group="STORAGE", dest="machine", path="envy.storage.archive.repository",
              prompt="Restic SFTP or mounted repository", default_fn=lambda: ""),
+    FieldDef(group="STORAGE", dest="machine", path="envy.storage.archive.mountSource",
+             prompt="Expected OS mount source (no password)", default_fn=lambda: "",
+             condition=lambda values: values.get("envy.storage.archive.repository", "").startswith("/"),
+             validators=[non_empty], required=True),
     FieldDef(group="BASE", dest="machine", path="envy.user.name", prompt="System username",
              default_fn=lambda: os.getenv("USER", "chi"), validators=[non_empty], required=True),
     FieldDef(group="BASE", dest="machine", path="envy.user.home", prompt="Home directory",
@@ -81,3 +88,14 @@ COMMON_SECRET_FIELDS = [
 
 OBSOLETE_MACHINE_KEYS = ["envy.llm.dashscope.url", "envy.llm.dashscope.model"]
 OBSOLETE_SECRET_PATHS = ["llm/dashscope/apikey"]
+
+
+PI_THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+
+
+def valid_thinking_level_map(value: object) -> bool:
+    """Accept Pi level keys mapped to non-empty provider efforts or null."""
+    return value is None or (isinstance(value, dict) and all(
+        key in PI_THINKING_LEVELS and (effort is None or isinstance(effort, str) and bool(effort))
+        for key, effort in value.items()
+    ))

@@ -347,12 +347,32 @@ def cmd_log(
         50, "--limit", "-n", min=1, max=1000, help="Number of recent records to show"
     ),
     failed: bool = typer.Option(False, "--failed", help="Only show failed operations"),
+    retry: Optional[str] = typer.Option(None, "--retry", help="Reverify a recorded operation without replaying activation"),
+    step: str = typer.Option("verify-generation", "--step", help="Fixed safe retry step (verify-generation only)"),
     operation: Optional[str] = typer.Option(
         None, "--operation", "-o", help="Filter by operation name",
         autocompletion=complete_journal_operations,
     ),
 ):
     """Show recent state-changing operations from the journal."""
+    if retry is not None:
+        from envy.behavior import emit_report
+        from envy.journal import verify_retry
+        try:
+            report = verify_retry(retry, step)
+        except (ValueError, OSError, RuntimeError) as exc:
+            report = {"operationId": retry, "step": step,
+                      "retry": {"allowed": False, "step": step, "reason": str(exc)}}
+            if json_output:
+                emit_report("log.retry", report, ok=False, error=str(exc))
+            else:
+                log.error("retry", str(exc))
+            raise typer.Exit(1) from exc
+        if json_output:
+            emit_report("log.retry", report)
+        else:
+            log.ok("retry", "generation identity verified; external effects remain unknown")
+        return
     show_log(
         json_output=json_output, limit=limit, failed=failed, operation=operation,
     )

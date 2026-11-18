@@ -12,6 +12,27 @@ impl App {
     fn handle_input(&mut self, key: KeyEvent) -> bool {
         match self.input_mode {
             InputMode::Normal => false,
+            InputMode::StorageProject => {
+                match key.code {
+                    KeyCode::Esc => {
+                        self.storage_project_input.clear();
+                        self.input_mode = InputMode::Normal;
+                        self.sync_status();
+                    }
+                    KeyCode::Enter => self.commit_storage_project(),
+                    KeyCode::Backspace => {
+                        self.storage_project_input.pop();
+                    }
+                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.storage_project_input.clear()
+                    }
+                    KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.storage_project_input.push(character)
+                    }
+                    _ => {}
+                }
+                true
+            }
             InputMode::Search => {
                 match key.code {
                     KeyCode::Esc => {
@@ -108,6 +129,19 @@ impl App {
     }
 
     pub fn handle_paste(&mut self, value: &str) {
+        if self.storage_actions.open {
+            if self.storage_actions.field.is_some() {
+                self.storage_actions.buffer.push_str(value.trim_end_matches(['\r', '\n']));
+            }
+            return;
+        }
+        if self.input_mode == InputMode::StorageProject {
+            // Project paths are a single argv value: preserve repeated spaces,
+            // Unicode and shell metacharacters, without interpreting any of them.
+            self.storage_project_input
+                .push_str(value.trim_end_matches(['\r', '\n']));
+            return;
+        }
         let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
         if normalized.is_empty() {
             return;
@@ -124,11 +158,19 @@ impl App {
                     edit.buffer.push_str(&normalized);
                 }
             }
-            InputMode::Normal => {}
+            InputMode::Normal | InputMode::StorageProject => {}
         }
     }
 
     pub fn handle_mouse(&mut self, mouse: MouseEvent) {
+        if self.storage_actions.open {
+            match mouse.kind {
+                MouseEventKind::ScrollDown => self.storage_actions.scroll = self.storage_actions.scroll.saturating_add(3).min(self.storage_actions.scroll_max),
+                MouseEventKind::ScrollUp => self.storage_actions.scroll = self.storage_actions.scroll.saturating_sub(3),
+                _ => {}
+            }
+            return;
+        }
         let direction = match mouse.kind {
             MouseEventKind::ScrollDown => 1,
             MouseEventKind::ScrollUp => -1,
@@ -178,6 +220,10 @@ impl App {
         if key.kind != KeyEventKind::Press {
             return;
         }
+        if self.storage_actions.open {
+            self.storage_actions_key(key);
+            return;
+        }
         if let Some(log) = self.workflow_log.as_ref() {
             let running = log.running;
             match key.code {
@@ -188,12 +234,11 @@ impl App {
                 KeyCode::End => {
                     if let Some(log) = self.workflow_log.as_mut() {
                         log.follow = true;
-                        log.scroll = log.lines.len().saturating_sub(1);
+                        log.scroll = log.scroll_max;
                     }
                 }
                 KeyCode::Home => self.scroll_workflow_log(isize::MIN + 1),
-                // The popup can only be dismissed once the command has finished;
-                // there is no cancel, so a running workflow keeps the log open.
+                KeyCode::Esc if running && log.json => self.request_json_cancel(),
                 KeyCode::Esc | KeyCode::Enter if !running => self.close_workflow_log(),
                 _ => {}
             }
@@ -243,8 +288,14 @@ impl App {
             }
             return;
         }
-        if self.pending_setting.is_some() {
+        if let Some(pending) = self.pending_setting.as_mut() {
             match key.code {
+                KeyCode::Up | KeyCode::Char('k') => pending.scroll = pending.scroll.saturating_sub(1),
+                KeyCode::Down | KeyCode::Char('j') => pending.scroll = pending.scroll.saturating_add(1),
+                KeyCode::PageUp => pending.scroll = pending.scroll.saturating_sub(10),
+                KeyCode::PageDown => pending.scroll = pending.scroll.saturating_add(10),
+                KeyCode::Home => pending.scroll = 0,
+                KeyCode::End => pending.scroll = usize::MAX,
                 KeyCode::Enter | KeyCode::Char('y') if !self.setting_loading => {
                     self.apply_pending_setting();
                 }
@@ -359,10 +410,16 @@ impl App {
                 KeyCode::Char('x') => {
                     let action = match self.detail.as_ref() {
                         Some(DetailView::Doctor(result)) => Self::doctor_workflow(result),
+                        Some(DetailView::Report { selected: Some(entry), .. }) => {
+                            match crate::model::journal_retry(entry) {
+                                Ok(action) => Some(action),
+                                Err(reason) => { self.status = reason; return; }
+                            }
+                        }
                         _ => None,
                     };
                     if let Some(action) = action {
-                        self.detail = None;
+                        if !matches!(action, WorkflowAction::RetryVerification(_)) { self.detail = None; }
                         self.workflow_confirmation = Some(action);
                     } else {
                         self.status = "This detail has no safe executable action".to_string();
@@ -377,6 +434,19 @@ impl App {
                 KeyCode::Up | KeyCode::Char('k') => {
                     self.detail_scroll = self.detail_scroll.saturating_sub(1)
                 }
+                KeyCode::PageDown => {
+                    self.detail_scroll = self
+                        .detail_scroll
+                        .saturating_add(CHOOSER_PAGE_STEP as usize)
+                        .min(self.detail_scroll_max);
+                }
+                KeyCode::PageUp => {
+                    self.detail_scroll = self
+                        .detail_scroll
+                        .saturating_sub(CHOOSER_PAGE_STEP as usize);
+                }
+                KeyCode::Home | KeyCode::Char('g') => self.detail_scroll = 0,
+                KeyCode::End | KeyCode::Char('G') => self.detail_scroll = self.detail_scroll_max,
                 KeyCode::Esc | KeyCode::Enter => {
                     self.detail = None;
                     self.detail_request = None;
@@ -424,6 +494,20 @@ impl App {
             KeyCode::Tab | KeyCode::Right => self.next_section(1),
             KeyCode::BackTab | KeyCode::Left => self.next_section(-1),
             KeyCode::Char('v') => self.next_subpage(),
+            KeyCode::Char('a') if self.screen == Screen::Storage => self.open_storage_actions(),
+            KeyCode::Char('t') if self.screen == Screen::Home => self.set_screen(Screen::Storage),
+            KeyCode::Char('[') if self.screen == Screen::Storage => self.switch_storage_view(-1),
+            KeyCode::Char(']') if self.screen == Screen::Storage => self.switch_storage_view(1),
+            KeyCode::Char('p') if self.screen == Screen::Storage => self.begin_storage_project(),
+            KeyCode::Char('x') if self.screen == Screen::Storage => {
+                self.remove_storage_project(false)
+            }
+            KeyCode::Char('X') if self.screen == Screen::Storage => {
+                self.remove_storage_project(true)
+            }
+            KeyCode::Enter | KeyCode::Char('i') if self.screen == Screen::Storage => {
+                self.open_storage_detail()
+            }
             KeyCode::Char('/') if self.screen == Screen::Software => {
                 self.input_mode = InputMode::SoftwareFilter;
                 self.status = "Type to filter locally; Enter keeps it, Esc exits input".to_string();
@@ -487,7 +571,10 @@ impl App {
                     self.status = format!("Generation {number} marked; select another and press d");
                 }
             }
-            KeyCode::Enter | KeyCode::Char('d')
+            KeyCode::Enter if matches!(self.screen, Screen::History | Screen::Journal) => {
+                self.open_activity_detail();
+            }
+            KeyCode::Char('d')
                 if self.screen == Screen::History
                     && self.history_view == HistoryView::Generations =>
             {

@@ -91,7 +91,7 @@ async function fixture({ main = [], verdicts = [], source = packagePath, ui, cod
     sessionManager: host.SessionManager.inMemory(cwd),
   });
   sessions.push(session);
-  await session.bindExtensions(ui ? { mode: "tui", uiContext: ui } : {});
+  await session.bindExtensions(ui ? { mode: "tui", uiContext: { addAutocompleteProvider() {}, ...ui } } : {});
   await session.setModel(new host.ModelRegistry(runtime).find("envy-offline", "test"));
   const notices = [];
   const context = Object.create(session.extensionRunner.createCommandContext());
@@ -108,7 +108,7 @@ const renderQuestionnaire = (h, result) => h.questionnaire.renderResult(result, 
 const approve = { decision: "continue", reason: "The concrete plan is within the explicitly delegated task." };
 const done = { decision: "done", reason: "The requested change and checks are complete." };
 
-test("argument completion offers described actions and filters only the first argument", async () => {
+test("argument completion offers action choices and identity hints for task scope", async () => {
   const h = await fixture();
   const complete = h.autoAssignedCommand.getArgumentCompletions;
   assert.equal(typeof complete, "function");
@@ -121,50 +121,129 @@ test("argument completion offers described actions and filters only the first ar
   for (const [prefix, expected] of [["o", ["on", "off"]], ["on", ["on"]], ["of", ["off"]], ["s", ["status"]], ["  o", ["on", "off"]], ["  ", ["on", "off", "status"]]]) {
     assert.deepEqual((await complete(prefix)).map(item => item.value), expected, prefix);
   }
-  for (const prefix of ["unknown", "ON", "on ", "on Fix the function", "on 修复补全", "off ", "status ", "  on  task"]) {
+  for (const prefix of ["unknown", "ON", "off ", "status "]) {
     assert.equal(await complete(prefix), null, prefix);
+  }
+  for (const prefix of ["on ", "on Fix the function", "on 修复补全", "  on  task"]) {
+    const [hint] = await complete(prefix);
+    assert.equal(hint.value, prefix, "The hint must preserve the literal scope");
+    assert.equal(hint.label, "Task scope (free text)");
+    assert.match(hint.description, /latest user message/);
   }
   assert.deepEqual(h.counts(), { main: 0, review: 0 });
   await h.command("status");
   assert.match(h.notices.at(-1), /is off/);
 });
 
-test("real editor shows action hints for Tab selection and leaves task scope unchanged", { timeout: 5000 }, async () => {
-  const h = await fixture();
-  const provider = new tui.CombinedAutocompleteProvider([h.autoAssignedCommand], cwd, null);
-  const terminal = { requestRender() {}, terminal: { rows: 40, columns: 120 } };
+test("forced Tab never turns a scope into a matching file path", async () => {
+  fs.writeFileSync(path.join(cwd, "task-file.txt"), "fixture");
+  const wrappers = [];
+  const h = await fixture({ ui: { setStatus() {}, notify() {}, addAutocompleteProvider: factory => wrappers.push(factory) } });
+  let provider = new tui.CombinedAutocompleteProvider([h.autoAssignedCommand], cwd, null);
+  for (const wrap of wrappers) provider = wrap(provider);
+  const editor = new host.CustomEditor({ requestRender() {}, terminal: { rows: 40, columns: 120 } }, themes.getEditorTheme(), keybindings);
+  editor.setAutocompleteProvider(provider);
+  editor.setText("/auto-assigned on task-f");
+  editor.handleInput("\t");
+  await new Promise(resolve => setImmediate(resolve));
+  await editor.autocompleteRequestTask;
+  assert.equal(editor.getText(), "/auto-assigned on task-f");
+  assert.deepEqual(h.counts(), { main: 0, review: 0 });
+});
+
+test("real editor preserves free-text scopes with matching paths, including forced Tab", { timeout: 5000 }, async () => {
+  const terminal = { requestRender() {}, terminal: { rows: 40, columns: 160 } };
   const editor = new host.CustomEditor(terminal, themes.getEditorTheme(), keybindings);
+  const wrappers = [];
+  const h = await fixture({ ui: { setStatus() {}, notify() {}, addAutocompleteProvider: factory => wrappers.push(factory) } });
+  let provider = new tui.CombinedAutocompleteProvider([h.autoAssignedCommand], cwd, null);
+  for (const wrap of wrappers) provider = wrap(provider);
   editor.setAutocompleteProvider(provider);
   let submitted = false;
   editor.onSubmit = () => { submitted = true; };
   const input = async text => {
     for (const char of text) editor.handleInput(char);
     await new Promise(resolve => setImmediate(resolve));
+    if (editor.autocompleteDebounceTimer) await new Promise(resolve => setTimeout(resolve, 200));
+    await editor.autocompleteRequestTask;
   };
   for (const [prefix, action] of [["", "on"], ["of", "off"], ["s", "status"]]) {
     editor.setText("/auto-assigne");
     await input("d");
     await input(" " + prefix);
     assert.equal(editor.isShowingAutocomplete(), true);
-    const view = editor.render(120).join("\n");
-    const items = await h.autoAssignedCommand.getArgumentCompletions(prefix);
-    for (const item of items) {
-      assert.ok(view.includes(item.label), "Tab must display " + item.label);
-      assert.ok(view.includes(item.description), "Tab must display the action hint");
+    const view = editor.render(160).join("\n");
+    for (const item of await h.autoAssignedCommand.getArgumentCompletions(prefix)) {
+      assert.ok(view.includes(item.label));
+      assert.ok(view.includes(item.description));
     }
-    editor.handleInput("\t");
+    await input("\t");
     assert.equal(editor.getText(), "/auto-assigned " + action);
   }
-  const scoped = "/auto-assigned on 修复补全";
-  editor.setText("/auto-assigned on ");
-  await input("修复补全");
-  assert.equal(editor.isShowingAutocomplete(), false);
+  for (const name of ["fix-file.txt", "修复文件.txt"]) fs.writeFileSync(path.join(cwd, name), "fixture");
+  for (const name of ["fix-directory", "修复目录"]) fs.mkdirSync(path.join(cwd, name));
+  // A real path provider must find fixtures; otherwise the regression could pass accidentally.
+  const base = new tui.CombinedAutocompleteProvider([], cwd, null);
+  const options = { force: true, signal: new AbortController().signal };
+  for (const token of ["", "fix-f", "fix-d", "修复文", "修复目"]) {
+    const line = "/auto-assigned on " + token;
+    assert.ok((await base.getSuggestions([line], 0, line.length, options))?.items.length, token);
+  }
+  for (const scope of ["", "fix-f", "fix-d", "修复文", "修复目", "Fix the function", "修复补全", "@fix-f", "./fix-d", "fix-f  "]) {
+    const text = "/auto-assigned on " + scope;
+    editor.setText("/auto-assigne");
+    await input("d on " + scope);
+    assert.equal(editor.isShowingAutocomplete(), true, text);
+    assert.match(editor.render(160).join("\n"), /Task scope \(free text\)/);
+    await input("\t\t");
+    assert.equal(editor.getText(), text, "Repeated Tab must preserve " + text);
+    await input("\x1b");
+    await input("\t");
+    assert.equal(editor.getText(), text, "Tab after dismissing hints must preserve " + text);
+    editor.setText(text);
+    await input("\t");
+    assert.equal(editor.getText(), text, "Forced Tab without a picker must preserve " + text);
+  }
+  // Unrelated file completion remains available through the wrapped provider.
+  editor.setText("./fix-f");
   await input("\t");
-  assert.equal(editor.getText(), scoped);
-  assert.equal(submitted, false, "Tab must not execute the command");
+  assert.equal(editor.getText(), "./fix-file.txt");
+  assert.equal(submitted, false, "Completion must never execute a command");
   assert.deepEqual(h.counts(), { main: 0, review: 0 });
   await h.command("status");
   assert.match(h.notices.at(-1), /is off/);
+  assert.equal(h.session.sessionManager.getBranch().some(e => e.type === "custom" && e.customType === "envy-auto-assigned-state" && e.data.enabled), false);
+});
+
+test("scope hints preserve explicit authorization and the latest-user fallback", async () => {
+  for (const [typed, expected] of [["fix-f", "fix-f"], ["修复文", "修复文"], ["", "The latest real user task"]]) {
+    const wrappers = [];
+    const h = await fixture({ ui: { setStatus() {}, notify() {}, addAutocompleteProvider: factory => wrappers.push(factory) } });
+    h.session.sessionManager.appendMessage({ role: "user", content: "The latest real user task", timestamp: Date.now() });
+    let provider = new tui.CombinedAutocompleteProvider([h.autoAssignedCommand], cwd, null);
+    for (const wrap of wrappers) provider = wrap(provider);
+    const editor = new host.CustomEditor({ requestRender() {}, terminal: { rows: 40, columns: 160 } }, themes.getEditorTheme(), keybindings);
+    editor.setAutocompleteProvider(provider);
+    let submitted;
+    editor.onSubmit = text => { submitted = text; };
+    for (const char of "/auto-assigned on " + typed) editor.handleInput(char);
+    await new Promise(resolve => setImmediate(resolve));
+    await editor.autocompleteRequestTask;
+    // Enter accepts the identity hint, then submits with the editor's usual trimming.
+    editor.handleInput("\r");
+    editor.handleInput("\r");
+    assert.equal(submitted, ("/auto-assigned on " + typed).trim());
+    await h.command(submitted.slice("/auto-assigned ".length));
+    const state = h.session.sessionManager.getBranch().findLast(e => e.type === "custom" && e.customType === "envy-auto-assigned-state");
+    assert.equal(state.data.enabled, true);
+    assert.equal(state.data.scope, expected);
+    assert.deepEqual(h.counts(), { main: 0, review: 0 });
+  }
+  const h = await fixture();
+  await h.command("on ");
+  assert.match(h.notices.at(-1), /Supply a task scope/);
+  assert.equal(h.session.sessionManager.getBranch().some(e => e.type === "custom" && e.customType === "envy-auto-assigned-state" && e.data.enabled), false);
+  assert.deepEqual(h.counts(), { main: 0, review: 0 });
 });
 
 test("default off: ordinary answers never trigger reviewer calls", async () => {

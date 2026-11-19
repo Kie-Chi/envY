@@ -18,8 +18,8 @@ class SnapshotError(RuntimeError):
         self.partial = partial or {}
 
 
-def _json_command(command: list[str], root: Path) -> Any:
-    result = run_process(command, cwd=root, capture=True, check=False)
+def _json_command(command: list[str], root: Path, *, stream_stderr: bool = False) -> Any:
+    result = run_process(command, cwd=root, capture=True, stream_stderr=stream_stderr, check=False)
     if result.returncode:
         raise SnapshotError(informative_nix_error(result.stderr or "", fallback="plan build failed"),
                             code=result.returncode)
@@ -127,7 +127,7 @@ def build_snapshot(machine: str, *, root: Path = ENVY_ROOT) -> tuple[dict, dict 
     attr = machine_build_attr(machine, source=frozen)
     # Keep flake commands outside the store cwd so Nix resolves the full target.
     try:
-        rows = _json_command(["nix", "build", "--no-link", "--json", "--impure", "--no-update-lock-file", attr], root)
+        rows = _json_command(["nix", "build", "--no-link", "--json", "--impure", "--no-update-lock-file", attr], root, stream_stderr=True)
         if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
             raise SnapshotError("Nix build did not return one machine result")
         row = rows[0]
@@ -152,7 +152,7 @@ def build_snapshot(machine: str, *, root: Path = ENVY_ROOT) -> tuple[dict, dict 
         raise
     manifest = None
     try:
-        value = _json_command(["nix", "eval", "--impure", "--no-update-lock-file", machine_manifest_attr(machine, source=frozen), "--json"], root)
+        value = _json_command(["nix", "eval", "--impure", "--no-update-lock-file", machine_manifest_attr(machine, source=frozen), "--json"], root, stream_stderr=True)
         if not isinstance(value, dict) or value.get("id") != machine:
             raise SnapshotError("Frozen manifest identity is invalid")
         manifest = value

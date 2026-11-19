@@ -21,9 +21,11 @@ envy storage prune --yes --json
 
 显式 `archive` 规则在 NAS 上传后回读一次 SHA-256，执行前确认本地对象未变化，成功后同次释放本地副本；失败保留本地。归档仍限普通文件，不自动删除远端快照。专用 `prunes` 记录保存 repository ID、snapshot、文件 SHA-256 和逐项结果；这些记录目前不接入旧 `restore RUN`，远端恢复使用其中的快照信息。
 
-原生维护复用机器已启用的 Nix、Docker、Go、uv、npm、pip、Homebrew 动作及其目标绑定和保留边界，不删除 Nix generations，不把 Docker volumes 纳入回收。`--force` 是 envY 确认别名，不传给 uv 或扩大原生范围。
+原生维护复用机器已启用的 Nix、Docker、Go、uv、npm、pip、Homebrew 动作及其目标绑定和保留边界。文件候选数与原生维护数分别显示；某个动作失败或不可用后继续其他动作，同一动作内部失败则停止剩余步骤，最终有失败时返回非零。执行时按动作实时显示脱敏后的 stdout/stderr，过程文本统一写 stderr，JSON stdout 只保留结果。末尾按工具报告汇总删除数量、回收空间和具体错误；未报告的数字不补零。没有错误详情时提供绑定目标的只读诊断命令。每一步的 stdout/stderr 脱敏日志保存在 storage state 的 `prune-output/<id>/`，终端给出日志目录，可用 `less <日志路径>` 查看。每路只保留末尾最多 1 MiB，截断时注明；目录权限为 0700，日志为 0600。输出按完整行显示，超过 16 KiB 的单行以省略标记替代。`--force` 是 envY 确认别名，不传给 uv 或扩大原生范围。
 
-占用、变化及消失的候选会跳过，全跳过且无其他失败返回成功；权限、工具或归档失败返回非零。若暂存后发现占用或删除中断，保留路径和状态会写入 `prunes`，不会自动加入旧 purge。结果分别报告删除、归档释放、跳过、暂存保留和错误，并给出候选大小估计、原生工具报告的回收量（未报告时为空）及观察到的可用空间变化；APFS 共享块及同时运行的其他进程会影响后者。完成删除的可丢弃缓存没有恢复副本。
+Darwin Nix 通过共享 `esudo` 使用 sops 密码或已有 sudo 票据，先认证、重新核对绑定，再执行清理。stderr 在 `ENVY_DEBUG=0` 时也显示密码来源、`password is given (******末字符)` 掩码及认证成功状态；提供密码与认证成功分别报告。认证失败不会重试清理命令，也不会阻止 uv、npm 等后续动作。JSON stdout 只包含结果。
+
+占用、变化及消失的候选会跳过，全跳过且无其他失败返回成功；权限、工具或归档失败返回非零。若暂存后发现占用或删除中断，保留路径和状态会写入 `prunes`，不会自动加入旧 purge。终端分别报告删除、归档释放、跳过、暂存保留和原生动作状态；汇总中错误不重复列出，只有存在删除或工具报告时才显示大小。JSON 和记录另保留候选大小估计、原生报告回收量及可用空间变化；APFS 共享块及同时运行的其他进程会影响后者。完成删除的可丢弃缓存没有恢复副本。
 
 ## 2026-11-15 升级：操作预览与确认
 
@@ -298,7 +300,7 @@ Chrome Service Worker 约 926 MiB 可能含离线应用状态；约 88 MiB updat
 
 | 动作 | 拟执行命令 | 范围 |
 |---|---|---|
-| Nix | `nix-collect-garbage` | 保留 generations 和 GC roots；Darwin 用 `sudo -n -H`，需已有 sudo ticket，不读取口令或交互提权 |
+| Nix | 绑定的 `nix-store --store … --gc` | 保留 generations 和 GC roots；Darwin 先由 `esudo` 用 sops 密码或已有票据认证，再用绑定的 `sudo -n -H` 执行 |
 | Docker | `docker builder prune -f --filter until=336h`；`docker image prune -f --filter until=336h` | 两步均保留 336h 年龄边界；镜像按创建时间过滤且仅限 dangling；不清 volumes、容器或 tagged images |
 | Go | `go clean -cache` | 整个 build cache，无年龄边界，不清 module source cache；选择它会自动排除 go-build-cache 年龄规则 |
 | uv | `uv cache prune` | 使用原生可达性与占用检查，不加 force/ci，不声称遵循规则年龄 |

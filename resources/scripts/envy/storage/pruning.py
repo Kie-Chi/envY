@@ -36,10 +36,7 @@ def prepare(policy: Policy, state: Path) -> dict:
             "summary": {"eligibleItems": sum(not item.get("blocked") for item in candidates),
                         "estimatedBytes": sum(item["size"] for item in candidates if not item.get("blocked")),
                         "nativeActions": list(policy.maintenance)},
-            "warnings": ["Deletion is immediate. Disposable caches have no recovery copy; "
-                         "archives retain their verified NAS snapshot.",
-                         "Candidate sizes are estimates; native maintenance and APFS sharing "
-                         "can change actual space recovery."]}
+            "warnings": []}
 
 
 def _save(state: Path, result: dict) -> None:
@@ -124,7 +121,7 @@ def _delete(candidate: dict, policy: Policy, state: Path, result: dict,
         _save(state, result)
 
 
-def execute(policy: Policy, state: Path, prepared: dict) -> dict:
+def execute(policy: Policy, state: Path, prepared: dict, *, on_output=None) -> dict:
     """Execute only the scope displayed by prepare; the caller holds the state lock."""
     if prepared.get("policyFingerprint") != policy.fingerprint:
         raise StorageError("Storage policy changed; run prune again")
@@ -179,12 +176,13 @@ def execute(policy: Policy, state: Path, prepared: dict) -> dict:
         try:
             native = maintenance.maintain(policy, list(policy.maintenance),
                                           approved_preview=prepared["maintenance"],
-                                          report_reclaimed=True, on_progress=save_progress)
+                                          report_reclaimed=True, on_progress=save_progress,
+                                          output_dir=state / "prune-output" / result["id"], on_output=on_output)
             result["maintenance"] = native
             result["maintenanceState"] = "failed" if native.get("errors") else "completed"
-            notes = {item["action"]: item.get("note", "Native maintenance failed")
-                     for item in native.get("items", [])}
-            result["errors"].extend({"action": name, "reason": notes.get(name, "Native maintenance failed")}
+            reasons = {item["action"]: item.get("reason") or "Native maintenance failed"
+                       for item in native.get("items", [])}
+            result["errors"].extend({"action": name, "reason": reasons.get(name, "Native maintenance failed")}
                                     for name in native.get("errors", []))
         except (OSError, StorageError) as exc:
             result["maintenanceState"] = "unknown"

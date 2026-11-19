@@ -213,10 +213,17 @@ def _builder_metadata(output: str, budget: ScanBudget) -> dict:
     return value
 
 
+def _buildx_prefix(target: dict) -> list[str]:
+    # Built-in builders for named contexts require --context rather than --host.
+    if target.get("context") is not None:
+        return ["docker", "--context", _name(target["context"]), "buildx"]
+    return ["docker", "--host", _local_endpoint(target["endpoint"]), "buildx"]
+
+
 def _builder(target: dict, budget: ScanBudget) -> dict:
     # A named context's built-in docker driver is not the selected buildx builder.
     name = _name(target["context"] or "default")
-    value = _builder_metadata(_command(["docker", "--host", target["endpoint"], "buildx", "inspect", name], budget), budget)
+    value = _builder_metadata(_command([*_buildx_prefix(target), "inspect", name], budget), budget)
     if value.get("name") != name:
         raise _Unavailable("Docker buildx inspect did not confirm the explicitly named builder")
     if value.get("driver") != "docker":
@@ -266,7 +273,7 @@ def bound_commands(target: dict) -> list[list[str]]:
     except (KeyError, TypeError, IndexError) as exc:
         raise StorageError("Docker maintenance target is incomplete") from exc
     prefix = ["docker", "--host", endpoint]
-    return [[*prefix, "buildx", "prune", "--builder", name, "-f", "--filter", "until=336h"],
+    return [[*_buildx_prefix(target), "prune", "--builder", name, "-f", "--filter", "until=336h"],
             [*prefix, "image", "prune", "-f", "--filter", "until=336h"]]
 
 

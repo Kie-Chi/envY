@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import stat
 import sys
@@ -60,7 +59,7 @@ def _perform(command, json_output, operation):
                 log.hint("Confirm the same request with --preview-token TOKEN --yes; cancellation runs nothing.")
             for item in [*data["errors"], *data["unknown"]]:
                 log.console.print(str(item), markup=False)
-        elif command == "plan" or "candidates" in data:
+        elif command != "prune" and (command == "plan" or "candidates" in data):
             table = Table(title=f"Storage plan {data.get('id', '')}")
             for name in ("Rule", "Targets", "Entries", "GiB", "Blocked", "Note"):
                 table.add_column(name)
@@ -132,12 +131,16 @@ def _perform(command, json_output, operation):
             _show_prune(data)
         elif command == "maintain":
             table = Table(title="Storage maintenance")
-            for name in ("Action", "Available", "Commands", "Note"):
+            for name in ("Action", "State", "Commands", "Note"):
                 table.add_column(name)
             for item in data.get("items", []):
-                table.add_row(item.get("action", ""), "yes" if item.get("available") else "no",
+                outcome = item.get("status") or (
+                    "completed" if item.get("available") and data.get("execute")
+                    else "available" if item.get("available")
+                    else "failed" if item.get("output") else "unavailable")
+                table.add_row(item.get("action", ""), outcome,
                               " ; ".join(" ".join(command) for command in item.get("commands", [])),
-                              item.get("note", ""))
+                              item.get("reason") or item.get("note", ""))
             log.console.print(table)
             for item in data.get("items", []):
                 native = item.get("inspection")
@@ -189,46 +192,122 @@ def _prune_interactive() -> bool:
     return sys.stdin.isatty()
 
 
+def _native_target(item: dict) -> str:
+    target = item.get("target") or item.get("binding", {}).get("target") or {}
+    if not isinstance(target, dict):
+        return str(target)
+    for key in ("resolvedPath", "path", "storeDir", "endpoint", "cache", "prefix"):
+        if isinstance(target.get(key), str) and target[key]:
+            return target[key]
+    return "—"
+
+
+def _native_effect(action: str) -> str:
+    return {
+        "nix": "Collect unreferenced store paths",
+        "docker": "Prune unused build cache and dangling images older than 336h",
+        "go": "Delete all Go build cache (no age cutoff)",
+        "go-modcache": "Delete all module downloads (no age cutoff); future builds may download again",
+        "uv": "Prune unreachable cache objects",
+        "npm": "Verify and garbage-collect cache (writes cache)",
+        "pip": "Delete all pip cache (no age cutoff)",
+        "brew": "Remove old installed kegs, stale locks and downloads; cache cutoff 30d",
+    }.get(action, "Native maintenance")
+
+
 def _show_prune(data: dict) -> None:
     if data.get("cancelled"):
         log.console.print("Prune cancelled; no cleanup was performed.")
         return
     if data.get("execute"):
         summary = data["summary"]
-        log.console.print("Prune: " + str(summary["deletedItems"]) + " deleted, "
-                          + str(summary["archivedItems"]) + " archived and released, "
-                          + str(summary["skippedItems"]) + " skipped, "
-                          + str(summary["retainedItems"]) + " retained.", markup=False)
-        log.console.print(f"Deleted size estimate: {data['deletedBytesEstimate'] / 2**20:.2f} MiB")
-        change = data.get("availableBytesChange")
-        if change is not None:
-            log.console.print(f"Observed free-space change: {change / 2**20:+.2f} MiB")
-        for item in data.get("maintenance", {}).get("items", []):
+        counts = [("deleted", summary["deletedItems"]),
+                  ("archived and released", summary["archivedItems"]),
+                  ("skipped", summary["skippedItems"]), ("retained", summary["retainedItems"])]
+        log.console.print("Prune: " + (", ".join(f"{count} {name}" for name, count in counts if count)
+                                      or "no files changed") + ".", markup=False)
+        deleted = data.get("deletedBytesEstimate", 0)
+        if deleted:
+            log.console.print(f"Deleted size estimate: {deleted / 2**20:.2f} MiB")
+        native_items = data.get("maintenance", {}).get("items", [])
+        native_errors = {entry["action"]: entry.get("reason", "Cleanup failed")
+                         for entry in data.get("errors", []) if entry.get("action")}
+        shown_errors = set()
+        shown_logs = {}
+        for item in native_items:
+            action = item["action"]
+            outcome = item.get("status")
+            if data.get("maintenanceState") in {"unknown", "running"} and outcome in {None, "pending", "running"}:
+                outcome = "skipped" if outcome == "pending" else "unknown"
+            outcome = outcome or ("failed" if action in native_errors
+                                   else "completed" if item.get("available") else "unavailable")
+            line = action + ": " + outcome
+            removed = item.get("reportedRemovedItems")
+            if removed is not None:
+                line += f"; {removed} removed"
             reclaimed = item.get("reportedReclaimedBytes")
-            amount = f"{reclaimed / 2**20:.2f} MiB reported" if reclaimed is not None else "reclaimed size not reported"
-            outcome = ("unknown" if data.get("maintenanceState") in {"unknown", "running"}
-                       else "completed" if item["available"] else "failed")
-            log.console.print(item["action"] + ": " + outcome + "; " + amount, markup=False)
+            if reclaimed is not None:
+                size = f"{reclaimed} bytes" if reclaimed < 2**20 else f"{reclaimed / 2**20:.2f} MiB"
+                line += f"; {size} reported"
+            reported_summary = item.get("reportedSummary")
+            if reported_summary:
+                line += "; " + reported_summary
+            reason = item.get("reason") or native_errors.get(action)
+            if reason:
+                if reason != reported_summary:
+                    line += "; " + reason
+                shown_errors.add(action)
+            log.console.print(line, markup=False, highlight=False)
+            for output in item.get("output", []):
+                logs = output.get("logs") or {}
+                for channel in ("stdout", "stderr"):
+                    path = logs.get(channel + "Path")
+                    if path:
+                        shown_logs[path] = shown_logs.get(path, False) or channel in logs.get("truncatedStreams", [])
+                if logs.get("logError"):
+                    log.console.print(f"{action} output: {logs["logError"]}", markup=False, highlight=False)
+                elif logs.get("outputErrors"):
+                    log.console.print(f"{action} output: incomplete ({", ".join(logs["outputErrors"])})",
+                                      markup=False, highlight=False)
+        parents = {str(Path(path).parent) for path in shown_logs}
+        if len(parents) == 1:
+            log.console.print("Logs: " + next(iter(parents)), markup=False, highlight=False)
+            truncated = [Path(path).name for path, cut in shown_logs.items() if cut]
+            if truncated:
+                log.console.print("Truncated logs: " + ", ".join(truncated), markup=False, highlight=False)
+        else:
+            for path, cut in shown_logs.items():
+                log.console.print("Log: " + path + (" (truncated)" if cut else ""), markup=False, highlight=False)
         for entry in data.get("retained", []):
             log.console.print("Retained staged data: " + entry["heldPath"], markup=False)
+        for entry in data.get("skipped", []):
+            log.console.print(entry.get("path", "") + ": " + entry.get("reason", "skipped"), markup=False)
         for entry in data.get("errors", []):
-            log.error("prune", entry.get("reason", "Cleanup failed"))
+            if entry.get("action") not in shown_errors:
+                reason = entry.get("reason", "Cleanup failed")
+                if entry.get("path"):
+                    reason = entry["path"] + ": " + reason
+                log.error("prune", reason)
             if entry.get("heldPath"):
                 log.console.print("Staging path: " + entry["heldPath"], markup=False)
         return
     table = Table(title="Prune current storage")
-    for column in ("Rule", "Action", "MiB estimate", "Path / status"):
+    for column in ("Rule / action", "Operation", "MiB estimate", "Target", "Effect / status"):
         table.add_column(column)
     for candidate in data["candidates"]:
         table.add_row(candidate["rule"], "archive" if candidate["action"] == "archive" else "delete",
-                      f"{candidate['size'] / 2**20:.2f}",
-                      Text(candidate.get("blocked") or candidate["path"]))
-    for item in data["maintenance"]["items"]:
-        target = json.dumps(item["target"], ensure_ascii=False) + "\n" if item.get("target") else ""
-        table.add_row(item["action"], "native", "unknown", Text(target + item["note"]))
+                      f"{candidate['size'] / 2**20:.2f}", Text(candidate["path"]),
+                      Text(candidate.get("blocked") or ""))
+    native_items = data["maintenance"]["items"]
+    for item in native_items:
+        effect = _native_effect(item["action"])
+        if item.get("reason"):
+            effect += "; " + item["reason"]
+        table.add_row(item["action"], "native", "", Text(_native_target(item)), Text(effect))
     log.console.print(table)
     log.console.print("Eligible files/directories: " + str(data["summary"]["eligibleItems"])
                       + "; skipped: " + str(len(data["skipped"])), markup=False)
+    log.console.print("Native maintenance actions: " + str(len(native_items)), markup=False)
     for warning in data["warnings"]:
         log.console.print(warning, markup=False)
 
@@ -252,9 +331,25 @@ def cmd_prune(
                 return prepared
             if not yes:
                 _show_prune(prepared)
-                if not typer.confirm("Prune the displayed content now?", default=False):
+                if not typer.confirm("Immediately delete the listed caches, archive and release selected files, "
+                                     "and run native maintenance?",
+                                     default=False):
                     return {**prepared, "cancelled": True}
-            return pruning.execute(policy, state, prepared)
+            started = set()
+
+            def on_output(action, channel, text):
+                if not text:
+                    return
+                if channel == "start":
+                    started.add(action)
+                    log.diagnostic_console.print(text + ":", markup=False, highlight=False)
+                    return
+                if action not in started:
+                    started.add(action)
+                    log.diagnostic_console.print(action + ":", markup=False, highlight=False)
+                log.diagnostic_console.print(text, end="", markup=False, highlight=False)
+
+            return pruning.execute(policy, state, prepared, on_output=on_output)
     _perform("prune", json_output, operation)
 
 

@@ -5,6 +5,7 @@ import copy
 import io
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -15,7 +16,7 @@ from unittest.mock import patch
 from rich.console import Console
 from typer.testing import CliRunner
 
-from envy.process import run_process
+from envy.process import CommandError, run_process
 from envy.storage import cli, go_modcache, maintenance
 from envy.storage.model import Policy, StorageError
 
@@ -152,7 +153,7 @@ class MaintenanceTests(unittest.TestCase):
             preview = maintenance.preview(policy)
             result = maintenance.maintain(policy)
         self.assertFalse(preview["items"][0]["available"])
-        self.assertIn("project", preview["items"][0]["note"])
+        self.assertIn("project", preview["items"][0]["reason"])
         self.assertEqual(result["errors"], ["go-modcache"])
         self.run.assert_not_called()
 
@@ -276,15 +277,124 @@ class MaintenanceTests(unittest.TestCase):
                 self.assertEqual(data["items"][0]["output"][0]["returncode"], code)
                 self.assertIn(message, data["items"][0]["note"])
 
-    def test_darwin_nix_uses_captured_noninteractive_sudo_without_credentials(self):
-        with patch.object(maintenance, "PLATFORM", "darwin"):
+    def bound_actions(self, actions):
+        bindings = {action: {"version": 1, "action": action,
+                             "target": {"path": str(self.home / action)},
+                             "cwd": {"path": str(self.home)},
+                             "executable": {"path": "/fixture/" + action}, "scope": {}, "roots": []}
+                    for action in actions}
+        if "nix" in bindings:
+            bindings["nix"]["target"] = {
+                "endpoint": "local?root=%2F", "retention": {"keep-outputs": False, "keep-derivations": True},
+                "sudoExecutable": {"path": "/fixture/sudo"}}
+        preview = {"execute": False, "items": [
+            {"action": action, "available": True, "binding": bindings[action]} for action in actions]}
+        return bindings, preview
+
+    def test_darwin_nix_uses_esudo_then_bound_noninteractive_gc(self):
+        bindings, _ = self.bound_actions(["nix"])
+        with (
+            patch.object(maintenance, "PLATFORM", "darwin"),
+            patch.object(maintenance.native_context, "capture", return_value=bindings["nix"]),
+            patch.object(maintenance.native_context, "verify", return_value=bindings["nix"]) as verify,
+            patch.object(maintenance, "esudo") as authenticate,
+        ):
             preview = maintenance.preview(self.policy, ["nix"])
+            self.assertTrue(preview["items"][0]["available"])
             self.run.assert_not_called()
-            self.assertIn("no password is read", preview["items"][0]["note"])
-            maintenance.maintain(self.policy, ["nix"])
-        self.assertEqual(self.run.call_args.args[0], ["sudo", "-n", "-H", "nix-collect-garbage"])
-        self.assertTrue(self.run.call_args.kwargs["capture"])
-        self.assertEqual(self.run.call_args.kwargs["timeout"], 1800)
+            authenticate.assert_not_called()
+            result = maintenance.maintain(self.policy, ["nix"])
+        authenticate.assert_called_once_with("-v", capture=True, cwd=self.home,
+                                             sudo_binary="/fixture/sudo", non_interactive=True)
+        self.assertEqual(verify.call_count, 2)
+        self.run.assert_called_once()
+        self.assertEqual(self.run.call_args.args[0][:7],
+                         ["/fixture/sudo", "-n", "-H", "/fixture/nix", "--store", "local?root=%2F", "--gc"])
+        self.assertEqual(self.run.call_args.kwargs["cwd"], str(self.home))
+        self.assertEqual(result["errors"], [])
+
+    def test_nix_authentication_failure_still_executes_uv_and_npm(self):
+        actions = ["nix", "uv", "npm"]
+        bindings, preview = self.bound_actions(actions)
+        secret = "full-password-sentinel-Z"
+        failure = CommandError(subprocess.CompletedProcess([], 1, secret, secret))
+        progress = []
+        with (
+            patch.object(maintenance, "PLATFORM", "darwin"),
+            patch.object(maintenance.native_context, "verify", side_effect=lambda action, *a, **k: bindings[action]),
+            patch.object(maintenance, "esudo", side_effect=failure) as authenticate,
+        ):
+            result = maintenance.maintain(self.policy, actions, approved_preview=preview,
+                on_progress=lambda data: progress.append(copy.deepcopy(data)))
+        authenticate.assert_called_once()
+        self.assertEqual([call.args[0][0] for call in self.run.call_args_list], ["/fixture/uv", "/fixture/npm"])
+        self.assertEqual([item["status"] for item in result["items"]], ["failed", "completed", "completed"])
+        self.assertEqual(result["errors"], ["nix"])
+        self.assertIn("sudo authentication failed", result["items"][0]["reason"])
+        self.assertEqual(result["items"][0]["output"][0]["phase"], "authentication")
+        self.assertNotIn(secret, json.dumps(progress))
+        self.assertEqual(progress[-1], result)
+
+    def test_authentication_interruption_records_intent_without_running_cleanup(self):
+        bindings, preview = self.bound_actions(["nix", "uv"])
+        progress = []
+        with (
+            patch.object(maintenance, "PLATFORM", "darwin"),
+            patch.object(maintenance.native_context, "verify", return_value=bindings["nix"]),
+            patch.object(maintenance, "esudo", side_effect=KeyboardInterrupt),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            maintenance.maintain(self.policy, ["nix", "uv"], approved_preview=preview,
+                                 on_progress=lambda data: progress.append(copy.deepcopy(data)))
+        self.run.assert_not_called()
+        self.assertEqual(progress[-1]["items"][0]["status"], "running")
+        step = progress[-1]["items"][0]["output"][0]
+        self.assertEqual(step["phase"], "authentication")
+        self.assertIsNone(step["returncode"])
+        self.assertEqual(progress[-1]["items"][1]["status"], "pending")
+
+    def test_nix_context_is_rechecked_after_authentication_before_gc(self):
+        bindings, preview = self.bound_actions(["nix", "uv"])
+        nix_checks = []
+
+        def verify(action, *args, **kwargs):
+            if action == "nix":
+                nix_checks.append(action)
+                if len(nix_checks) == 2:
+                    raise StorageError("Nix target changed while authenticating")
+            return bindings[action]
+
+        with (
+            patch.object(maintenance, "PLATFORM", "darwin"),
+            patch.object(maintenance.native_context, "verify", side_effect=verify),
+            patch.object(maintenance, "esudo") as authenticate,
+        ):
+            result = maintenance.maintain(self.policy, ["nix", "uv"], approved_preview=preview)
+        authenticate.assert_called_once()
+        self.run.assert_called_once()
+        self.assertEqual(self.run.call_args.args[0][0], "/fixture/uv")
+        self.assertEqual(result["errors"], ["nix"])
+        self.assertIn("target changed", result["items"][0]["reason"])
+
+    def test_unavailable_native_action_does_not_block_later_actions(self):
+        bindings, preview = self.bound_actions(["nix", "uv"])
+        preview["items"][0].update(available=False, reason="Nix command unavailable")
+        with patch.object(maintenance.native_context, "verify", return_value=bindings["uv"]):
+            result = maintenance.maintain(self.policy, ["nix", "uv"], approved_preview=preview)
+        self.run.assert_called_once()
+        self.assertEqual(self.run.call_args.args[0][0], "/fixture/uv")
+        self.assertEqual([item["status"] for item in result["items"]], ["unavailable", "completed"])
+        self.assertEqual(result["errors"], ["nix"])
+
+    def test_failed_docker_step_stops_images_but_not_uv(self):
+        bindings, preview = self.bound_actions(["docker", "uv"])
+        self.run.side_effect = [subprocess.CompletedProcess([], 42), subprocess.CompletedProcess([], 0)]
+        with patch.object(maintenance.native_context, "verify", side_effect=lambda action, *a, **k: bindings[action]):
+            result = maintenance.maintain(self.policy, ["docker", "uv"], approved_preview=preview)
+        self.assertEqual([call.args[0][:2] for call in self.run.call_args_list], [["/fixture/docker", "builder"], ["/fixture/uv", "cache"]])
+        self.assertEqual(len(result["items"][0]["output"]), 1)
+        self.assertEqual(result["items"][1]["status"], "completed")
+        self.assertEqual(result["errors"], ["docker"])
 
     def test_cli_json_preview_never_mutates_and_yes_executes_once(self):
         for flags, execute in (([], False), (["--yes"], True)):
@@ -314,7 +424,7 @@ class MaintenanceTests(unittest.TestCase):
                           side_effect=StorageError("Native target metadata output limit exceeded")):
             data = maintenance.preview(self.policy, ["go"], bind_targets=True)
         self.assertFalse(data["items"][0]["available"])
-        self.assertIn("output limit exceeded", data["items"][0]["note"])
+        self.assertIn("output limit exceeded", data["items"][0]["reason"])
         data["items"][0]["commands"] = [["never-execute-saved-json"]]
         result = maintenance.maintain(self.policy, ["go"], approved_preview=data)
         self.assertEqual(result["errors"], ["go"])
@@ -354,14 +464,14 @@ class MaintenanceTests(unittest.TestCase):
                 contextlib.redirect_stdout(io.StringIO()) as stdout, \
                 contextlib.redirect_stderr(io.StringIO()) as stderr:
             data = maintenance.maintain(self.policy, actions, approved_preview=approved)
-        self.assertEqual(data["errors"], ["uv", "npm"])
+        self.assertEqual(data["errors"], ["uv"])
         self.assertTrue(data["items"][0]["available"])
         self.assertEqual(data["items"][0]["output"][0]["returncode"], 0)
         self.assertEqual(data["items"][1]["output"][0]["returncode"], 42)
-        self.assertIn("exit code 42", data["items"][1]["note"])
-        self.assertIn("skipped", data["items"][2]["note"])
-        self.assertEqual(data["items"][2]["output"], [])
-        self.assertEqual(self.run.call_count, 2)
+        self.assertIn("exit code 42", data["items"][1]["reason"])
+        self.assertEqual(data["items"][2]["status"], "completed")
+        self.assertEqual(data["items"][2]["output"][0]["returncode"], 0)
+        self.assertEqual(self.run.call_count, 3)
         for call, options, result in zip(self.run.call_args_list, process_options, results):
             self.assertFalse(call.kwargs["capture"])
             self.assertFalse(options["capture_output"])
@@ -374,7 +484,7 @@ class MaintenanceTests(unittest.TestCase):
         serialized = json.dumps(data)
         self.assertNotIn("fake native stdout", serialized)
         self.assertNotIn("fake native stderr", serialized)
-        self.assertEqual(json.loads(serialized)["errors"], ["uv", "npm"])
+        self.assertEqual(json.loads(serialized)["errors"], ["uv"])
 
     def reported_run(self, action, outputs, *, report=True, on_progress=None):
         binding = {"version": 1, "action": action, "target": {},
@@ -419,6 +529,55 @@ class MaintenanceTests(unittest.TestCase):
         self.assertEqual(stderr.getvalue(), "")
         self.assertNotIn("private.example", json.dumps(data))
         return data["items"][0]
+
+    def test_native_failure_retains_safe_cause_and_bound_diagnostic_then_continues(self):
+        bindings, approved = self.bound_actions(["uv", "npm"])
+        cache = str(self.home / "cache with spaces")
+        bindings["uv"]["target"]["path"] = cache
+        secret = "fictional-error-credential-Z"
+
+        def run(argv, **kwargs):
+            if argv[0] == "/fixture/uv":
+                kwargs["stderr"].write(("error: Permission denied (os error 13): " + secret).encode())
+                return subprocess.CompletedProcess(argv, 1)
+            return subprocess.CompletedProcess(argv, 0)
+
+        self.run.side_effect = run
+        with patch.object(maintenance.native_context, "verify", side_effect=lambda action, *a, **k: bindings[action]):
+            result = maintenance.maintain(self.policy, ["uv", "npm"], approved_preview=approved, report_reclaimed=True)
+        reason = result["items"][0]["reason"]
+        self.assertIn("permission denied", reason.lower())
+        self.assertIn(shlex.join(["ls", "-ld", "--", cache]), reason)
+        self.assertEqual(result["items"][0]["output"][0]["returncode"], 1)
+        self.assertEqual(result["items"][1]["status"], "completed")
+        stdout = io.StringIO()
+        with patch.object(cli.log, "console", Console(file=stdout, width=400)):
+            cli._show_prune({"execute": True, "summary": {"deletedItems": 0, "archivedItems": 0,
+                "skippedItems": 0, "retainedItems": 0}, "maintenance": result,
+                "errors": [{"action": "uv", "reason": reason}]})
+        self.assertEqual(stdout.getvalue().count(reason), 1)
+        self.assertNotIn(secret, stdout.getvalue() + json.dumps(result))
+
+    def test_unknown_native_failure_without_output_has_bound_read_only_diagnostic(self):
+        bindings, approved = self.bound_actions(["uv"])
+        self.run.side_effect = None
+        self.run.return_value = subprocess.CompletedProcess([], 42)
+        with patch.object(maintenance.native_context, "verify", return_value=bindings["uv"]):
+            result = maintenance.maintain(self.policy, ["uv"], approved_preview=approved)
+        reason = result["items"][0]["reason"]
+        self.assertIn("exit code 42", reason)
+        self.assertIn(shlex.join(["ls", "-ld", "--", bindings["uv"]["target"]["path"]]), reason)
+        self.assertEqual(self.run.call_count, 1)
+
+    def test_native_error_classification_is_bounded_and_never_copies_tool_output(self):
+        for raw, expected in ((b"No space left on device private.example", "no space left on device"),
+                              (b"EACCES private.example", "permission denied"),
+                              (b"Read-only file system private.example", "read-only filesystem"),
+                              (b"Permission denied" + b"x" * 70000, "exit code 1")):
+            with self.subTest(expected=expected):
+                item = self.reported_run("uv", [(1, b"private.example", raw)])
+                self.assertIn(expected, item["reason"])
+                self.assertNotIn(raw.decode(errors="replace"), item["reason"])
 
     def test_native_reclaimed_summaries_and_decimal_units(self):
         cases = [
@@ -486,6 +645,8 @@ class MaintenanceTests(unittest.TestCase):
             self.reported_run("docker", [(0, b"Total reclaimed space: 1MB\n", b""),
                                           (KeyboardInterrupt(), b"", b"")], on_progress=progress)
         self.assertEqual(len(snapshots), 4)
+        self.assertEqual(snapshots[2]["items"][0]["status"], "running")
+        self.assertEqual(snapshots[-1]["items"][0]["status"], "running")
         self.assertIn("target", snapshots[0]["items"][0]["binding"])
         self.assertNotIn("output", snapshots[0]["items"][0])
         output = snapshots[-1]["items"][0]["output"]
@@ -511,21 +672,26 @@ class MaintenanceTests(unittest.TestCase):
                                       on_progress=progress)
                 self.assertEqual(self.run.call_count, expected_calls)
 
-    def test_progress_reports_final_failures_and_skipped_actions(self):
+    def test_progress_reports_failure_then_later_independent_success(self):
         binding = {"version": 1, "target": {}, "cwd": {}, "executable": {}, "scope": {}, "roots": []}
         approved = {"execute": False, "items": [
             {"action": action, "available": True, "binding": dict(binding, action=action)}
             for action in ("go", "uv")]}
         snapshots = []
-        with patch.object(maintenance.native_context, "verify", side_effect=StorageError("fixture changed")):
+        current = {"cwd": {"path": str(self.home)}}
+        with (
+            patch.object(maintenance.native_context, "verify", side_effect=[StorageError("fixture changed"), current]),
+            patch.object(maintenance.native_context, "commands", return_value=maintenance.COMMANDS["uv"]),
+            patch.object(maintenance.native_context, "execution_environment", return_value={}),
+        ):
             result = maintenance.maintain(self.policy, ["go", "uv"], approved_preview=approved,
                 on_progress=lambda data: snapshots.append(copy.deepcopy(data)))
-        self.run.assert_not_called()
+        self.run.assert_called_once()
         self.assertEqual(snapshots[-1], result)
-        self.assertEqual(result["errors"], ["go", "uv"])
+        self.assertEqual(result["errors"], ["go"])
         self.assertEqual(result["items"][0]["output"][0]["state"], "failed")
-        self.assertIn("skipped", result["items"][1]["note"])
-        self.assertEqual(result["items"][1]["output"], [])
+        self.assertEqual(result["items"][1]["status"], "completed")
+        self.assertEqual(result["items"][1]["output"][0]["returncode"], 0)
 
     def test_reclaimed_defaults_preserve_result_and_process_options(self):
         item = self.reported_run("pip", [(0, b"", b"")], report=False)
@@ -552,6 +718,205 @@ class MaintenanceTests(unittest.TestCase):
             maintenance.maintain(policy, ["go", "uv"], approved_preview={"execute": False, "items": []})
         capture.assert_not_called()
         self.run.assert_not_called()
+
+    def test_cli_prune_with_fake_sudo_keeps_credentials_out_of_json_and_records(self):
+        actions = ["nix", "uv", "npm"]
+        secret = "fictional-storage-password-Z"
+        for accepted in (True, False):
+            with self.subTest(accepted=accepted):
+                root = self.home / str(accepted)
+                root.mkdir()
+                executable = root / "bin"
+                executable.mkdir()
+                source = f"#!{sys.executable}\n" + r'''
+import json
+import os
+import sys
+from pathlib import Path
+root = Path(os.environ["ENVY_SUDO_FIXTURE"])
+name = Path(sys.argv[0]).name
+with (root / "events").open("a") as handle:
+    handle.write(json.dumps({"tool": name, "args": sys.argv[1:]}) + "\n")
+if name == "sudo":
+    if sys.argv[1:] == ["-S", "-v"]:
+        supplied = sys.stdin.read()
+        if supplied != "fictional-storage-password-Z":
+            print(supplied)
+            print(supplied, file=sys.stderr)
+            sys.exit(19)
+        (root / "ticket").touch()
+    else:
+        if sys.argv[1:3] != ["-n", "-H"] or not (root / "ticket").exists():
+            sys.exit(1)
+        os.execv(sys.argv[3], sys.argv[3:])
+elif name == "nix":
+    print("deleting /fixture/nix/store/obsolete")
+    print("2 store paths deleted, 1.5 MiB freed")
+elif name == "uv":
+    print("Removed 12 files (2 MiB)", file=sys.stderr)
+    print("token=fictional-native-token-Q", file=sys.stderr)
+elif name == "npm":
+    print("Content garbage-collected: 3 (123 bytes)")
+'''
+                for name in ("sudo", *actions):
+                    binary = executable / name
+                    binary.write_text(source)
+                    binary.chmod(0o700)
+                bindings, _ = self.bound_actions(actions)
+                for action in actions:
+                    bindings[action]["executable"]["path"] = str(executable / action)
+                bindings["nix"]["target"]["sudoExecutable"]["path"] = str(executable / "sudo")
+                stdout, stderr = io.StringIO(), io.StringIO()
+                state = root / "state"
+                self.run.side_effect = run_process
+                self.policy = Policy(self.home, "manual", 30, (), (), (), (), "", "", tuple(actions))
+                with (
+                    patch.object(maintenance, "PLATFORM", "darwin"),
+                    patch.object(maintenance.native_context, "capture", side_effect=lambda action, *a, **k: bindings[action]),
+                    patch.object(maintenance.native_context, "verify", side_effect=lambda action, *a, **k: bindings[action]),
+                    patch("envy.utils._get_sudo_passwd", return_value=secret if accepted else secret + "invalid"),
+                    patch.dict(os.environ, {"ENVY_SUDO_FIXTURE": str(root), "ENVY_DEBUG": "0"}),
+                    patch.object(cli, "_context", return_value=(self.policy, state)),
+                    patch.object(cli.log, "console", Console(file=stdout, width=200)),
+                    patch.object(cli.log, "diagnostic_console", Console(file=stderr, width=200)),
+                ):
+                    result = CliRunner().invoke(cli.app, ["prune", "--yes", "--json"])
+                envelope = json.loads(stdout.getvalue())
+                self.assertEqual(result.exit_code, 0 if accepted else 1, result.output)
+                self.assertEqual(envelope["ok"], accepted)
+                statuses = [item["status"] for item in envelope["data"]["maintenance"]["items"]]
+                self.assertEqual(statuses, ["completed" if accepted else "failed", "completed", "completed"])
+                events = [json.loads(line) for line in (root / "events").read_text().splitlines()]
+                self.assertEqual([event["tool"] for event in events],
+                                 ["sudo", "sudo", "nix", "uv", "npm"] if accepted else ["sudo", "uv", "npm"])
+                self.assertIn("password is given (******", stderr.getvalue())
+                self.assertEqual("authentication succeeded" in stderr.getvalue(), accepted)
+                evidence = "".join(path.read_text() for path in (state / "prunes").glob("*.json"))
+                evidence += "".join(path.read_text() for path in (state / "prune-output").rglob("*.log"))
+                for value in (stdout.getvalue(), stderr.getvalue(), result.output, evidence, json.dumps(events)):
+                    self.assertNotIn(secret, value)
+                    self.assertNotIn("fictional-native-token-Q", value)
+                self.assertIn("Removed 12 files", stderr.getvalue())
+                self.assertIn("token=[redacted]", stderr.getvalue())
+                self.assertEqual("deleting /fixture/nix/store/obsolete" in stderr.getvalue(), accepted)
+                native = envelope["data"]["maintenance"]["items"]
+                self.assertEqual(native[1]["reportedRemovedItems"], 12)
+                self.assertEqual(native[2]["reportedRemovedItems"], 3)
+                if accepted:
+                    self.assertEqual(native[0]["reportedRemovedItems"], 2)
+                    self.assertEqual(native[0]["reportedReclaimedBytes"], 1572864)
+                self.assertEqual(result.output, "")
+
+    def test_prune_output_streams_and_keeps_logs_with_real_native_statistics(self):
+        bindings, approved = self.bound_actions(["nix", "uv"])
+        progress, streamed = [], []
+
+        def command(argv, **kwargs):
+            self.assertIn("logs", progress[-1]["items"][0 if argv[0].endswith("nix") else 1]["output"][0])
+            self.assertNotIn("local?", kwargs["activity"])
+            if argv[0].endswith("nix"):
+                kwargs["stdout"].write(b"deleting /fixture/store/old-package\n3 store paths deleted, 1.5 MiB freed\n")
+            else:
+                kwargs["stderr"].write(b"Removed 12 files (2 MiB)\n")
+            return subprocess.CompletedProcess(argv, 0)
+
+        self.run.side_effect = command
+        with patch.object(maintenance.native_context, "verify", side_effect=lambda action, *a, **k: bindings[action]):
+            result = maintenance.maintain(self.policy, ["nix", "uv"], approved_preview=approved,
+                report_reclaimed=True, output_dir=self.home / "output",
+                on_output=lambda *event: streamed.append(event),
+                on_progress=lambda data: progress.append(copy.deepcopy(data)))
+        nix, uv = result["items"]
+        self.assertEqual(nix["reportedReclaimedBytes"], 1572864)
+        self.assertEqual(nix["reportedRemovedItems"], 3)
+        self.assertEqual(uv["reportedReclaimedBytes"], 2097152)
+        self.assertEqual(uv["reportedRemovedItems"], 12)
+        logs = nix["output"][0]["logs"]
+        self.assertIn("old-package", Path(logs["stdoutPath"]).read_text())
+        self.assertTrue(any("old-package" in event[2] for event in streamed))
+        self.assertEqual(progress[-1], result)
+
+    def test_prune_failure_keeps_redacted_tool_reason_and_continues(self):
+        bindings, approved = self.bound_actions(["docker", "npm"])
+        secret = "fixture-secret-from-native-output-Z"
+        streamed = []
+
+        def command(argv, **kwargs):
+            if argv[0].endswith("docker"):
+                kwargs["stderr"].write(("ERROR: use docker --context=orbstack buildx; token=" + secret + "\n").encode())
+                return subprocess.CompletedProcess(argv, 1)
+            kwargs["stdout"].write(b"Content garbage-collected: 2 (123 bytes)\n")
+            return subprocess.CompletedProcess(argv, 0)
+
+        self.run.side_effect = command
+        with patch.object(maintenance.native_context, "verify", side_effect=lambda action, *a, **k: bindings[action]):
+            result = maintenance.maintain(self.policy, ["docker", "npm"], approved_preview=approved,
+                report_reclaimed=True, output_dir=self.home / "output", on_output=lambda *event: streamed.append(event))
+        docker, npm = result["items"]
+        self.assertIn("use docker --context=orbstack buildx", docker["reason"])
+        self.assertEqual(docker["output"][0]["returncode"], 1)
+        self.assertEqual(len(docker["output"]), 1)
+        self.assertEqual(npm["status"], "completed")
+        self.assertEqual(npm["reportedRemovedItems"], 2)
+        evidence = json.dumps(result) + repr(streamed)
+        evidence += "".join(path.read_text() for path in (self.home / "output").rglob("*.log"))
+        self.assertNotIn(secret, evidence)
+        self.assertIn("token=[redacted]", evidence)
+
+    def test_prune_failure_never_reparses_a_raw_truncated_credential_line(self):
+        bindings, approved = self.bound_actions(["uv"])
+        secret = "opaque-native-credential-Z"
+        streamed = []
+
+        def command(argv, **kwargs):
+            kwargs["stderr"].write(("ERROR: token=" + secret * 4000 + "\n").encode())
+            return subprocess.CompletedProcess(argv, 1)
+
+        self.run.side_effect = command
+        with patch.object(maintenance.native_context, "verify", return_value=bindings["uv"]):
+            result = maintenance.maintain(self.policy, ["uv"], approved_preview=approved,
+                report_reclaimed=True, output_dir=self.home / "output", on_output=lambda *event: streamed.append(event))
+        evidence = json.dumps(result) + repr(streamed)
+        evidence += "".join(path.read_text() for path in (self.home / "output").rglob("*.log"))
+        self.assertNotIn(secret, evidence)
+        self.assertIn("overlong output line omitted", evidence)
+
+    def test_removed_count_parser_ignores_oversized_counts(self):
+        for count in ("9" * 5000, str(2**64)):
+            with self.subTest(digits=len(count)):
+                output = io.BytesIO(f"Files removed: {count} (123 bytes)\n".encode())
+                self.assertIsNone(maintenance._reported_removed("pip", output))
+
+    def test_prune_interruption_flushes_visible_output_without_inventing_exit_code(self):
+        bindings, approved = self.bound_actions(["uv", "npm"])
+        progress = []
+
+        def command(argv, **kwargs):
+            kwargs["stdout"].write(b"partial native output\n")
+            raise KeyboardInterrupt
+
+        self.run.side_effect = command
+        with (patch.object(maintenance.native_context, "verify", return_value=bindings["uv"]),
+              self.assertRaises(KeyboardInterrupt)):
+            maintenance.maintain(self.policy, ["uv", "npm"], approved_preview=approved,
+                report_reclaimed=True, output_dir=self.home / "output",
+                on_progress=lambda data: progress.append(copy.deepcopy(data)))
+        step = progress[-1]["items"][0]["output"][0]
+        self.assertIsNone(step["returncode"])
+        self.assertEqual(progress[-1]["items"][1]["status"], "pending")
+        self.assertIn("partial native output", Path(step["logs"]["stdoutPath"]).read_text())
+        self.run.assert_called_once()
+
+    def test_legacy_maintain_renderer_shows_bound_authentication_failure_once(self):
+        failure = {"execute": True, "items": [{"action": "nix", "available": False,
+                   "status": "failed", "reason": "sudo authentication failed", "note": "Policy description"}],
+                   "errors": ["nix"]}
+        stdout = io.StringIO()
+        with patch.object(cli.log, "console", Console(file=stdout, width=160)):
+            with self.assertRaises(cli.typer.Exit):
+                cli._perform("maintain", False, lambda: failure)
+        self.assertEqual(stdout.getvalue().count("sudo authentication failed"), 1)
+        self.assertIn("failed", stdout.getvalue())
 
     def test_cli_native_failure_is_pure_json_and_nonzero(self):
         self.run.side_effect = None

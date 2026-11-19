@@ -6,11 +6,32 @@ let
     null
     config.envy.software.nix.packages.effective;
   deltaSelected = deltaPackage != null;
+  lazygitSelected = builtins.elem "lazygit" (map lib.getName config.envy.software.nix.packages.effective);
   palette = import ./tokyo-night.nix;
 in
 {
-  envy.software.nix.packages.include = [ pkgs.delta ];
-  envy.software.nix.packages.references.delta = "nix:delta";
+  envy.software.nix.packages.include = [ pkgs.delta pkgs.lazygit ];
+  envy.software.nix.packages.references = {
+    delta = "nix:delta";
+    lazygit = "nix:lazygit";
+  };
+  programs.lazygit = {
+    enable = lazygitSelected;
+    package = null;
+    enableBashIntegration = false;
+    enableFishIntegration = false;
+    enableNushellIntegration = false;
+    enableZshIntegration = false;
+    settings.gui = {
+      nerdFontsVersion = "3";
+      theme = {
+        activeBorderColor = [ (builtins.elemAt palette.ansi 4) "bold" ];
+        inactiveBorderColor = [ (builtins.elemAt palette.ansi 8) ];
+        selectedLineBgColor = [ palette.fzf."bg+" ];
+        defaultFgColor = [ palette.foreground ];
+      };
+    };
+  };
   programs.delta.enable = false;
 
   xdg.configFile."delta/config" = lib.mkIf deltaSelected {

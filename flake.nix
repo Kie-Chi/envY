@@ -284,6 +284,11 @@
               tmuxSource = config.home.file.".tmux.conf".source;
               tmuxConfig = config.home.file.".tmux.conf.local".text;
             }) tmuxHomes;
+            yaziCases = lib.mapAttrs (_: config: {
+              binary = lib.getExe pkgs.yazi;
+              theme = let file = config.xdg.configFile."yazi/theme.toml";
+                in if file.text != null then file.text else builtins.readFile file.source;
+            }) (lib.filterAttrs (_: config: config.programs.yazi.enable) homes);
           });
           completionHome = lib.findFirst
             (home: lib.any (package: lib.getName package == "fzf") home.home.packages)
@@ -322,6 +327,7 @@
           ]);
         in pkgs.runCommand "envy-python-tests" {
           passthru.completionFixtures = completionFixtures;
+          passthru.terminalFixtures = terminalFixtures;
           nativeBuildInputs = [ python pkgs.git pkgs.tmux pkgs.neovim-unwrapped pkgs.perl pkgs.zsh pkgs.fzf pkgs.zoxide ];
         } ''
           export HOME="$TMPDIR/home"

@@ -61,8 +61,11 @@ let
   sunshineExcluded = mkConfiguration "policy-sunshine-excluded" "desktop" "gnome" [ "sunshine" ];
   vscodeExcluded = mkConfiguration "policy-vscode-excluded" "desktop" "gnome" [ "vscode" ];
   waydroidExcluded = mkConfiguration "policy-waydroid-excluded" "desktop" "gnome" [ "waydroid" ];
-  terminalToolsExcluded = mkConfiguration "policy-terminal-tools-excluded" "server" "none" [ "bat" "btop" "tmux" "fzf" "zoxide" "delta" "atuin" ];
-  alacrittyExcluded = mkConfiguration "policy-alacritty-excluded" "desktop" "niri" [ "alacritty" ];
+  terminalToolsExcluded = mkConfiguration "policy-terminal-tools-excluded" "server" "none"
+    [ "bat" "btop" "tmux" "fzf" "zoxide" "delta" "atuin"
+      "direnv" "nix-direnv" "yazi" "lazygit" "lnav" "lazydocker" "watchexec" "xh" ];
+  desktopTerminalsExcluded = mkConfiguration "policy-desktop-terminals-excluded" "desktop" "niri" [ "alacritty" "ghostty" ];
+  nixDirenvExcluded = mkConfiguration "policy-nix-direnv-excluded" "server" "none" [ "nix-direnv" ];
   directSelections = mkConfigurationWith
     "policy-direct-selections"
     "server"
@@ -108,7 +111,7 @@ let
     builtins.hasAttr name configuration.config.home.activation;
 
   serverForbiddenPackages = inputs.nixpkgs.lib.intersectLists
-    [ "sunshine" "waydroid" "google-chrome" "fcitx5-with-addons" "vscode" "cursor" "niri" "tilix" ]
+    [ "sunshine" "waydroid" "google-chrome" "fcitx5-with-addons" "vscode" "cursor" "niri" "tilix" "ghostty" ]
     (packageNames server);
   serverForbiddenActivations = inputs.nixpkgs.lib.intersectLists
     [ "installWayDroid" "rimeDeploy" "setupSunshineInput" "swayosdSystemSetup" "niriStartUp" ]
@@ -207,9 +210,23 @@ assert !(builtins.hasAttr "delta/config" terminalToolsExcluded.config.xdg.config
 assert !(builtins.hasAttr "pager" terminalToolsExcluded.config.programs.git.settings);
 assert !(inputs.nixpkgs.lib.hasInfix "/bin/fzf --zsh" terminalToolsExcluded.config.programs.zsh.initContent);
 assert !(inputs.nixpkgs.lib.hasInfix "/bin/zoxide init zsh" terminalToolsExcluded.config.programs.zsh.initContent);
-assert !hasPackage "alacritty" alacrittyExcluded;
-assert !alacrittyExcluded.config.programs.alacritty.enable;
-assert !(builtins.hasAttr "alacritty/alacritty.toml" alacrittyExcluded.config.xdg.configFile);
+assert inputs.nixpkgs.lib.all (name: hasPackage name server && !hasPackage name terminalToolsExcluded)
+  [ "direnv" "nix-direnv" "yazi" "lazygit" "lnav" "lazydocker" "watchexec" "xh" ];
+assert inputs.nixpkgs.lib.hasInfix "/bin/direnv hook zsh" server.config.programs.zsh.initContent;
+assert !(inputs.nixpkgs.lib.hasInfix "/bin/direnv hook zsh" terminalToolsExcluded.config.programs.zsh.initContent);
+assert !(builtins.hasAttr "direnv/lib/nix-direnv.sh" terminalToolsExcluded.config.xdg.configFile);
+assert inputs.nixpkgs.lib.hasInfix "/bin/direnv hook zsh" nixDirenvExcluded.config.programs.zsh.initContent;
+assert !(builtins.hasAttr "direnv/lib/nix-direnv.sh" nixDirenvExcluded.config.xdg.configFile);
+assert !(builtins.hasAttr "yazi/theme.toml" terminalToolsExcluded.config.xdg.configFile);
+assert !terminalToolsExcluded.config.programs.lazygit.enable;
+assert !hasPackage "alacritty" desktopTerminalsExcluded;
+assert !desktopTerminalsExcluded.config.programs.alacritty.enable;
+assert !(builtins.hasAttr "alacritty/alacritty.toml" desktopTerminalsExcluded.config.xdg.configFile);
+assert hasPackage "ghostty" niri && niri.config.programs.ghostty.enable;
+assert hasPackage "ghostty" gnome && gnome.config.programs.ghostty.enable;
+assert !hasPackage "ghostty" desktopTerminalsExcluded;
+assert !desktopTerminalsExcluded.config.programs.ghostty.enable;
+assert !(builtins.hasAttr "ghostty/config" desktopTerminalsExcluded.config.xdg.configFile);
 assert niri.config.programs.alacritty.settings.font.normal.family == "Maple Mono NF CN";
 assert directSelections.config.home.sessionVariables.FZF_DEFAULT_OPTS == "--height=60%";
 assert !(builtins.hasAttr "bat/config" terminalToolsExcluded.config.xdg.configFile);

@@ -131,6 +131,39 @@ class BatThemeRuntimeTests(unittest.TestCase):
             self.assertIn('print("中文 theme")', plain)
 
 
+class YaziThemeRuntimeTests(unittest.TestCase):
+    def test_generated_theme_loads_without_falling_back(self):
+        fixture = os.environ.get("ENVY_TERMINAL_THEME_FIXTURES")
+        if not fixture:
+            self.skipTest("Provide generated terminal fixtures for the Yazi theme check")
+        configurations = json.loads(Path(fixture).read_text())["yaziCases"]
+        self.assertTrue(configurations, "No selected Yazi configurations were tested")
+        for name, configuration in configurations.items():
+            with self.subTest(machine=name), tempfile.TemporaryDirectory(prefix="envy-yazi-theme-") as directory:
+                root = Path(directory)
+                home = root / "home"
+                config = root / "config/yazi"
+                home.mkdir()
+                config.mkdir(parents=True)
+                (config / "theme.toml").write_text(configuration["theme"])
+                env = {
+                    "HOME": str(home),
+                    "XDG_CONFIG_HOME": str(root / "config"),
+                    "XDG_CACHE_HOME": str(root / "cache"),
+                    "YAZI_CONFIG_HOME": str(config),
+                    "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                    "LANG": "en_US.UTF-8",
+                }
+                # Yazi loads the theme before handling --version. EOF prevents
+                # an invalid theme from waiting for input or accepting a fallback.
+                result = subprocess.run(
+                    [configuration["binary"], "--version"], cwd=root, env=env,
+                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertTrue(result.stdout.startswith("Yazi "), result.stdout)
+
+
 class TmuxThemeRuntimeTests(unittest.TestCase):
     def setUp(self):
         fixture = os.environ.get("ENVY_TERMINAL_THEME_FIXTURES")

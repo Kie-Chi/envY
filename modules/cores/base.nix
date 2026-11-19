@@ -39,6 +39,8 @@ in
     btop
     htop
     ncdu
+    lnav
+    lazydocker
 
     # tools
     unzip
@@ -67,6 +69,8 @@ in
     btop = "nix:btop";
     htop = "nix:htop";
     ncdu = "nix:ncdu";
+    lnav = "nix:lnav";
+    lazydocker = "nix:lazydocker";
     unzip = "nix:unzip";
     jq = "nix:jq";
     ripgrep = "nix:ripgrep";

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from envy import log
-from envy.process import run_process
+from envy.process import CommandError, run_process
 from envy.secure_io import atomic_write_text, secure_copy
 from envy.sops_format import content_is_sops_encrypted
 
@@ -286,7 +286,7 @@ def _get_sudo_passwd() -> str | None:
     return None
 
 
-def _sudo_ticket_available() -> bool:
+def _sudo_ticket_available(sudo_binary: str = "sudo") -> bool:
     """Return whether sudo can authenticate without prompting right now.
 
     The TUI runs streamed workflows with stdin closed.  A cached sudo
@@ -296,7 +296,7 @@ def _sudo_ticket_available() -> bool:
     """
     try:
         result = subprocess.run(
-            ["sudo", "-n", "-v"],
+            [sudo_binary, "-n", "-v"],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -334,16 +334,56 @@ def backup_sensitive_file(filepath: Path) -> Optional[Path]:
 def esudo(
     *args: str, capture: bool = False, cwd: Path | None = None,
     activity: str | None = None,
+    sudo_binary: str = "sudo", non_interactive: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """sudo with automatic password injection from sops.
     capture=False: stream output live (default, for long-running commands).
-    capture=True:  capture output for return-value inspection."""
+    capture=True:  capture output for return-value inspection.
+    non_interactive=True: use sops or a cached ticket once, capturing and
+    discarding authentication output and raising only fixed diagnostics.
+    """
     effective_cwd = str(cwd or ENVY_ROOT)
     passwd = _get_sudo_passwd()
     if passwd:
-        # Try password-based sudo first
+        suffix = (passwd[-1] if passwd[-1].isprintable() else "?") if len(passwd) > 1 else ""
+        log.diagnostic_console.print(
+            f"sudo: password is given (******{suffix}) source=sops",
+            markup=False, highlight=False,
+        )
+    if non_interactive:
+        if passwd:
+            command = [sudo_binary, "-S", *args]
+        elif _sudo_ticket_available(sudo_binary=sudo_binary):
+            command = [sudo_binary, "-n", *args]
+        else:
+            raise CommandError(subprocess.CompletedProcess(
+                [sudo_binary, "-n", *args], 1, "",
+                "sudo authentication unavailable: no non-interactive credentials",
+            ))
+        # Never stream authentication diagnostics or retry a business command.
+        try:
+            result = run_process(
+                command, stdin_data=passwd, capture=True, check=False,
+                cwd=effective_cwd, activity=activity,
+            )
+            returncode = result.returncode
+        except CommandError as exc:
+            returncode = exc.returncode
+        except OSError:
+            returncode = 1
+        if returncode != 0:
+            raise CommandError(subprocess.CompletedProcess(
+                command, returncode, "", "sudo authentication failed",
+            )) from None
+        cached = " (cached authorization)" if not passwd else ""
+        log.diagnostic_console.print(
+            f"sudo: authentication succeeded{cached}", markup=False, highlight=False,
+        )
+        return subprocess.CompletedProcess(command, 0, "", "")
+    if passwd:
+        # Try password-based sudo first.
         result = run_process(
-            ["sudo", "-S", *args],
+            [sudo_binary, "-S", *args],
             stdin_data=passwd,
             capture=capture,
             check=False,
@@ -351,6 +391,7 @@ def esudo(
             activity=activity,
         )
         if result.returncode == 0:
+            log.diagnostic_console.print("sudo: authentication succeeded", markup=False, highlight=False)
             if capture and result.stdout:
                 print(result.stdout)
             return result
@@ -359,11 +400,20 @@ def esudo(
     # has closed stdin for a streamed workflow. Reuse it explicitly before
     # deciding that this apply needs the outer interactive terminal.
     if not sys.stdin.isatty():
-        if _sudo_ticket_available():
-            return run_process(
-                ["sudo", "-n", *args], cwd=effective_cwd, capture=capture,
+        ticket_available = (
+            _sudo_ticket_available() if sudo_binary == "sudo"
+            else _sudo_ticket_available(sudo_binary=sudo_binary)
+        )
+        if ticket_available:
+            result = run_process(
+                [sudo_binary, "-n", *args], cwd=effective_cwd, capture=capture,
                 check=True, activity=activity,
             )
+            log.diagnostic_console.print(
+                "sudo: authentication succeeded (cached authorization)",
+                markup=False, highlight=False,
+            )
+            return result
         # Interactive sudo needs a TTY to prompt for the password. When stdin
         # is not a terminal, refuse instead of hanging on an invisible prompt.
         log.error(
@@ -372,10 +422,12 @@ def esudo(
             hint="run this in a terminal, or provision the sops sudo password",
         )
         raise SystemExit(1)
-    return run_process(
-        ["sudo", *args], cwd=effective_cwd, capture=capture, check=True,
+    result = run_process(
+        [sudo_binary, *args], cwd=effective_cwd, capture=capture, check=True,
         activity=activity,
     )
+    log.diagnostic_console.print("sudo: authentication succeeded", markup=False, highlight=False)
+    return result
 
 # ==========================================
 # APPLY ROUTING

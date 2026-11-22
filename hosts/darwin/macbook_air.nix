@@ -62,6 +62,7 @@
 
   envy.darwin.software.homebrew.casks.include = [
     "steam"
+    "t3-code"
   ];
 
   envy.darwin.software.homebrew.casks.exclude = [
@@ -70,12 +71,21 @@
 
   envy.darwin.software.homebrew.formulae.include = [
     "hexo"
+    "shiquda/cmux-pocket/cmux-pocket"
+  ];
+
+  envy.darwin.software.homebrew.repositories.include = [
+    "shiquda/cmux-pocket"
   ];
 
   envy.software.pypi.tools.exclude = [
     "headroom"
   ];
   # END ENVY MANAGED SOFTWARE
+
+  # BEGIN ENVY MANAGED SOURCES
+  envy.software.sources = builtins.fromJSON "{\"homebrew:shiquda/cmux-pocket\":{\"ecosystem\":\"homebrew\",\"label\":\"cmux Pocket\",\"owner\":\"machine\",\"parameters\":{\"tap\":\"shiquda/cmux-pocket\",\"trustedFormulae\":[\"cmux-pocket\"]},\"platforms\":[\"darwin\"],\"scope\":\"system\",\"type\":\"tap\"}}";
+  # END ENVY MANAGED SOURCES
 
   # BEGIN ENVY MANAGED AGENTS
   # envY owns agent selections, endpoint metadata, and credential references here.
@@ -142,7 +152,7 @@
   envy.agents.codex.model = "gpt-6.1-sol";
   envy.agents.pi.adapter = "pi";
   envy.agents.pi.models = [
-    { profile = "xikai-magpie"; model = "gpt-6.1-sol"; }
+    { profile = "xikai-magpie"; model = "gpt-6.2-sol"; }
     { profile = "xikai-magpie"; model = "gpt-6-astra"; }
     { profile = "nisl"; model = "deepseek-v4.1-flash"; }
     { profile = "deepseek"; model = "deepseek-flash"; }

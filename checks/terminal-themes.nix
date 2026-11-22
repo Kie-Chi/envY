@@ -18,8 +18,13 @@ let
       fzfSelected = hasPackage "fzf" config;
       zoxideSelected = hasPackage "zoxide" config;
       atuinSelected = hasPackage "atuin" config;
+      direnvSelected = hasPackage "direnv" config;
+      nixDirenvSelected = direnvSelected && hasPackage "nix-direnv" config;
     in
-      !config.programs.fzf.enable
+      !config.programs.direnv.enable
+      && lib.hasInfix "/bin/direnv hook zsh" init == direnvSelected
+      && hasConfig "direnv/lib/nix-direnv.sh" config == nixDirenvSelected
+      && !config.programs.fzf.enable
       && !config.programs.zoxide.enable
       && config.envy.software.nix.packages.references.fzf == "nix:fzf"
       && config.envy.software.nix.packages.references.zoxide == "nix:zoxide"
@@ -55,6 +60,18 @@ let
       themeCacheNeeded = batSelected || deltaSelected;
     in
       checkShell config
+      && config.programs.yazi.enable == hasPackage "yazi" config
+      && config.programs.yazi.package == null
+      && hasConfig "yazi/theme.toml" config == hasPackage "yazi" config
+      && lib.hasInfix "function yy()" config.programs.zsh.initContent == hasPackage "yazi" config
+      && config.programs.lazygit.enable == hasPackage "lazygit" config
+      && config.programs.lazygit.package == null
+      && config.programs.ghostty.package == null
+      && !config.programs.ghostty.systemd.enable
+      && hasConfig "ghostty/config" config == config.programs.ghostty.enable
+      && (!config.programs.ghostty.enable || (
+        lib.toList config.programs.ghostty.settings.font-family == [ "Maple Mono NF CN" ]
+        && builtins.length config.programs.ghostty.settings.palette == 16))
       && !config.programs.bat.enable
       && builtins.readFile config.home.file.".p10k.zsh".source == builtins.readFile ../files/zsh/p10k.zsh
       && !config.programs.delta.enable
@@ -85,7 +102,8 @@ let
       excluded = homeUser (configuration.extendModules {
         modules = [{
           home-manager.users.${username}.envy.software.nix.packages.exclude =
-            lib.mkAfter [ "bat" "btop" "tmux" "fzf" "zoxide" "delta" "atuin" ];
+            lib.mkAfter [ "bat" "btop" "tmux" "fzf" "zoxide" "delta" "atuin"
+              "direnv" "nix-direnv" "yazi" "lazygit" "lnav" "lazydocker" "watchexec" "xh" ];
         }];
       }).config;
       withoutBat = homeUser (configuration.extendModules {
@@ -94,11 +112,57 @@ let
       local = homeUser (configuration.extendModules {
         modules = [{ home-manager.users.${username}.envy.vscode.mode = lib.mkForce "local"; }];
       }).config;
+      withoutGhostty = homeUser (configuration.extendModules {
+        modules = [{ envy.darwin.software.homebrew.casks.exclude = lib.mkAfter [ "ghostty" ]; }];
+      }).config;
+      cmuxOnly = homeUser (configuration.extendModules {
+        modules = [{
+          envy.darwin.software.homebrew.casks.include = lib.mkAfter [ "cmux" ];
+          envy.darwin.software.homebrew.casks.exclude = lib.mkForce [ "ghostty" ];
+        }];
+      }).config;
+      ghosttyOnly = homeUser (configuration.extendModules {
+        modules = [{
+          envy.darwin.software.homebrew.casks.include = lib.mkAfter [ "ghostty" ];
+          envy.darwin.software.homebrew.casks.exclude = lib.mkForce [ "cmux" ];
+        }];
+      }).config;
+      withoutGhosttyConsumers = homeUser (configuration.extendModules {
+        modules = [{ envy.darwin.software.homebrew.casks.exclude = lib.mkAfter [ "ghostty" "cmux" ]; }];
+      }).config;
+      withoutCmux = homeUser (configuration.extendModules {
+        modules = [{ envy.darwin.software.homebrew.casks.exclude = lib.mkAfter [ "cmux" ]; }];
+      }).config;
+      cmuxSelected = builtins.elem "cmux" configuration.config.envy.darwin.software.homebrew.casks.effective;
+      cmuxHooksSelected = cmuxSelected && !(builtins.elem "envy-cmux-hooks" home.envy.software.nix.packages.exclude);
+      withoutCmuxHooks = homeUser (configuration.extendModules {
+        modules = [{ home-manager.users.${username}.envy.software.nix.packages.exclude = lib.mkAfter [ "envy-cmux-hooks" ]; }];
+      }).config;
       localProfile = local.programs.vscode.profiles.default or { };
     in
       checkHome home
       && checkHome excluded
       && checkHome withoutBat
+      && checkHome withoutGhostty
+      && withoutGhostty.programs.ghostty.enable == cmuxSelected
+      && checkHome cmuxOnly
+      && cmuxOnly.programs.ghostty.enable
+      && checkHome ghosttyOnly
+      && ghosttyOnly.programs.ghostty.enable
+      && checkHome withoutGhosttyConsumers
+      && !withoutGhosttyConsumers.programs.ghostty.enable
+      && hasPackage "envy-cmux-hooks" home == cmuxHooksSelected
+      && builtins.hasAttr "cmuxAgentHooks" home.home.activation == cmuxHooksSelected
+      && builtins.hasAttr ".pi/agent/extensions/envy-cmux.ts" home.home.file
+        == (cmuxHooksSelected && hasPackage "pi" home)
+      && !hasPackage "envy-cmux-hooks" withoutCmuxHooks
+      && !(builtins.hasAttr "cmuxAgentHooks" withoutCmuxHooks.home.activation)
+      && !(builtins.hasAttr ".pi/agent/extensions/envy-cmux.ts" withoutCmuxHooks.home.file)
+      && !hasPackage "envy-cmux-hooks" withoutCmux
+      && !(builtins.hasAttr "cmuxAgentHooks" withoutCmux.home.activation)
+      && !(builtins.hasAttr ".pi/agent/extensions/envy-cmux.ts" withoutCmux.home.file)
+      && lib.all (name: !hasPackage name excluded)
+        [ "direnv" "nix-direnv" "yazi" "lazygit" "lnav" "lazydocker" "watchexec" "xh" ]
       && !hasPackage "bat" withoutBat
       && !hasPackage "bat" excluded
       && !hasPackage "btop" excluded

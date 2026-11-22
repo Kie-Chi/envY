@@ -337,6 +337,17 @@ class PruneFilesTests(unittest.TestCase):
         self.assertTrue(result["errors"])
         self.assertFalse(self.file.exists())
 
+    def test_native_error_uses_short_reason_instead_of_policy_note(self):
+        self.policy = replace(self.policy, maintenance=("npm",))
+        native = {"execute": True, "items": [{"action": "npm", "status": "failed",
+                  "reason": "fixture failure", "note": "Long policy description"}], "errors": ["npm"]}
+        with patch.object(maintenance, "preview", return_value={"items": []}), \
+                patch.object(maintenance, "maintain", return_value=native):
+            prepared = self.prepare()
+            self.assertEqual(prepared["warnings"], [])
+            result = self.execute(prepared)
+        self.assertEqual(result["errors"], [{"action": "npm", "reason": "fixture failure"}])
+
     def test_native_cleanup_only_executes_with_bound_preview(self):
         self.policy = replace(self.policy, maintenance=("npm",))
         bound = {"execute": False, "items": [{"action": "npm", "available": True,
@@ -347,9 +358,10 @@ class PruneFilesTests(unittest.TestCase):
             native.assert_not_called()
             self.assertTrue(self.file.exists())
             preview.assert_called_once_with(self.policy, ["npm"], bind_targets=True)
-            self.execute(prepared)
+            result = self.execute(prepared)
             native.assert_called_once_with(self.policy, ["npm"], approved_preview=bound,
-                                           report_reclaimed=True, on_progress=ANY)
+                                           report_reclaimed=True, on_progress=ANY,
+                                           output_dir=self.state / "prune-output" / result["id"], on_output=None)
 
 
     def test_native_interruption_keeps_bound_target_and_step_progress(self):
@@ -384,7 +396,7 @@ class PruneCliTests(unittest.TestCase):
         self.state = Path(temporary.name).resolve() / "state"
         self.runner = CliRunner()
         self.prepared = {"execute": False, "candidates": [], "maintenance": {"items": []},
-                         "skipped": [], "warnings": ["Deletion is immediate"],
+                         "skipped": [], "warnings": [],
                          "summary": {"eligibleItems": 0, "estimatedBytes": 0, "nativeActions": []}}
         self.completed = {"execute": True, "errors": [], "state": "completed", "items": [],
                           "deletedBytesEstimate": 0, "maintenance": {"items": []},
@@ -417,7 +429,7 @@ class PruneCliTests(unittest.TestCase):
                 self.assertEqual(envelope["data"], self.completed)
                 confirm.assert_not_called()
         self.assertEqual(self.execute.call_count, 3)
-        self.execute.assert_called_with(self.policy, self.state, self.prepared)
+        self.execute.assert_called_with(self.policy, self.state, self.prepared, on_output=ANY)
 
     def test_json_without_execution_consent_is_rejected_before_scan(self):
         result = self.invoke("--json")
@@ -456,7 +468,8 @@ class PruneCliTests(unittest.TestCase):
 
         def confirm(*args, **kwargs):
             self.assertIn("Eligible files/directories", stream.getvalue())
-            self.assertIn("Deletion is immediate", stream.getvalue())
+            self.assertIn("native maintenance", args[0])
+            self.assertIn("delete", args[0].lower())
             self.execute.assert_not_called()
             return True
 
@@ -467,7 +480,7 @@ class PruneCliTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, str(result.exception))
         prompt.assert_called_once()
         self.prepare.assert_called_once()
-        self.execute.assert_called_once_with(self.policy, self.state, self.prepared)
+        self.execute.assert_called_once_with(self.policy, self.state, self.prepared, on_output=ANY)
 
     def test_cancelled_confirmation_never_executes(self):
         with patch.object(cli, "_prune_interactive", return_value=True), \
@@ -476,6 +489,149 @@ class PruneCliTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         prompt.assert_called_once()
         self.execute.assert_not_called()
+
+    def render(self, data):
+        stream = io.StringIO()
+        with patch.object(log, "console", Console(file=stream, width=180, color_system=None)):
+            cli._show_prune(data)
+        return stream.getvalue()
+
+    def test_native_preview_has_concise_targets_and_separate_counts(self):
+        self.prepared["maintenance"]["items"] = [{
+            "action": "pip", "available": True, "status": "pending",
+            "target": {"path": "/fixture/pip", "metadata": {"private": "hidden"}},
+            "note": "Read-only preview; no cleanup command was run."}]
+        stream = io.StringIO()
+        with patch.object(log, "console", Console(file=stream, width=180, color_system=None)):
+            result = self.invoke("--dry-run")
+        self.assertEqual(result.exit_code, 0, result.output)
+        output = stream.getvalue()
+        self.assertIn("Eligible files/directories: 0", output)
+        self.assertIn("Native maintenance actions: 1", output)
+        self.assertIn("/fixture/pip", output)
+        self.assertIn("all", output.lower())
+        for noise in ("hidden", "Read-only", "unknown", "Storage plan"):
+            self.assertNotIn(noise, output)
+
+    def test_native_result_status_reason_once_and_only_known_bytes(self):
+        self.completed.update(maintenance={"items": [
+            {"action": "uv", "available": True, "status": "completed",
+             "reportedReclaimedBytes": 2**20},
+            {"action": "npm", "available": True, "status": "failed",
+             "reason": "fixture command failed", "note": "Verbose policy description"},
+            {"action": "pip", "available": False, "status": "unavailable",
+             "reason": "fixture tool missing"}], "errors": ["npm", "pip"]},
+            errors=[{"action": "npm", "reason": "fixture command failed"},
+                    {"action": "pip", "reason": "fixture tool missing"}],
+            availableBytesChange=-65536)
+        output = self.render(self.completed)
+        for status in ("uv: completed", "npm: failed", "pip: unavailable", "1.00 MiB"):
+            self.assertIn(status, output)
+        self.assertEqual(output.count("fixture command failed"), 1)
+        self.assertEqual(output.count("fixture tool missing"), 1)
+        for noise in ("not reported", "Verbose", "free-space", "-0.06", "Deleted size"):
+            self.assertNotIn(noise, output)
+
+    def test_incomplete_native_result_preserves_completed_unknown_and_unexecuted_states(self):
+        self.completed.update(maintenanceState="unknown", maintenance={"items": [
+            {"action": "go", "status": "completed"},
+            {"action": "docker", "status": "running"},
+            {"action": "uv", "status": "pending"}]})
+        output = self.render(self.completed)
+        for state in ("go: completed", "docker: unknown", "uv: skipped"):
+            self.assertIn(state, output)
+        self.assertNotIn("failed", output)
+
+    def test_noop_result_hides_journal_disk_usage(self):
+        self.completed["availableBytesChange"] = -65536
+        output = self.render(self.completed)
+        self.assertIn("no files changed", output)
+        self.assertNotIn("MiB", output)
+
+    def test_native_json_stdout_contains_only_envelope(self):
+        self.completed["maintenance"] = {"items": [{
+            "action": "nix", "status": "completed", "reportedReclaimedBytes": 2**20}]}
+        result = self.invoke("--yes", "--json")
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(json.loads(result.stdout)["data"], self.completed)
+        self.assertNotIn("MiB", result.stdout)
+
+    def test_native_streams_are_live_plain_text_on_stderr(self):
+        for json_output in (False, True):
+            with self.subTest(json_output=json_output):
+                stream = io.StringIO()
+                console = Console(file=stream, width=180, color_system=None)
+
+                def execute(policy, state, prepared, *, on_output):
+                    self.assertEqual((policy, state, prepared),
+                                     (self.policy, self.state, self.prepared))
+                    on_output("nix", "stdout", "[bold]native stdout[/bold]\n")
+                    self.assertEqual(stream.getvalue(), "nix:\n[bold]native stdout[/bold]\n")
+                    on_output("nix", "stderr", "native stderr 123\n")
+                    self.assertIn("native stderr 123\n", stream.getvalue())
+                    on_output("pip", "stdout", "next action\n")
+                    return self.completed
+
+                self.execute.side_effect = execute
+                with patch.object(log, "diagnostic_console", console):
+                    result = self.invoke("--yes", *(["--json"] if json_output else []))
+                self.assertEqual(result.exit_code, 0, str(result.exception))
+                output = stream.getvalue()
+                self.assertEqual(output.count("nix:\n"), 1)
+                self.assertLess(output.index("pip:\n"), output.index("next action"))
+                self.assertNotIn("native stdout", result.stdout)
+                self.assertNotIn("native stderr", result.stdout)
+                if json_output:
+                    self.assertEqual(json.loads(result.stdout)["data"], self.completed)
+
+    def test_native_callback_uses_stderr_and_keeps_json_stdout_pure_on_failure(self):
+        self.completed.update(state="partial", errors=[{"action": "npm", "reason": "native failed"}])
+
+        def execute(policy, state, prepared, *, on_output):
+            on_output("npm", "stdout", "native stdout\n")
+            on_output("npm", "stderr", "native failed\n")
+            return self.completed
+
+        self.execute.side_effect = execute
+        result = self.invoke("--yes", "--json")
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertFalse(json.loads(result.stdout)["ok"])
+        self.assertEqual(result.stderr, "npm:\nnative stdout\nnative failed\n")
+
+    def test_native_summary_reports_counts_sizes_and_unique_log_paths(self):
+        logs = {"stdoutPath": "/fixture/stdout.log", "stderrPath": "/fixture/stderr.log",
+                "truncatedStreams": ["stderr"]}
+        self.completed["maintenance"]["items"] = [
+            {"action": "nix", "status": "completed", "reportedRemovedItems": 3,
+             "reportedReclaimedBytes": 2**21, "reportedSummary": "tool summary [bold]literal[/bold]",
+             "output": [{"logs": logs}, {"logs": logs}]},
+            {"action": "pip", "status": "completed", "reportedRemovedItems": 0, "reportedReclaimedBytes": 123},
+            {"action": "go", "status": "completed"}]
+        output = self.render(self.completed)
+        self.assertIn("nix: completed; 3 removed; 2.00 MiB reported", output)
+        self.assertIn("tool summary [bold]literal[/bold]", output)
+        self.assertIn("pip: completed; 0 removed; 123 bytes reported", output)
+        self.assertIn("go: completed\n", output)
+        self.assertEqual(output.count("Logs: /fixture"), 1)
+        self.assertIn("Truncated logs: stderr.log", output)
+
+    def test_native_targets_select_human_fields_and_all_cache_effects(self):
+        for key in ("path", "resolvedPath", "storeDir", "endpoint", "cache"):
+            with self.subTest(key=key):
+                self.assertEqual(cli._native_target({"target": {key: "/fixture/target",
+                                                                "metadata": {"private": "hidden"}}}),
+                                 "/fixture/target")
+        for action in ("go", "go-modcache", "pip"):
+            self.assertIn("all", cli._native_effect(action))
+            self.assertIn("no age cutoff", cli._native_effect(action))
+
+    def test_file_errors_and_retained_paths_remain_visible(self):
+        self.completed.update(errors=[{"path": "/fixture/source", "reason": "file failed",
+                                       "heldPath": "/fixture/held"}],
+                              retained=[{"heldPath": "/fixture/retained"}])
+        output = self.render(self.completed)
+        for text in ("/fixture/source", "/fixture/held", "/fixture/retained", "file failed"):
+            self.assertIn(text, output)
 
     def test_execution_errors_have_nonzero_exit_and_json_error_envelope(self):
         self.execute.return_value = {**self.completed, "state": "partial",

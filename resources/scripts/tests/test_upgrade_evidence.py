@@ -129,9 +129,11 @@ class SourceFreezeTests(FixtureCase):
     def test_build_and_manifest_use_only_the_same_frozen_source(self):
         calls = []
         working_directories = []
-        def command(arguments, root):
+        streaming = []
+        def command(arguments, root, *, stream_stderr=False):
             calls.append(arguments)
             working_directories.append(root)
+            streaming.append(stream_stderr)
             if arguments[1] == "build":
                 return [{"drvPath": "/nix/store/fixture.drv", "outputs": {"out": {"path": "/nix/store/fixture-output"}}}]
             if arguments[1] == "derivation":
@@ -144,6 +146,7 @@ class SourceFreezeTests(FixtureCase):
         self.assertEqual(output, Path("/nix/store/fixture-output"))
         self.assertEqual(evaluated, manifest())
         self.assertTrue(evidence["verified"])
+        self.assertEqual(streaming, [True, False, True])
         self.assertIn("path:/nix/store/fixture-source#homeConfigurations.fixture.activationPackage", calls[0])
         self.assertIn("path:/nix/store/fixture-source#homeConfigurations.fixture.config.envy.machine.manifest", calls[2])
         self.assertFalse(any("path:.#" in arg for args in calls for arg in args))

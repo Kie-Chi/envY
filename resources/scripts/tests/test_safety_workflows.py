@@ -1,12 +1,16 @@
+import io
+import json
 import os
 import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
 import typer
+from rich.console import Console
 from typer.testing import CliRunner
 
 from envy import git_safety, main, sops_format, utils
@@ -537,6 +541,200 @@ sops:
         with patch.object(main.system_workflow.sys.stdin, "isatty", return_value=False):
             with self.assertRaises(typer.Exit):
                 main.cmd_clean(yes=False, older_than=None, brew=False)
+
+
+class EsudoAuthenticationTests(unittest.TestCase):
+    binary = "/bound/bin/sudo"
+    secret = "fictional-sudo-sentinel-Z"
+
+    def setUp(self):
+        self.stdout = io.StringIO()
+        self.stderr = io.StringIO()
+        self.enterContext(redirect_stdout(self.stdout))
+        self.enterContext(patch.dict(os.environ, {"ENVY_DEBUG": "0"}))
+        self.enterContext(patch.object(utils.log, "diagnostic_console", Console(
+            file=self.stderr, color_system=None, width=200,
+        )))
+        self.password = self.enterContext(patch.object(
+            utils, "_get_sudo_passwd", return_value=self.secret,
+        ))
+        self.run = self.enterContext(patch.object(
+            utils, "run_process", return_value=subprocess.CompletedProcess([], 0, "", ""),
+        ))
+        self.probe = self.enterContext(patch.object(
+            utils.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", ""),
+        ))
+        self.tty = self.enterContext(patch.object(utils.sys.stdin, "isatty", return_value=True))
+
+    def authenticate(self, **kwargs):
+        return utils.esudo(
+            "-v", capture=True, cwd=Path("/bound/cwd"),
+            sudo_binary=self.binary, non_interactive=True, **kwargs,
+        )
+
+    def assert_no_secret(self, *values):
+        for value in (self.stdout.getvalue(), self.stderr.getvalue(), *values):
+            self.assertNotIn(self.secret, str(value))
+
+    def test_non_interactive_sops_uses_bound_binary_and_stdin(self):
+        def authenticate(command, **kwargs):
+            self.assertIn("password is given (******Z) source=sops", self.stderr.getvalue())
+            self.assertNotIn("authentication succeeded", self.stderr.getvalue())
+            return subprocess.CompletedProcess(command, 0, self.secret, self.secret)
+
+        self.run.side_effect = authenticate
+        result = self.authenticate()
+        self.assertEqual(self.run.call_count, 1)
+        command = self.run.call_args.args[0]
+        self.assertEqual(command, [self.binary, "-S", "-v"])
+        self.assertEqual(self.run.call_args.kwargs["stdin_data"], self.secret)
+        self.assertEqual(self.run.call_args.kwargs["cwd"], "/bound/cwd")
+        self.assertTrue(self.run.call_args.kwargs["capture"])
+        self.assertFalse(self.run.call_args.kwargs["check"])
+        self.assertIn("authentication succeeded", self.stderr.getvalue())
+        self.assertEqual(self.stdout.getvalue(), "")
+        self.assert_no_secret(command, result.stdout, result.stderr)
+        self.probe.assert_not_called()
+        self.tty.assert_not_called()
+
+    def test_non_interactive_cached_authorization_uses_bound_binary(self):
+        self.password.return_value = None
+        self.probe.return_value = subprocess.CompletedProcess([], 0, "", "")
+        self.authenticate()
+        self.assertEqual(self.probe.call_args.args[0], [self.binary, "-n", "-v"])
+        self.assertEqual(self.probe.call_args.kwargs["stdin"], subprocess.DEVNULL)
+        self.assertEqual(self.run.call_args.args[0], [self.binary, "-n", "-v"])
+        self.assertIn("authentication succeeded", self.stderr.getvalue())
+        self.assertIn("cached authorization", self.stderr.getvalue())
+        self.assertNotIn("password is given", self.stderr.getvalue())
+        self.assertEqual(self.stdout.getvalue(), "")
+        self.tty.assert_not_called()
+
+    def test_non_interactive_missing_credentials_fails_without_prompt(self):
+        self.password.return_value = None
+        with self.assertRaises(CommandError) as raised:
+            self.authenticate()
+        self.assertEqual(raised.exception.stderr, "sudo authentication unavailable: no non-interactive credentials")
+        self.assertEqual(raised.exception.output, "")
+        self.run.assert_not_called()
+        self.tty.assert_not_called()
+        self.assertEqual(self.stdout.getvalue(), "")
+        self.assertNotIn("password is given", self.stderr.getvalue())
+
+    def test_non_interactive_failure_is_fixed_and_never_replayed(self):
+        for use_sops in (True, False):
+            with self.subTest(use_sops=use_sops):
+                self.password.return_value = self.secret if use_sops else None
+                self.probe.return_value = subprocess.CompletedProcess([], 0, "", "")
+                self.run.reset_mock()
+                self.run.return_value = subprocess.CompletedProcess([], 7, self.secret, self.secret)
+                self.stderr.seek(0)
+                self.stderr.truncate()
+                with self.assertRaises(CommandError) as raised:
+                    self.authenticate()
+                self.assertEqual(self.run.call_count, 1)
+                self.assertEqual(raised.exception.returncode, 7)
+                self.assertEqual(raised.exception.stderr, "sudo authentication failed")
+                self.assertEqual(raised.exception.output, "")
+                self.assertNotIn("authentication succeeded", self.stderr.getvalue())
+                self.assert_no_secret(raised.exception, vars(raised.exception))
+                self.tty.assert_not_called()
+
+    def test_non_interactive_command_error_is_sanitized(self):
+        self.run.side_effect = CommandError(subprocess.CompletedProcess(
+            [self.binary, "-S", "-v"], 9, self.secret, self.secret,
+        ))
+        with self.assertRaises(CommandError) as raised:
+            self.authenticate()
+        self.assertEqual(raised.exception.stderr, "sudo authentication failed")
+        self.assert_no_secret(raised.exception, vars(raised.exception))
+        self.assertIsNone(raised.exception.__cause__)
+        self.assertIsNone(raised.exception.__context__)
+        self.assertTrue(raised.exception.__suppress_context__)
+        self.assertEqual(self.run.call_count, 1)
+
+    def test_bound_ticket_probe_does_not_fall_back_to_path(self):
+        self.probe.side_effect = FileNotFoundError("missing bound sudo")
+        self.assertFalse(utils._sudo_ticket_available(sudo_binary=self.binary))
+        self.assertEqual(self.probe.call_count, 1)
+        self.assertEqual(self.probe.call_args.args[0], [self.binary, "-n", "-v"])
+
+    def test_default_sops_status_is_visible_without_debug_and_keeps_stdout(self):
+        self.run.return_value = subprocess.CompletedProcess([], 0, "legacy output", "")
+        result = utils.esudo("true", capture=True)
+        self.assertEqual(result.stdout, "legacy output")
+        self.assertEqual(self.stdout.getvalue(), "legacy output\n")
+        self.assertIn("password is given (******Z) source=sops", self.stderr.getvalue())
+        self.assertIn("authentication succeeded", self.stderr.getvalue())
+        self.assert_no_secret(self.run.call_args.args)
+
+    def test_sops_mask_handles_short_nonprintable_and_markup_suffixes(self):
+        for password, mask in (("x", "******"), ("sentinel\x1b", "******?"), ("sentinel[", "******[")):
+            with self.subTest(mask=mask):
+                self.password.return_value = password
+                self.stderr.seek(0)
+                self.stderr.truncate()
+                self.authenticate()
+                self.assertIn(f"password is given ({mask}) source=sops", self.stderr.getvalue())
+                self.assertNotIn(password, self.stderr.getvalue())
+
+    def test_non_interactive_status_preserves_json_stdout_even_without_capture(self):
+        self.run.return_value = subprocess.CompletedProcess([], 0, self.secret, self.secret)
+        result = utils.esudo(
+            "-v", capture=False, sudo_binary=self.binary, non_interactive=True,
+        )
+        print(json.dumps({"ok": result.returncode == 0}))
+        self.assertEqual(json.loads(self.stdout.getvalue()), {"ok": True})
+        self.assertTrue(self.run.call_args.kwargs["capture"])
+        self.assert_no_secret(result.stdout, result.stderr)
+
+    def test_default_cached_status_preserves_old_probe_signature(self):
+        self.password.return_value = None
+        self.tty.return_value = False
+        with patch.object(utils, "_sudo_ticket_available", return_value=True) as ticket:
+            utils.esudo("true", capture=True)
+        ticket.assert_called_once_with()
+        self.assertIn("authentication succeeded (cached authorization)", self.stderr.getvalue())
+        self.assertEqual(self.stdout.getvalue(), "")
+
+    def test_default_fallback_keeps_explicit_binary_for_probe_and_command(self):
+        self.run.side_effect = [
+            subprocess.CompletedProcess([], 1, "", "bad password"),
+            subprocess.CompletedProcess([], 0, "", ""),
+        ]
+        self.tty.return_value = False
+        self.probe.return_value = subprocess.CompletedProcess([], 0, "", "")
+        utils.esudo("true", capture=True, sudo_binary=self.binary)
+        self.assertEqual(self.probe.call_args.args[0], [self.binary, "-n", "-v"])
+        self.assertEqual(
+            [call.args[0] for call in self.run.call_args_list],
+            [[self.binary, "-S", "true"], [self.binary, "-n", "true"]],
+        )
+
+    def test_default_without_credentials_and_tty_keeps_exit_behavior(self):
+        self.password.return_value = None
+        self.tty.return_value = False
+        with patch.object(utils.log, "error"), self.assertRaises(SystemExit) as raised:
+            utils.esudo("true")
+        self.assertEqual(raised.exception.code, 1)
+        self.run.assert_not_called()
+
+    def test_non_interactive_os_error_has_fixed_diagnostic(self):
+        self.run.side_effect = PermissionError(self.secret)
+        with self.assertRaises(CommandError) as raised:
+            self.authenticate()
+        self.assertEqual(raised.exception.stderr, "sudo authentication failed")
+        self.assertIsNone(raised.exception.__context__)
+        self.assert_no_secret(raised.exception, vars(raised.exception))
+        self.assertEqual(self.run.call_count, 1)
+
+    def test_interactive_password_is_not_intercepted(self):
+        self.password.return_value = None
+        utils.esudo("true", sudo_binary=self.binary)
+        self.assertEqual(self.run.call_args.args[0], [self.binary, "true"])
+        self.assertNotIn("stdin_data", self.run.call_args.kwargs)
+        self.assertNotIn("password is given", self.stderr.getvalue())
+        self.assertIn("authentication succeeded", self.stderr.getvalue())
 
 
 if __name__ == "__main__":

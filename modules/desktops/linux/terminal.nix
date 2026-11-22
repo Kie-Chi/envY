@@ -10,6 +10,10 @@ let
 in
 {
   config = lib.mkMerge [
+    (lib.mkIf (config.envy.linux.option == "desktop") {
+      envy.software.nix.packages.include = [ pkgs.ghostty ];
+      envy.software.nix.packages.references.ghostty = "nix:ghostty";
+    })
     (lib.mkIf enabled {
       envy.software.nix.packages.include = with pkgs; [ tilix ];
       envy.software.nix.packages.references.tilix = "nix:tilix";

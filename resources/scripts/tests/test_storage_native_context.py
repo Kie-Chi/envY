@@ -135,7 +135,7 @@ class NativeContextTests(unittest.TestCase):
                 self.values["GOCACHE"] = str(self.cache)
                 result = self.execute([action], preview)
                 self.assertEqual(result["errors"], [action])
-                self.assertIn("fresh preview", result["items"][0]["note"])
+                self.assertIn("fresh preview", result["items"][0]["reason"])
                 self.run.assert_not_called()
                 self.cache = before
                 self.values["GOCACHE"] = str(before)
@@ -185,7 +185,7 @@ class NativeContextTests(unittest.TestCase):
                 self.values["GOCACHE"] = str(path)
                 item = self.preview(["go"])["items"][0]
                 self.assertFalse(item["available"])
-                self.assertIn("broad", item["note"])
+                self.assertIn("broad", item["reason"])
         self.run.assert_not_called()
 
     def test_query_errors_and_invalid_metadata_never_leak_stderr_or_env(self):
@@ -275,14 +275,14 @@ class NativeContextTests(unittest.TestCase):
         preview = self.preview(["docker", "go"])
         self.docker_verify.side_effect = [None, StorageError("Docker target changed")]
         result = self.execute(["docker", "go"], preview)
-        self.assertEqual(result["errors"], ["docker", "go"])
+        self.assertEqual(result["errors"], ["docker"])
         self.assertEqual(self.docker_verify.call_count, 2)
-        self.assertEqual(self.run.call_count, 1)
+        self.assertEqual(self.run.call_count, 2)
         self.assertEqual(result["items"][0]["output"][0]["returncode"], 0)
-        self.assertIn("skipped", result["items"][1]["note"])
-        self.assertEqual(self.run.call_args.args[0], [str(self.bin / "docker"), "--host",
-            "unix:///fake/docker.sock", "buildx", "prune", "--builder", "default", "-f",
-            "--filter", "until=336h"])
+        self.assertIn("target changed", result["items"][0]["reason"])
+        self.assertEqual(result["items"][1]["status"], "completed")
+        self.assertEqual(self.run.call_args_list[0].args[0][:3],
+                         [str(self.bin / "docker"), "--context", "default"])
 
     def test_module_cache_reuses_pinned_provider_and_requires_separate_opt_in(self):
         preview = self.preview(["go-modcache"])
@@ -385,12 +385,16 @@ class NativeContextTests(unittest.TestCase):
             return path_guard(value, *args, **kwargs)
         with patch.object(native_context, "_path", side_effect=fake_store_path), \
                 patch.object(native_context, "_root_identity", side_effect=lambda path: {"path": path}), \
-                patch.object(maintenance, "PLATFORM", "darwin"):
+                patch.object(maintenance, "PLATFORM", "darwin"), \
+                patch.object(maintenance, "esudo") as authenticate:
             preview = self.preview(["nix"])
             self.assertTrue(preview["items"][0]["available"], preview)
             self.run.assert_not_called()
+            authenticate.assert_not_called()
             self.assertFalse(any(Path(argv[0]).name == "sudo" for argv, _ in self.calls))
             self.assertEqual(self.execute(["nix"], preview)["errors"], [])
+        authenticate.assert_called_once_with("-v", capture=True, cwd=self.home / "project",
+                                             sudo_binary=str(self.bin / "sudo"), non_interactive=True)
         argv = self.run.call_args.args[0]
         self.assertEqual(argv[:4], [str(self.bin / "sudo"), "-n", "-H", str(self.bin / "nix-store")])
         self.assertIn("--gc", argv)
@@ -409,7 +413,7 @@ class NativeContextTests(unittest.TestCase):
         with patch.dict(os.environ, NIX_STATE_DIR=str(self.root / "other-state")):
             item = self.preview(["nix"])["items"][0]
         self.assertFalse(item["available"])
-        self.assertIn("Custom Nix store", item["note"])
+        self.assertIn("Custom Nix store", item["reason"])
         self.run.assert_not_called()
 
     def test_nix_query_evidence_and_retention_drift_are_checked_before_cleanup(self):
@@ -428,7 +432,7 @@ class NativeContextTests(unittest.TestCase):
             self.probe.side_effect = changed_config
             result = self.execute(["nix"], preview)
             self.assertEqual(result["errors"], ["nix"])
-            self.assertIn("fresh preview", result["items"][0]["note"])
+            self.assertIn("fresh preview", result["items"][0]["reason"])
             self.run.assert_not_called()
             self.probe.side_effect = config_query
             for unproven in ("local", "local?root=%2Fother", "daemon", "ssh://private.invalid"):
@@ -440,7 +444,7 @@ class NativeContextTests(unittest.TestCase):
                     self.probe.side_effect = unproven_query
                     item = self.preview(["nix"])["items"][0]
                     self.assertFalse(item["available"])
-                    self.assertIn("did not verify", item["note"])
+                    self.assertIn("did not verify", item["reason"])
             self.run.assert_not_called()
 
     def test_remote_nix_selection_is_unavailable_without_store_queries(self):
@@ -481,18 +485,23 @@ class NativeContextTests(unittest.TestCase):
         preview = self.preview(["go", "uv"])
         self.values["GOCACHE"] = str(self.cache)
         result = self.execute(["go", "uv"], preview)
-        self.assertEqual(result["errors"], ["go", "uv"])
-        self.run.assert_not_called()
-        self.assertIn("skipped", result["items"][1]["note"])
+        self.assertEqual(result["errors"], ["go"])
+        self.assertEqual(self.run.call_count, 1)
+        self.assertEqual(self.run.call_args.args[0][0], str(self.bin / "uv"))
+        self.assertEqual(result["items"][0]["status"], "unavailable")
+        self.assertEqual(result["items"][1]["status"], "completed")
 
-    def test_failure_preserves_prior_success_and_skips_later_actions(self):
+    def test_failure_preserves_prior_success_and_runs_later_actions(self):
         preview = self.preview(["go", "uv", "npm"])
         self.run.side_effect = [subprocess.CompletedProcess([], 0, "", ""),
-                                subprocess.CompletedProcess([], 42, "secret stdout", "secret stderr")]
+                                subprocess.CompletedProcess([], 42, "secret stdout", "secret stderr"),
+                                subprocess.CompletedProcess([], 0, "", "")]
         result = self.execute(["go", "uv", "npm"], preview)
-        self.assertEqual(result["errors"], ["uv", "npm"])
+        self.assertEqual(result["errors"], ["uv"])
+        self.assertEqual([item["status"] for item in result["items"]],
+                         ["completed", "failed", "completed"])
         self.assertEqual(result["items"][0]["output"][0]["returncode"], 0)
-        self.assertEqual(self.run.call_count, 2)
+        self.assertEqual(self.run.call_count, 3)
         self.assertNotIn("secret stdout", json.dumps(result))
         self.assertNotIn("secret stderr", json.dumps(result))
 

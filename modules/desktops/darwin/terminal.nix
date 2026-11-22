@@ -54,7 +54,7 @@ in
     "noto-fonts-color-emoji" = "nix:noto-fonts-color-emoji";
   };
 
-  envy.darwin.software.homebrew.casks.include = [ "iterm2" ];
+  envy.darwin.software.homebrew.casks.include = [ "iterm2" "cmux" ];
 
   envy.machine.habits = lib.optional (
     builtins.elem "iterm2" config.envy.darwin.software.homebrew.casks.effective

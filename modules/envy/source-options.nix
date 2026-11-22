@@ -5,7 +5,7 @@ let
     flake = [ "input" "output" "follows" ];
     local = [ "path" ];
     native = [ "apt" "dnf" "pacman" "zypper" "distros" "system" ];
-    tap = [ "tap" "url" ];
+    tap = [ "tap" "url" "trustedFormulae" ];
     registry = [ "registry" "index" "metadata" "discoveryOnly" ];
     artifact = [ "url" "format" "packageName" "version" "architecture" "hash" "bootstrapRepository" ];
   };
@@ -66,6 +66,10 @@ let
         builtins.isString (parameters.tap or null)
         && builtins.match "[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+" parameters.tap != null
         && id == "homebrew:" + parameters.tap
+        && builtins.isList (parameters.trustedFormulae or [ ])
+        && lib.all (name: builtins.isString name
+          && builtins.match "[A-Za-z0-9][A-Za-z0-9+_.@-]*" name != null
+        ) (parameters.trustedFormulae or [ ])
       ))
       && (source.type != "local" || nonEmptyString (parameters.path or null))
       && (source.type != "registry" || (

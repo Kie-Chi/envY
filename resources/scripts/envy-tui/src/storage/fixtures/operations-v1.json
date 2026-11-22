@@ -678,7 +678,7 @@
               "-cache"
             ]
           ],
-          "note": "Remove the entire Go build cache, without an age cutoff; retain module source downloads. Read-only preview; no cleanup command was run.",
+          "note": "Remove the entire Go build cache, without an age cutoff; retain module source downloads.",
           "binding": {
             "version": 1,
             "action": "go",
@@ -728,7 +728,7 @@
               "verify"
             ]
           ],
-          "note": "Verify cache integrity and garbage-collect unneeded data; verify writes to the cache. Read-only preview; no cleanup command was run.",
+          "note": "Verify cache integrity and garbage-collect unneeded data; verify writes to the cache.",
           "binding": {
             "version": 1,
             "action": "npm",
@@ -871,7 +871,7 @@
               "-cache"
             ]
           ],
-          "note": "Remove the entire Go build cache, without an age cutoff; retain module source downloads. Read-only preview; no cleanup command was run.",
+          "note": "Remove the entire Go build cache, without an age cutoff; retain module source downloads.",
           "binding": {
             "version": 1,
             "action": "go",
@@ -921,7 +921,7 @@
               "verify"
             ]
           ],
-          "note": "Verify cache integrity and garbage-collect unneeded data; verify writes to the cache. Read-only preview; no cleanup command was run.",
+          "note": "Verify cache integrity and garbage-collect unneeded data; verify writes to the cache.",
           "binding": {
             "version": 1,
             "action": "npm",
@@ -1011,10 +1011,12 @@
           "target": {
             "path": "/fixture/home/.cache/go"
           },
+          "status": "completed",
           "output": [
             {
               "returncode": 0,
-              "command": "/fixture/bin/go clean -cache"
+              "command": "/fixture/bin/go clean -cache",
+              "state": "completed"
             }
           ]
         },
@@ -1030,7 +1032,7 @@
               "verify"
             ]
           ],
-          "note": "Verify cache integrity and garbage-collect unneeded data; verify writes to the cache. command failed with exit code 5; remaining steps were skipped.",
+          "note": "Verify cache integrity and garbage-collect unneeded data; verify writes to the cache.",
           "binding": {
             "version": 1,
             "action": "npm",
@@ -1067,12 +1069,15 @@
           "target": {
             "path": "/fixture/home/.cache/npm"
           },
+          "status": "failed",
           "output": [
             {
               "returncode": 5,
-              "command": "/fixture/bin/npm --cache /fixture/home/.cache/npm cache verify"
+              "command": "/fixture/bin/npm --cache /fixture/home/.cache/npm cache verify",
+              "state": "failed"
             }
-          ]
+          ],
+          "reason": "command failed with exit code 5; inspect target ownership and access: ls -ld -- /fixture/home/.cache/npm"
         }
       ],
       "errors": [

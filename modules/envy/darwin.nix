@@ -35,6 +35,15 @@ let
   managedTaps = lib.filter
     (name: !(builtins.elem name [ "homebrew/core" "homebrew/cask" ]))
     taps;
+  trustedBrews = lib.filter (name:
+    let
+      parts = lib.splitString "/" name;
+      tap = lib.concatStringsSep "/" (lib.take 2 parts);
+      source = config.envy.software.sources."homebrew:${tap}" or null;
+    in
+    builtins.length parts == 3 && builtins.elem tap managedTaps && source != null
+    && builtins.elem (builtins.elemAt parts 2) (source.parameters.trustedFormulae or [ ])
+  ) brews;
   homePolicy = config.home-manager.users.${config.envy.user.name}.envy.software;
   homeStorage = config.home-manager.users.${config.envy.user.name}.envy.storage;
   homeStorageSecrets = config.home-manager.users.${config.envy.user.name}.sops.secrets;
@@ -102,7 +111,7 @@ in
       id = "homebrew-activation";
       owner = "modules/envy/darwin.nix";
       manager = "homebrew";
-      summary = "Reconcile ${toString (builtins.length config.homebrew.brews)} formulae, ${toString (builtins.length config.homebrew.casks)} casks, and ${toString (builtins.length config.homebrew.taps)} taps using the final Homebrew policy.";
+      summary = "Reconcile ${toString (builtins.length brews)} formulae, ${toString (builtins.length config.homebrew.casks)} casks, and ${toString (builtins.length config.homebrew.taps)} taps using the final Homebrew policy.";
       effects = [
         "Run Homebrew bundle against the final selected formulae, casks, and taps."
         "Activation policy: autoUpdate=${builtins.toJSON config.homebrew.onActivation.autoUpdate}, upgrade=${builtins.toJSON config.homebrew.onActivation.upgrade}, cleanup=${config.homebrew.onActivation.cleanup}."
@@ -285,7 +294,10 @@ in
     homebrew = {
       enable = true;
       enableZshIntegration = true;
-      inherit brews casks;
+      # Render trusted entries once, via the public Brewfile extension point.
+      brews = lib.subtractLists trustedBrews brews;
+      extraConfig = lib.concatMapStrings (name: "brew ${builtins.toJSON name}, trusted: true\n") trustedBrews;
+      inherit casks;
       taps = map (name:
         let source = config.envy.software.sources."homebrew:${name}" or null;
         in if source != null && source.parameters ? url then {

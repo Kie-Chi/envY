@@ -64,7 +64,10 @@ class DockerFixture(unittest.TestCase):
             self.assertNotIn("Metadata", argv[4])
             value = json.dumps(self.endpoint)
         elif "buildx" in argv and "inspect" in argv:
-            self.assertEqual(argv[:3], ["docker", "--host", self.endpoint])
+            if argv[1] == "--context":
+                self.assertEqual(argv[:3], ["docker", "--context", self.context])
+            else:
+                self.assertEqual(argv[:3], ["docker", "--host", self.endpoint])
             self.assertNotIn("--bootstrap", argv)
             if "--format" in argv:
                 return subprocess.CompletedProcess(argv, 125, "", "unknown flag: --format")
@@ -429,7 +432,7 @@ class DockerTargetTests(DockerFixture):
         self.assertIsNone(result["reason"])
         self.assertEqual(result["target"]["builder"]["nodes"][0]["endpoint"], ENDPOINT)
         commands = [argv for argv, _ in self.calls if "buildx" in argv]
-        self.assertEqual(commands, [["docker", "--host", ENDPOINT, "buildx", "inspect", "fixture"]])
+        self.assertEqual(commands, [["docker", "--context", "fixture", "buildx", "inspect", "fixture"]])
 
     def test_plain_builder_metadata_rejects_ambiguous_identity(self):
         prefix = "Name: fixture\nDriver: docker\nNodes:\n"
@@ -456,6 +459,8 @@ class DockerTargetTests(DockerFixture):
         self.assertEqual(target["source"], "DOCKER_HOST")
         self.assertIsNone(target["context"])
         self.assertFalse(any("context" in argv for argv, _ in self.calls))
+        for command in docker.bound_commands(target):
+            self.assertEqual(command[:3], ["docker", "--host", ENDPOINT])
 
     def test_remote_endpoints_are_never_contacted(self):
         for endpoint in ("tcp://user:password@host:2375", "ssh://host", "http://localhost:2375", "npipe:////./pipe/docker_engine"):
@@ -478,11 +483,21 @@ class DockerTargetTests(DockerFixture):
                 with self.assertRaises(StorageError):
                     docker.maintenance_target()
 
+    def test_orbstack_build_cache_uses_the_verified_named_context(self):
+        self.context = "orbstack"
+        self.builder["name"] = "orbstack"
+        self.builder["nodes"][0]["endpoint"] = "orbstack"
+        target = docker.maintenance_target()
+        self.assertEqual(docker.bound_commands(target), [
+            ["docker", "--context", "orbstack", "buildx", "prune", "--builder", "orbstack",
+             "-f", "--filter", "until=336h"],
+            ["docker", "--host", ENDPOINT, "image", "prune", "-f", "--filter", "until=336h"]])
+
     def test_bound_commands_keep_age_and_native_non_all_semantics(self):
         target = docker.maintenance_target()
         commands = docker.bound_commands(target)
         self.assertEqual(commands, [
-            ["docker", "--host", ENDPOINT, "buildx", "prune", "--builder", "fixture", "-f", "--filter", "until=336h"],
+            ["docker", "--context", "fixture", "buildx", "prune", "--builder", "fixture", "-f", "--filter", "until=336h"],
             ["docker", "--host", ENDPOINT, "image", "prune", "-f", "--filter", "until=336h"]])
         self.assertTrue(all("prune" not in argv for argv, _ in self.calls))
         selectors = {"DOCKER_CONTEXT": "elsewhere", "DOCKER_HOST": "ssh://remote", "DOCKER_TLS_VERIFY": "1",
@@ -492,6 +507,12 @@ class DockerTargetTests(DockerFixture):
         with patch.dict("os.environ", selectors, clear=True):
             environment = docker.bound_environment()
         self.assertEqual(environment, {"PATH": "/fixture/bin", "DOCKER_CONFIG": "/fixture/config"})
+
+    def test_bound_commands_reject_invalid_context_names(self):
+        target = docker.maintenance_target()
+        target["context"] = "invalid context"
+        with self.assertRaises(StorageError):
+            docker.bound_commands(target)
 
     def test_reverify_detects_context_daemon_endpoint_and_builder_drift(self):
         target = docker.maintenance_target()

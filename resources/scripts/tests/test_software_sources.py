@@ -309,6 +309,21 @@ class SourceContractTests(unittest.TestCase):
         self.assertEqual(dependency.group, "homebrew.system.repository")
         self.assertEqual(dependency.id, "vendor/tools")
 
+    def test_homebrew_trust_is_an_explicit_list_of_formula_names(self):
+        source_id = "homebrew:vendor/tools"
+        raw = {"ecosystem": "homebrew", "type": "tap", "platforms": ["darwin"],
+               "scope": "system", "owner": "machine", "parameters": {
+                   "tap": "vendor/tools", "trustedFormulae": ["reviewed", "tool@2"],
+               }}
+        definitions = {source_id: raw}
+        original = "{ ... }:\n{\n}\n"
+        self.assertEqual(parse_definitions(render_definitions(original, definitions)), definitions)
+        for invalid in (True, "reviewed", ["*"], ["other/tools/reviewed"], ["has space"], [1]):
+            with self.subTest(invalid=invalid), self.assertRaises(SourceError):
+                Source.from_dict(source_id, {**raw, "parameters": {
+                    **raw["parameters"], "trustedFormulae": invalid,
+                }})
+
     def test_flake_writer_parser_keeps_input_binding(self):
         group = model.COMMON_GROUPS[0]
         include = model.ManagedInclude(group.key, "hello", "hello", ref="flake:other#default",

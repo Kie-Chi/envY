@@ -15,7 +15,7 @@ let
     # In-process subagent sessions have no UI and must not report readiness.
     substituteInPlace "$out/notify.ts" --replace-fail \
       'pi.on("agent_settled", async () => {' \
-      'pi.on("agent_settled", async (_event, ctx) => { if (!process.stdout.isTTY || !ctx.hasUI) return;'
+      'pi.on("agent_settled", async (_event, ctx) => { if (!process.stdout.isTTY || !ctx.hasUI || ctx.mode !== "tui" || Reflect.get(ctx.ui, Symbol.for("cmux.pi.cmux-dialog-hooks"))) return;'
   '';
   fetchPiExtension = import ./npm-extension.nix { inherit pkgs; };
   piSelected = !(builtins.elem "pi" config.envy.software.nix.packages.exclude);

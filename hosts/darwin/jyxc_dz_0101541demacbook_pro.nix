@@ -170,6 +170,11 @@
       model = "gpt-6.1-sol-coding";
     }
     {
+      profile = "mpo";
+      credential = "mp-go";
+      model = "gpt-6-astra";
+    }
+    {
       profile = "mpa";
       credential = "mp-go";
       model = "claude-opus-5.5";
@@ -199,7 +204,7 @@
   envy.agents.pi.credential = "mp-new";
   envy.agents.pi.endpoint = "stepfun-openai";
   envy.agents.pi.maxTokens = 128000;
-  envy.agents.pi.model = "gpt-6.1-sol-qiye";
+  envy.agents.pi.model = "gpt-6.1-sol-working";
   envy.agents.pi.moreThinking = true;
   envy.agents.pi.profile = "stepfun-openai-new";
   # END ENVY MANAGED AGENTS

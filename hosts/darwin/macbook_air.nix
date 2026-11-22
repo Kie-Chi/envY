@@ -152,7 +152,7 @@
   envy.agents.codex.model = "gpt-6.1-sol";
   envy.agents.pi.adapter = "pi";
   envy.agents.pi.models = [
-    { profile = "xikai-magpie"; model = "gpt-6.1-sol"; }
+    { profile = "xikai-magpie"; model = "gpt-6.2-sol"; }
     { profile = "xikai-magpie"; model = "gpt-6-astra"; }
     { profile = "nisl"; model = "deepseek-v4.1-flash"; }
     { profile = "deepseek"; model = "deepseek-flash"; }

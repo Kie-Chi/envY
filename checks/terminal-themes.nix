@@ -115,13 +115,52 @@ let
       withoutGhostty = homeUser (configuration.extendModules {
         modules = [{ envy.darwin.software.homebrew.casks.exclude = lib.mkAfter [ "ghostty" ]; }];
       }).config;
+      cmuxOnly = homeUser (configuration.extendModules {
+        modules = [{
+          envy.darwin.software.homebrew.casks.include = lib.mkAfter [ "cmux" ];
+          envy.darwin.software.homebrew.casks.exclude = lib.mkForce [ "ghostty" ];
+        }];
+      }).config;
+      ghosttyOnly = homeUser (configuration.extendModules {
+        modules = [{
+          envy.darwin.software.homebrew.casks.include = lib.mkAfter [ "ghostty" ];
+          envy.darwin.software.homebrew.casks.exclude = lib.mkForce [ "cmux" ];
+        }];
+      }).config;
+      withoutGhosttyConsumers = homeUser (configuration.extendModules {
+        modules = [{ envy.darwin.software.homebrew.casks.exclude = lib.mkAfter [ "ghostty" "cmux" ]; }];
+      }).config;
+      withoutCmux = homeUser (configuration.extendModules {
+        modules = [{ envy.darwin.software.homebrew.casks.exclude = lib.mkAfter [ "cmux" ]; }];
+      }).config;
+      cmuxSelected = builtins.elem "cmux" configuration.config.envy.darwin.software.homebrew.casks.effective;
+      cmuxHooksSelected = cmuxSelected && !(builtins.elem "envy-cmux-hooks" home.envy.software.nix.packages.exclude);
+      withoutCmuxHooks = homeUser (configuration.extendModules {
+        modules = [{ home-manager.users.${username}.envy.software.nix.packages.exclude = lib.mkAfter [ "envy-cmux-hooks" ]; }];
+      }).config;
       localProfile = local.programs.vscode.profiles.default or { };
     in
       checkHome home
       && checkHome excluded
       && checkHome withoutBat
       && checkHome withoutGhostty
-      && !withoutGhostty.programs.ghostty.enable
+      && withoutGhostty.programs.ghostty.enable == cmuxSelected
+      && checkHome cmuxOnly
+      && cmuxOnly.programs.ghostty.enable
+      && checkHome ghosttyOnly
+      && ghosttyOnly.programs.ghostty.enable
+      && checkHome withoutGhosttyConsumers
+      && !withoutGhosttyConsumers.programs.ghostty.enable
+      && hasPackage "envy-cmux-hooks" home == cmuxHooksSelected
+      && builtins.hasAttr "cmuxAgentHooks" home.home.activation == cmuxHooksSelected
+      && builtins.hasAttr ".pi/agent/extensions/envy-cmux.ts" home.home.file
+        == (cmuxHooksSelected && hasPackage "pi" home)
+      && !hasPackage "envy-cmux-hooks" withoutCmuxHooks
+      && !(builtins.hasAttr "cmuxAgentHooks" withoutCmuxHooks.home.activation)
+      && !(builtins.hasAttr ".pi/agent/extensions/envy-cmux.ts" withoutCmuxHooks.home.file)
+      && !hasPackage "envy-cmux-hooks" withoutCmux
+      && !(builtins.hasAttr "cmuxAgentHooks" withoutCmux.home.activation)
+      && !(builtins.hasAttr ".pi/agent/extensions/envy-cmux.ts" withoutCmux.home.file)
       && lib.all (name: !hasPackage name excluded)
         [ "direnv" "nix-direnv" "yazi" "lazygit" "lnav" "lazydocker" "watchexec" "xh" ]
       && !hasPackage "bat" withoutBat

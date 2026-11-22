@@ -3,7 +3,9 @@
 let
   palette = import ../cores/tokyo-night.nix;
   selected = if machinePlatform == "darwin" then
-    builtins.elem "ghostty" (osConfig.envy.darwin.software.homebrew.casks.effective or [ ])
+    # cmux embeds Ghostty and reads the same terminal configuration.
+    lib.any (name: builtins.elem name (osConfig.envy.darwin.software.homebrew.casks.effective or [ ]))
+      [ "ghostty" "cmux" ]
   else
     builtins.elem "ghostty" (map lib.getName config.envy.software.nix.packages.effective);
 in

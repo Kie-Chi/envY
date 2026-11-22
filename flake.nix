@@ -699,11 +699,19 @@
             inherit lib piPackage;
             moreThinking = true;
           };
+          extensions = import ./modules/agents/providers/pi/extensions.nix {
+            inherit lib pkgs piPackage;
+            piSource = inputs.pi.outPath;
+            config.envy.software.nix.packages.exclude = [ ];
+          };
         in pkgs.runCommand "pi-doctor-tests" {
           nativeBuildInputs = [ pkgs.nodejs_24 ];
         } ''
           node ${./modules/agents/providers/pi/tests/pi-doctor.mjs} \
             ${./files/agents/pi/doctor.mjs} ${patchedPi}/lib/pi/node_modules
+          node ${./modules/agents/providers/pi/tests/pi-cmux.mjs} \
+            ${patchedPi}/lib/pi/node_modules ${./files/agents/pi/cmux.ts} \
+            ${extensions.home.file.".pi/agent/extensions/envy-notify.ts".source}
           touch "$out"
         '';
 
@@ -714,7 +722,7 @@
           pkgs = nixpkgs.legacyPackages.${system};
           python = pkgs.python3.withPackages (ps: [ ps.readability-lxml ps.html2text ]);
         in pkgs.runCommand "envy-agent-tests" {
-          nativeBuildInputs = [ python pkgs.git pkgs.zsh ];
+          nativeBuildInputs = [ python pkgs.git pkgs.zsh pkgs.nodejs_24 ];
         } ''
           export HOME="$TMPDIR/home"
           mkdir -p "$HOME"
@@ -726,6 +734,8 @@
           ENVY_DEEPSEEK_SEARCH_PATH=${./modules/agents/tools/deepseek_search.py} python ${./modules/agents/tests/test_deepseek_search.py}
           ${import ./modules/agents/tests/wrappers.nix { inherit lib pkgs; }}
           ${import ./modules/agents/tests/runtime-files.nix { inherit lib pkgs; }}
+          node --disable-warning=ExperimentalWarning ${./modules/agents/tests/cmux-setup.mjs} \
+            ${./files/agents/cmux/setup.mjs}
           touch "$out"
         '';
 

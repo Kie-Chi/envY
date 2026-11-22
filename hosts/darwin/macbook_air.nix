@@ -70,12 +70,21 @@
 
   envy.darwin.software.homebrew.formulae.include = [
     "hexo"
+    "shiquda/cmux-pocket/cmux-pocket"
+  ];
+
+  envy.darwin.software.homebrew.repositories.include = [
+    "shiquda/cmux-pocket"
   ];
 
   envy.software.pypi.tools.exclude = [
     "headroom"
   ];
   # END ENVY MANAGED SOFTWARE
+
+  # BEGIN ENVY MANAGED SOURCES
+  envy.software.sources = builtins.fromJSON "{\"homebrew:shiquda/cmux-pocket\":{\"ecosystem\":\"homebrew\",\"label\":\"cmux Pocket\",\"owner\":\"machine\",\"parameters\":{\"tap\":\"shiquda/cmux-pocket\",\"trustedFormulae\":[\"cmux-pocket\"]},\"platforms\":[\"darwin\"],\"scope\":\"system\",\"type\":\"tap\"}}";
+  # END ENVY MANAGED SOURCES
 
   # BEGIN ENVY MANAGED AGENTS
   # envY owns agent selections, endpoint metadata, and credential references here.

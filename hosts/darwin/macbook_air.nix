@@ -62,6 +62,7 @@
 
   envy.darwin.software.homebrew.casks.include = [
     "steam"
+    "t3-code"
   ];
 
   envy.darwin.software.homebrew.casks.exclude = [

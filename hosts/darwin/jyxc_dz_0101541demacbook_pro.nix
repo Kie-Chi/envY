@@ -34,7 +34,9 @@
 
   # --- STORAGE CONFIG ---
   envy.storage.mode = "manual";
+  envy.storage.maintenance.go-modcache = false;
   envy.storage.archive.repository = "";
+  envy.storage.archive.mountSource = "";
 
   # --- VSCODE CONFIG ---
   envy.vscode.mode = "remote";
@@ -58,6 +60,7 @@
   envy.darwin.software.homebrew.casks.include = [
     "steam"
     "sunlogincontrol"
+    "t3-code"
   ];
 
   envy.darwin.software.homebrew.casks.exclude = [

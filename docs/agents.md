@@ -140,7 +140,13 @@ envy.agents.pi.models = [
 
 `pi/extensions.nix` 将 `steeringMode`、`followUpMode` 默认设为 `one-at-a-time`，并通过 writable merge 管理 `keybindings.json` 的三个动作：`Enter` 提交 steer、`Alt+Enter` 添加 follow-up、`Alt+Up` 进入队列编辑。选中行后直接编辑文本，`Alt+Up/Down` 切换行，`Alt+Shift+Up/Down` 重排，`Alt+X` 标记删除，`Alt+Left/Right` 或 `Alt+T` 切换 follow-up/steer，`Enter` 保存、`Escape` 撤销。输入框为空时按 `Enter` 可将队首 follow-up 提升为 steer。macOS 的 Alt 对应 Option。重排、删除和类型切换沿用插件固定按键。
 
-队列、草稿、恢复快照与会话数据归 Pi 和扩展所有。`tests/pi-queue.mjs` 通过真实 Pi 扩展发现流程、宿主模块和编辑器执行离线检查，覆盖逐条发送、编辑、重排、删除、转为 steer、取消与暂停恢复；不调用模型。两平台的 `pi-queue-tests` flake check 和 CI 运行这些检查。配置通过 `envy apply` 部署后，新启动 Pi 或执行 `/reload` 生效。
+envY 通过 `pi-queue-commands.patch` 给同一可见队列增加 `/queue` 命令，不创建第二个队列控制器。裸 `/queue` 显示状态与用法；`/queue list` 按执行顺序列出行 ID、类型和内容；`/queue add <内容>` 添加 follow-up，`/queue steer <内容>` 添加当前运行的 steer；`/queue edit [行ID]` 打开原有行编辑器，省略 ID 时选择最新入队行；`/queue remove <行ID>` 删除待发送行；`/queue clear` 确认后清空待发送队列，但不终止当前运行；`/queue resume` 恢复原有逐条调度，不把 follow-up 提升为 steer，也不解除单行暂停。已有 `/pause` 与 `/queue-drain` 保持安全暂停和合并发送的语义。
+
+命令空闲入队时保持暂停，使用 `/queue resume` 开始执行；运行中入队沿用原有发送边界，不解除已有暂停。未保存行编辑、执行中的控制操作及尚未完成的安全暂停会阻止冲突命令。清空确认后重新核对队列与会话边界，拒绝过期确认；同步恢复发送失败时保留原行、暂停并显示错误。命令仅用于交互 TUI，不接管 RPC、JSON 或 print 的原生队列。
+
+`/queue` 的参数候选包含子命令、用法和说明；`edit`、`remove` 的候选来自当前待发送行，显示稳定 ID、类型、暂停标记及内容摘要。输入前缀后按 `Tab` 选择候选，已完整输入的子命令或 ID 不再重复弹出候选，避免 `Enter` 被无意义补全吞掉。未知子命令、缺少参数或无效行 ID 会给出用法提示。
+
+队列、草稿、恢复快照与会话数据归 Pi 和扩展所有。`tests/pi-queue.mjs` 通过真实 Pi 扩展发现流程、宿主模块和编辑器执行离线检查，覆盖逐条发送、编辑、重排、删除、转为 steer、取消、暂停恢复、命令控制、确认竞态及真实补全提供器；不调用模型。两平台的 `pi-queue-tests` flake check 和 CI 运行这些检查；`pi-coexist-tests.tui` 另通过真实 CLI/PTY 验证子命令和行 ID 补全、入队、行编辑、删除、取消清空及编辑器恢复，所有模型请求进入离线替身。配置通过 `envy apply` 部署后，新启动 Pi 或执行 `/reload` 生效。
 
 ### goal-x 扩展
 

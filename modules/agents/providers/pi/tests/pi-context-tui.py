@@ -30,6 +30,7 @@ BTW_PACKAGE = next((source for source in SOURCE_PATHS if os.path.isfile(os.path.
 GOAL_PACKAGE = next((source for source in SOURCE_PATHS if os.path.isfile(os.path.join(source, "extensions/goal-widget.ts"))), None)
 HAS_SCROLL_VIEWS = bool(BTW_PACKAGE and GOAL_PACKAGE)
 HAS_FOOTER = any("pi-powerline" in os.path.basename(source) for source in SOURCE_PATHS)
+HAS_QUEUE = any(os.path.isfile(os.path.join(source, "queue-state.ts")) for source in SOURCE_PATHS)
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07")
 
 def plain(data: bytes) -> str:
@@ -438,6 +439,46 @@ export default async function(pi) {{
             read_until("envy-editor-after-goal-scroll", since=mark)
             send("\x15")
             assert request_count() == 1, "scroll fixture or editor recovery made a model request"
+        if HAS_QUEUE:
+            # Exercise argument completion and command dispatch through the real editor.
+            mark = len(output)
+            send("/queue ad")
+            read_until(r"add <text>", since=mark)
+            send("\t")
+            send("TUI-queued-中文\r")
+            read_until(r"Queued follow-up-1", since=mark)
+            assert request_count() == 1, "idle command enqueue made a model request"
+            mark = len(output)
+            send("/queue edit follow")
+            read_until(r"follow-up-1", since=mark)
+            send("\t\r")
+            read_until(r"Editing queue row", since=mark)
+            mark = len(output)
+            send("\x15TUI-edited-中文\r")
+            read_until(r"TUI-edited-中文", since=mark)
+            mark = len(output)
+            send("/queue remove follow-up-1\r")
+            read_until(r"Removed follow-up-1", since=mark)
+            mark = len(output)
+            send("/queue add Clear-cancel-row\r")
+            read_until(r"Queued follow-up-2", since=mark)
+            mark = len(output)
+            send("/queue clear\r")
+            read_until(r"Clear queue\?", since=mark)
+            mark = len(output)
+            send("\x1b")
+            read_until(r"Queued follow-up-2", since=mark)
+            mark = len(output)
+            send("/queue list\r")
+            read_until(r"Queue: 1 pending; paused", since=mark)
+            mark = len(output)
+            send("/queue remove follow-up-2\r")
+            read_until(r"Removed follow-up-2", since=mark)
+            mark = len(output)
+            send("/queue\r")
+            read_until(r"Queue: 0 pending", since=mark)
+            read_until(r"Tab completes subcommands and row IDs", since=mark)
+            assert request_count() == 1, "queue controls or completion made a model request"
         send("/quit\r")
         wait_for_exit()
         if process.returncode != 0:
@@ -467,7 +508,7 @@ export default async function(pi) {{
             send("/quit\r")
             wait_for_exit()
             assert process.returncode == 0, "restored Pi did not exit cleanly"
-        print("PTY context" + (" + diff" if DIFF_PACKAGE else "") + (" + btw/goal scrolling" if HAS_SCROLL_VIEWS else "") + " TUI smoke passed; offline requests:", request_count())
+        print("PTY context" + (" + diff" if DIFF_PACKAGE else "") + (" + btw/goal scrolling" if HAS_SCROLL_VIEWS else "") + (" + queue commands" if HAS_QUEUE else "") + " TUI smoke passed; offline requests:", request_count())
         return 0
     finally:
         try:

@@ -70,10 +70,11 @@ def _config(rule: Rule, root: Path) -> dict:
     filters = []
     if rule.names:
         filters.append(_name_filter(rule))
-    if rule.targets == "dirs" and rule.recursive_age:
-        filters.append(_recursive_age_filter(rule))
-    else:
-        filters.append({"lastmodified": {"days": rule.min_age_days, "mode": "older"}})
+    if rule.min_age_days:
+        if rule.targets == "dirs" and rule.recursive_age:
+            filters.append(_recursive_age_filter(rule))
+        else:
+            filters.append({"lastmodified": {"days": rule.min_age_days, "mode": "older"}})
     if rule.targets == "files" and rule.min_size_bytes:
         filters.append({"size": ">= " + str(rule.min_size_bytes) + " B"})
     if rule.extensions:
@@ -91,7 +92,7 @@ def _candidate(path: Path, root: Path, rule: Rule, policy: Policy, skipped: list
     try:
         info = validate_entry(path, root, rule, policy)
         if rule.targets == "files":
-            if time.time() - info.st_mtime < rule.min_age_days * 86400:
+            if rule.min_age_days and time.time() - info.st_mtime < rule.min_age_days * 86400:
                 return None
             if info.st_size < rule.min_size_bytes:
                 return None
@@ -99,7 +100,7 @@ def _candidate(path: Path, root: Path, rule: Rule, policy: Policy, skipped: list
                 ext.casefold() for ext in rule.extensions
             }:
                 return None
-        else:
+        elif rule.min_age_days:
             if rule.recursive_age:
                 if time.time() - newest_mtime(path) < rule.min_age_days * 86400:
                     return None
@@ -245,7 +246,7 @@ def plan(policy: Policy, state: Path) -> dict:
                 detail.append("path pattern matched no roots")
             elif newest is None:
                 detail.append("no entry matches the rule names or extensions")
-            elif time.time() - newest < rule.min_age_days * 86400:
+            elif rule.min_age_days and time.time() - newest < rule.min_age_days * 86400:
                 detail.append("newest matching entry is %.1f days old (minimum %d)"
                               % ((time.time() - newest) / 86400, rule.min_age_days))
             elif rule.min_size_bytes:

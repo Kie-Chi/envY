@@ -188,6 +188,16 @@ def cmd_inspect(
     _perform("inspect", json_output, lambda: inspection.inspect(Path.home(), projects=project))
 
 
+def _write_native_output(text: str) -> None:
+    """Write sanitized native lines without Rich wrapping or TTY newline assumptions."""
+    stream = log.diagnostic_console.file
+    # sudo may temporarily put the shared terminal in raw mode while it runs.
+    if stream.isatty():
+        text = text.replace("\n", "\r\n")
+    stream.write(text)
+    stream.flush()
+
+
 def _prune_interactive() -> bool:
     return sys.stdin.isatty()
 
@@ -342,12 +352,12 @@ def cmd_prune(
                     return
                 if channel == "start":
                     started.add(action)
-                    log.diagnostic_console.print(text + ":", markup=False, highlight=False)
+                    _write_native_output(text + ":\n")
                     return
                 if action not in started:
                     started.add(action)
-                    log.diagnostic_console.print(action + ":", markup=False, highlight=False)
-                log.diagnostic_console.print(text, end="", markup=False, highlight=False)
+                    _write_native_output(action + ":\n")
+                _write_native_output(text)
 
             return pruning.execute(policy, state, prepared, on_output=on_output)
     _perform("prune", json_output, operation)

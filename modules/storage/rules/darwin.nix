@@ -1,6 +1,18 @@
 { home }:
 
 {
+  envy-swift-module-cache = {
+    path = "${home}/.cache/envy";
+    names = [ "swift-module-cache" ];
+    targets = "dirs";
+    depth = 1;
+    recursiveAge = true;
+    action = "quarantine";
+    prune = true;
+    minAgeDays = 7;
+    optionalRoot = true;
+    processes = [ "swift" "swiftc" "swift-frontend" "clang" "clang[+][+]" ];
+  };
   feishu-web-cache-aha = {
     action = "quarantine";
     depth = 1;

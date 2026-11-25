@@ -15,9 +15,11 @@ envy storage prune --force
 envy storage prune --yes --json
 ```
 
-`--yes`、`-f`、`--force` 是同一确认参数，跳过提示，仍保留年龄、路径、来源及占用检查。`--dry-run` 不清理，与确认参数互斥；JSON 和非交互执行必须显式确认。扫描会保存内部计划并锁定 storage state，不改动候选内容；执行结果使用现有 JSON envelope。
+`--yes`、`-f`、`--force` 是同一确认参数，跳过提示，仍保留路径、来源及占用检查。显式可丢弃缓存没有年龄门限，刚生成的缓存也可清理；归档规则及原生工具继续遵守各自的年龄或保留条件。`--dry-run` 不清理，与确认参数互斥；JSON 和非交互执行必须显式确认。扫描会保存内部计划并锁定 storage state，不改动候选内容；执行结果使用现有 JSON envelope。
 
-每条规则的 `prune` 布尔字段默认 `false`。当前只给 `vscode-gpu-cache`、`codex-shader-cache`、`chrome-shader-cache`、`feishu-shader-cache`、`feishu-iron-shader-cache`、`steam-shader-cache` 六条精确 GPU/Shader 缓存规则标记 `prune = true`，它们的普通 `action` 仍为 `quarantine`。机器可通过同 ID 的 `prune = false` 撤销资格。未标记的隔离规则，包括更新包、日志和下载内容，不会被 prune 直接删除；旧 `run` 和 `purge` 继续原有保留期。
+每条规则的 `prune` 布尔字段默认 `false`。当前标记 `prune = true` 的有六条精确 GPU/Shader 缓存规则，以及 `fontconfig-cache`、`nvim-lua-cache`、`envy-python-cache`、`envy-build-cache` 四条跨平台规则和 Darwin 的 `envy-swift-module-cache`。新增规则仅覆盖 `~/.cache/fontconfig`、`~/.cache/nvim/luac` 及 `~/.cache/envy` 下的 `pycache`、`cargo-target`、`envy-tui-target`、`swift-module-cache`，不扫描删除整个 `~/.cache`。Nix 数据库、Codex runtime、工具链、devShell 引用、审计和恢复材料不在新增范围内。
+
+这些规则的普通 `action` 仍为 `quarantine`，普通 `run` 对新增缓存采用 7 天门限、对原 GPU/Shader 缓存保留 30 天门限；显式 `prune` 忽略这些可丢弃缓存的年龄并立即释放空间。构建工具、Neovim 的进程条件及全部路径、占用、内容变化检查继续生效。机器可通过同 ID 的 `prune = false` 撤销资格。未标记的隔离规则，包括更新包、日志和下载内容，不会被 prune 直接删除；旧 `run` 和 `purge` 继续原有保留期。
 
 显式 `archive` 规则在 NAS 上传后回读一次 SHA-256，执行前确认本地对象未变化，成功后同次释放本地副本；失败保留本地。归档仍限普通文件，不自动删除远端快照。专用 `prunes` 记录保存 repository ID、snapshot、文件 SHA-256 和逐项结果；这些记录目前不接入旧 `restore RUN`，远端恢复使用其中的快照信息。
 
@@ -68,7 +70,7 @@ envy.storage.rules.include.local-build-cache = {
 
 旧 Nix `rules = [ ... ];` 已迁移且会被类型检查拒绝。旧版本 manifest 的规则列表仍可读取；模型版本为 2，指纹含模型版本、规则元数据与最终政策，旧 plan 不可执行。config/setup 重写 managed block 时保留机器级 include、exclude、局部覆盖与自定义规则。
 
-当前选择：Air 为 `manual`，29 条 Darwin 默认规则中因 native Go 选择排除 `go-build-cache`，得到 28 条有效规则；另一台 Darwin 保持 `manual`，获得 29 条默认规则；Linux 保持 `manual`，获得旧安装包与 Go 年龄规则两项。没有启用 auto 或定时器。`report` 阻止默认及定时执行；显式 `run --yes` 仍是写入操作。
+当前选择：Air 为 `manual`，34 条 Darwin 默认规则中因 native Go 选择排除 `go-build-cache`，得到 33 条有效规则；另一台 Darwin 保持 `manual`，获得 34 条默认规则；Linux 保持 `manual`，获得旧安装包、Go 年龄规则及四条新增缓存规则，共六项。没有启用 auto 或定时器。`report` 阻止默认及定时执行；显式 `run --yes` 仍是写入操作。
 
 首次真实 manual 试跑于 2026-11-13 00:30（本机时间）完成：`037b3b8950b14c1cade72b5dc82cf1c3` 隔离两个旧微信日志，共 3,717,360 B（约 3.55 MiB），并核对原始与隔离后的 SHA-256、inode 和保留期。89 项因声明的进程仍在运行而保留；飞书在执行前已启动，因此先前可处理的两处飞书缓存也未移动。当前 CLI 将这些保护拒绝记入 `errors` 并返回 `partial_failure` / exit 1；两个日志的实际状态为 `quarantined`。隔离保留到 2026-12-13 00:30（+08:00）之后，尚未执行 purge，也未因此释放磁盘空间。
 
@@ -103,9 +105,9 @@ envy.storage.rules.include.local-build-cache = {
 | `targets` / `depth` / `names` | 文件或目录、扫描深度、精确名称；depth=1 为直接子项 |
 | `recursiveAge` | 目录及子树所有条目均需超过年龄门限 |
 | `processes` | 必须退出的进程；带斜杠的模式匹配完整命令行 |
-| `extensions` / `minAgeDays` / `minSizeBytes` | 文件后缀、年龄和大小条件 |
+| `extensions` / `minAgeDays` / `minSizeBytes` | 文件后缀、年龄和大小条件；显式可丢弃缓存 prune 不使用年龄条件 |
 | `action` | quarantine 或 archive；目录仅支持 quarantine，archive 只支持普通文件 |
-| `prune` | 默认 false；显式 prune 可立即删除该规则匹配的可丢弃缓存，普通 run 仍使用 action |
+| `prune` | 默认 false；显式 prune 忽略可丢弃缓存的年龄并立即删除，普通 run 仍使用 action 和原年龄条件；archive 保留年龄条件 |
 | `protectedOverrides` | 该有效规则所需的精确缓存/更新目录授权；排除规则会撤销其授权 |
 
 不放开整个 Application Support、Containers 或用户 profile。state、checkout、SSH/GPG/sops 密钥、Keychain、Mail、Messages 及显式保护路径不可豁免；候选包含这些路径的祖先目录也受保护。内部通配符可以定位用户缓存，但授权末段必须是明确目录。符号链接、硬链接、不安全所有者、权限未知及活动文件检查失败均拒绝操作。

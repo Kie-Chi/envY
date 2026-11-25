@@ -18,8 +18,11 @@ from envy.storage.state import records, sync_record, write_record
 
 
 def _policy(policy: Policy) -> Policy:
-    return replace(policy, rules=tuple(rule for rule in policy.rules
-                                      if rule.prune or rule.action == "archive"))
+    # Zero disables age filtering only for explicit disposable-cache pruning.
+    # Keep archive ages and the original run policy, including its fingerprint.
+    return replace(policy, rules=tuple(
+        replace(rule, min_age_days=0) if rule.prune and rule.action == "quarantine" else rule
+        for rule in policy.rules if rule.prune or rule.action == "archive"))
 
 
 def prepare(policy: Policy, state: Path) -> dict:

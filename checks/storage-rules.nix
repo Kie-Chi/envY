@@ -90,10 +90,14 @@ let
       include.zotero-update-archive.minAgeDays = 45;
     };
   };
-  pruneIds = [
+  sharedCacheIds = [
+    "fontconfig-cache" "nvim-lua-cache" "envy-python-cache" "envy-build-cache"
+  ];
+  shaderCacheIds = [
     "vscode-gpu-cache" "codex-shader-cache" "chrome-shader-cache"
     "feishu-shader-cache" "feishu-iron-shader-cache" "steam-shader-cache"
   ];
+  pruneIds = sharedCacheIds ++ shaderCacheIds ++ [ "envy-swift-module-cache" ];
   prunePolicy = evaluate "darwin" {
     envy.storage.rules = {
       exclude = pruneIds;
@@ -110,11 +114,28 @@ assert lib.all (id:
   let entry = rule darwin id;
   in entry != null && entry.prune && entry.action == "quarantine"
     && entry.targets == "dirs" && entry.depth == 1 && entry.names != [ ]
-    && entry.recursiveAge && entry.optionalRoot && entry.processes != [ ]
+    && entry.recursiveAge && entry.optionalRoot
 ) pruneIds;
+assert lib.all (id: (rule darwin id).processes != [ ]) shaderCacheIds;
+assert lib.all (id:
+  let entry = rule linux id;
+  in entry != null && entry.prune && entry.minAgeDays == 7
+    && entry.source == "default:common" && entry.path == (rule darwin id).path
+) sharedCacheIds;
+assert (rule darwin "fontconfig-cache").names == [ "fontconfig" ];
+assert (rule darwin "nvim-lua-cache").path == home + "/.cache/nvim";
+assert (rule darwin "nvim-lua-cache").names == [ "luac" ];
+assert (rule darwin "nvim-lua-cache").processes == [ "nvim" ];
+assert (rule darwin "envy-python-cache").names == [ "pycache" ];
+assert (rule darwin "envy-build-cache").names == [ "cargo-target" "envy-tui-target" ];
+assert (rule darwin "envy-build-cache").processes == [ "cargo" "rustc" ];
+assert (rule darwin "envy-swift-module-cache").names == [ "swift-module-cache" ];
+assert (rule darwin "envy-swift-module-cache").minAgeDays == 7;
+assert rule linux "envy-swift-module-cache" == null;
 assert lib.all (entry: entry.prune == builtins.elem entry.id pruneIds)
   darwin.envy.storage.rules.effective;
-assert lib.all (entry: !entry.prune) linux.envy.storage.rules.effective;
+assert lib.all (entry: entry.prune == builtins.elem entry.id sharedCacheIds)
+  linux.envy.storage.rules.effective;
 assert !(rule changed "machine-cache").prune;
 assert lib.all (id: rule prunePolicy id == null) pruneIds;
 assert lib.all (entry: !entry.prune) prunePolicy.envy.storage.rules.effective;

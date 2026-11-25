@@ -15,7 +15,7 @@ HOTSPOTS = (
     ("nix-cache", ".cache/nix", "native-cache", "Nix tarball and evaluation caches; do not remove active databases."),
     ("nix-tarballs", ".cache/nix/tarball-cache-v2", "native-cache", "Nix-owned source cache; report only, with no GC or database mutation."),
     ("nix-evaluation", ".cache/nix/eval-cache-v6", "native-cache", "May be locked by Nix; report only."),
-    ("envy-cache", ".cache/envy", "mixed-cache", "May include inspection evidence and recovery artifacts; report only."),
+    ("envy-cache", ".cache/envy", "mixed-cache", "Build caches have precise prune rules; inspection evidence and recovery artifacts are retained."),
     ("uv-cache", ".cache/uv", "native-cache", "Use explicit native uv maintenance."),
     ("npm-cache", ".npm", "native-cache", "Use explicit native npm maintenance."),
     ("go-modules", "go/pkg/mod", "dependency-cache", "Removing module downloads may require network access to build again."),

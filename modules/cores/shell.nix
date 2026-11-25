@@ -116,10 +116,10 @@ in
           ${builtins.readFile ../../files/zsh/fzf-preview.zsh}
           zstyle -e ':fzf-tab:*' fzf-flags '
             reply=( "--color=${fzfColors}" --border=rounded )
-            if (( COLUMNS >= 100 && LINES >= 20 )); then
+            if (( COLUMNS >= 100 )); then
               reply+=( --preview-window=right:55%:wrap )
             else
-              reply+=( --preview-window=hidden )
+              reply+=( --preview-window=right:45%:wrap )
             fi
           '
         ''}

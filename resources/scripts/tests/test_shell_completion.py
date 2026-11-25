@@ -180,7 +180,7 @@ class CompletionRuntimeTests(unittest.TestCase):
         tmux = shutil.which("tmux")
         self.assertIsNotNone(tmux, "Completion runtime checks require tmux")
         for count in (6, 12, 30):
-            for width in (80, 120):
+            for width in (60, 80, 120):
                 for height in (12, 24):
                     with self.subTest(count=count, width=width, height=height):
                         self.check_visible_candidates(tmux, count, width, height)
@@ -230,7 +230,7 @@ class CompletionRuntimeTests(unittest.TestCase):
                 "_describe -t fixture-items 'Fixture entries' values; }",
                 "fixture-cmd() { :; }", "compdef _fixture_complete fixture-cmd",
                 # Synthetic preview exercises the layout without reading host files.
-                "zstyle ':fzf-tab:complete:*:*' fzf-preview 'print ENVY_SYNTHETIC_PREVIEW'",
+                "zstyle ':fzf-tab:complete:*:*' fzf-preview 'print PREVIEW_OK'",
                 "PROMPT='READY> '",
             ]))
             try:
@@ -244,11 +244,10 @@ class CompletionRuntimeTests(unittest.TestCase):
                 screen = screen_until(lambda screen: len(set(re.findall(r"option-\d{2}", screen))) >= expected)
                 visible = set(re.findall(r"option-\d{2}", screen))
                 self.assertGreaterEqual(len(visible), expected, screen)
-                if width >= 100 and height >= 20:
-                    screen = screen_until(lambda screen: "ENVY_SYNTHETIC_PREVIEW" in screen)
-                    self.assertGreaterEqual(len(set(re.findall(r"option-\d{2}", screen))), expected, screen)
-                else:
-                    self.assertNotIn("ENVY_SYNTHETIC_PREVIEW", screen)
+                screen = screen_until(lambda screen: "PREVIEW_OK" in screen)
+                self.assertGreaterEqual(len(set(re.findall(r"option-\d{2}", screen))), expected, screen)
+                preview_line = next(line for line in screen.splitlines() if "PREVIEW_OK" in line)
+                self.assertGreater(preview_line.index("PREVIEW_OK"), width // 3, screen)
             finally:
                 try:
                     # Let fzf finish its temporary-file writes before removing HOME.

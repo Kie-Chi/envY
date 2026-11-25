@@ -384,13 +384,15 @@
           bash -n resources/scripts/mirror-env.sh
           bash -n ${./resources/scripts/flake-source-mirror.sh}
           bash -n resources/scripts/nix-trust.sh
+          bash -n modules/desktops/darwin/check-app-management.sh
           shellcheck -x envy install.sh setup.sh requires.sh \
             resources/scripts/mirror-env.sh resources/scripts/flake-source-mirror.sh \
             resources/scripts/nix-trust.sh resources/scripts/nix-darwin-etc.sh \
             resources/scripts/spk resources/scripts/ppack resources/scripts/scrctl \
             resources/helpers/fix-pipewire resources/helpers/nscrctl \
             resources/helpers/quake resources/helpers/screenshot \
-            modules/agents/amux/image/entry.sh
+            modules/agents/amux/image/entry.sh \
+            modules/desktops/darwin/check-app-management.sh
           # Sourced fragments carry no shebang; name the shell that reads them.
           shellcheck -s sh modules/agents/amux/image/profile.sh
           shellcheck -s bash files/fcitx/deploy.sh

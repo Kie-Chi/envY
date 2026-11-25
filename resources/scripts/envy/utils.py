@@ -381,21 +381,25 @@ def esudo(
         )
         return subprocess.CompletedProcess(command, 0, "", "")
     if passwd:
-        # Try password-based sudo first.
-        result = run_process(
-            [sudo_binary, "-S", *args],
+        # Authenticate separately: a business failure must never replay activation.
+        authentication = run_process(
+            [sudo_binary, "-S", "-v"],
             stdin_data=passwd,
-            capture=capture,
+            capture=True,
             check=False,
             cwd=effective_cwd,
-            activity=activity,
+            activity="sudo authentication",
         )
-        if result.returncode == 0:
+        if authentication.returncode == 0:
             log.diagnostic_console.print("sudo: authentication succeeded", markup=False, highlight=False)
+            result = run_process(
+                [sudo_binary, "-n", *args],
+                capture=capture, check=True, cwd=effective_cwd, activity=activity,
+            )
             if capture and result.stdout:
                 print(result.stdout)
             return result
-        # Fall through to interactive sudo
+        # Only authentication has run, so an interactive fallback is safe.
     # A cached sudo ticket can authenticate without a prompt even when the TUI
     # has closed stdin for a streamed workflow. Reuse it explicitly before
     # deciding that this apply needs the outer interactive terminal.

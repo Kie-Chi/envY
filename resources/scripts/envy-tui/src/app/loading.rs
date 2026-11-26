@@ -11,13 +11,24 @@ use crate::{
     snapshot,
 };
 
-use super::{App, SEARCH_CACHE_LIMIT, WORKFLOW_LOG_LIMIT};
+use super::{App, SEARCH_CACHE_LIMIT, STORAGE_CACHE_LIMIT, WORKFLOW_LOG_LIMIT};
 
 impl App {
-    fn prepare_target(&mut self, target: &LoadTarget) {
+    pub(super) fn prepare_target(&mut self, target: &LoadTarget) {
         match target {
             LoadTarget::Screen(screen) => {
                 self.pages.entry(*screen).or_default();
+            }
+            LoadTarget::Storage(request) => {
+                if let Some(index) = self.storage_order.iter().position(|item| item == request) {
+                    self.storage_order.remove(index);
+                } else if self.storage_order.len() >= STORAGE_CACHE_LIMIT {
+                    if let Some(oldest) = self.storage_order.pop_front() {
+                        self.storage_cache.remove(&oldest);
+                    }
+                }
+                self.storage_order.push_back(request.clone());
+                self.storage_cache.entry(request.clone()).or_default();
             }
             LoadTarget::Search(query) => {
                 if let Some(index) = self.search_order.iter().position(|item| item == query) {
@@ -41,7 +52,13 @@ impl App {
         self.prepare_target(&target);
         let should_start = self
             .state_for_target(&target)
-            .map(|state| state.needs_load(force))
+            .map(|state| {
+                if matches!(target, LoadTarget::Storage(_)) {
+                    !state.loading && (force || (!state.has_content() && state.error.is_none()))
+                } else {
+                    state.needs_load(force)
+                }
+            })
             .unwrap_or(true);
         if !should_start {
             self.sync_status();
@@ -61,10 +78,10 @@ impl App {
         }
         let saved_age = match &target {
             LoadTarget::Screen(screen) => self.saved_age(*screen),
-            LoadTarget::Search(_) => None,
+            LoadTarget::Search(_) | LoadTarget::Storage(_) => None,
         };
         self.status = match saved_age {
-            Some(age) => format!("Showing {} from {age}", target.title().to_lowercase()),
+            Some(age) => format!("Cached · {age}"),
             None if has_content => format!("Refreshing {}", target.title().to_lowercase()),
             None => format!("Loading {}", target.title().to_lowercase()),
         };
@@ -121,17 +138,19 @@ impl App {
             .saved_at
             .map(|saved_at| crate::model::relative_age(saved_at, self.now()));
         self.status = if let (true, Some(age)) = (state.loading, &saved_age) {
-            format!("Showing {} from {age}", target.title().to_lowercase())
+            format!("Cached · {age}")
         } else if let (Some(_), Some(age)) = (&state.error, &saved_age) {
-            format!("{} refresh failed; showing data from {age}", target.title())
+            format!("! Refresh failed · cached {age}")
         } else if state.loading && state.has_content() {
             format!("Refreshing {}", target.title().to_lowercase())
         } else if state.loading {
             format!("Loading {}", target.title().to_lowercase())
         } else if state.error.is_some() && state.has_content() {
-            format!("{} refresh failed; showing cached data", target.title())
+            "! Refresh failed · cached data".into()
         } else if state.error.is_some() {
-            format!("{} load failed", target.title())
+            format!("! {} unavailable", target.title())
+        } else if let Some(report) = &state.storage_report {
+            report.summary()
         } else if state.has_content() {
             format!("{} cached", target.title())
         } else {
@@ -142,6 +161,73 @@ impl App {
     pub fn receive_messages(&mut self) {
         while let Ok(message) = self.rx.try_recv() {
             match message {
+                Message::StorageActionFinished { request, result } => self.receive_storage_action(request, result),
+                Message::StorageActionOutput { request, chunk } => self.storage_action_output(request, chunk),
+                Message::StorageFinished {
+                    request,
+                    target,
+                    result,
+                } => {
+                    let load_target = LoadTarget::Storage(target.clone());
+                    let is_current = self.current_target().as_ref() == Some(&load_target);
+                    let now = self.now();
+                    let accepted = self.storage_cache.get_mut(&target)
+                        .filter(|state| state.request == Some(request))
+                        .map(|state| {
+                            state.loading = false;
+                            state.request = None;
+                            match result {
+                                Ok(report) => {
+                                    let expected = format!("storage {}", target.view.command());
+                                    match crate::transport::validate_envelope(&report.payload, &expected) {
+                                        Ok(()) if report.view == target.view => {
+                                            state.storage_report = Some(report);
+                                            state.received_at = Some(now);
+                                            state.saved_at = None;
+                                            state.error = None;
+                                        }
+                                        other => {
+                                            state.error = Some(other.err().map(|error| error.to_string())
+                                                .unwrap_or_else(|| "Storage response view does not match request".into()));
+                                        }
+                                    }
+                                }
+                                Err(error) => state.error = Some(error),
+                            }
+                        }).is_some();
+                    if accepted && is_current {
+                        self.storage_selected = self
+                            .storage_selected
+                            .min(self.row_count().saturating_sub(1));
+                        self.sync_status();
+                    }
+                }
+                Message::ReportFinished { request, target, result } => {
+                    let report = crate::model::WorkflowReport::from_result(result);
+                    let now = self.now();
+                    let accepted = self.state_for_target_mut(&target)
+                        .filter(|state| state.request == Some(request))
+                        .map(|state| {
+                            state.loading = false;
+                            state.request = None;
+                            state.received_at = Some(now);
+                            state.saved_at = None;
+                            state.error = if report.is_success() { None } else {
+                                Some(report.error.clone().unwrap_or_else(|| report.response.as_ref()
+                                    .map(|response| crate::transport::failure_message(&response.payload, "Backend report failed or incomplete"))
+                                    .unwrap_or_else(|| "Backend report unavailable".into())))
+                            };
+                            state.payload = report.response.as_ref().map(|response| response.payload.clone());
+                            state.workflow_report = Some(report);
+                        }).is_some();
+                    if accepted && self.current_target().as_ref() == Some(&target) {
+                        self.status = format!("{} report ready; Enter for details", target.title());
+                    }
+                }
+                Message::Loaded {
+                    target: LoadTarget::Storage(_),
+                    ..
+                } => {}
                 Message::Loaded {
                     request,
                     target,
@@ -158,10 +244,12 @@ impl App {
                                 .map(|path| (path, payload.clone()))
                         })
                         .flatten();
+                    let now = self.now();
                     let accepted = self
                         .state_for_target_mut(&target)
                         .filter(|state| state.request == Some(request))
                         .map(|state| {
+                            state.received_at = Some(now);
                             state.payload = Some(payload);
                             state.loading = false;
                             state.error = None;
@@ -218,17 +306,17 @@ impl App {
                     match (stage, result) {
                         (MutationStage::Preview, Ok(payload)) => {
                             self.status =
-                                format!("{} plan ready for {}", intent.action.label(), intent.item);
+                                format!("Review {}", intent.item);
                             self.pending_mutation = Some(MutationPreview { intent, payload });
                         }
                         (MutationStage::Apply, Ok(_)) => {
                             let description =
-                                format!("{} applied for {}", intent.action.label(), intent.item);
+                                format!("✓ {} saved", intent.item);
                             self.pending_mutation = None;
                             self.invalidate_after_mutation();
                             self.load_current(true);
                             self.post_mutation = Some(intent.item.clone());
-                            self.status = format!("{description}; refreshing data");
+                            self.status = description;
                         }
                         (_, Err(error)) => {
                             self.pending_mutation = None;
@@ -272,13 +360,10 @@ impl App {
                     if self.detail_request == Some(request) =>
                 {
                     self.detail_request = None;
-                    match result {
-                        Ok(payload) => self.detail = Some(DetailView::HistoryDiff(payload)),
-                        Err(error) => {
-                            self.detail = None;
-                            self.overlay_error = Some(error);
-                        }
-                    }
+                    self.detail = Some(DetailView::Report {
+                        title: "GENERATION DIFF".into(),
+                        report: crate::model::WorkflowReport::from_result(result), selected: None,
+                    });
                 }
                 Message::SettingApplied {
                     request,
@@ -290,11 +375,12 @@ impl App {
                     match result {
                         Ok(_) => {
                             self.refresh_after_setting();
-                            self.status = format!("{} updated; refreshing", key.label());
+                            self.status = format!("✓ {} saved", key.title());
                         }
                         Err(error) => {
+                            self.invalidate_setting_context();
                             self.overlay_error = Some(error);
-                            self.status = format!("{} change failed", key.label());
+                            self.status = format!("! {} failed · reload Settings to check saved state", key.title());
                         }
                     }
                 }
@@ -381,7 +467,7 @@ impl App {
                             // candidate list or turn a network condition into a
                             // blocking TUI error.
                             self.status = format!(
-                                "{target} measurement unavailable; source selection remains usable"
+                                "! {target} measurement unavailable"
                             );
                         }
                     }
@@ -410,7 +496,7 @@ impl App {
                             self.invalidate_after_mirror();
                             self.load_current(true);
                             self.status =
-                                format!("{target} mirror override saved; plan/apply when ready");
+                                format!("✓ {target} mirror saved · apply to activate");
                         }
                         (_, Err(error)) => {
                             self.pending_mirror = None;
@@ -420,11 +506,30 @@ impl App {
                     }
                 }
                 Message::MirrorMutationFinished { .. } => {}
+                Message::JsonWorkflowFinished { request, result }
+                    if self.workflow_stream_request == Some(request) =>
+                {
+                    self.workflow_stream_request = None;
+                    self.workflow_cancel = None;
+                    let report = crate::model::WorkflowReport::from_result(result);
+                    let success = report.is_success();
+                    if let Some(log) = self.workflow_log.as_mut() {
+                        log.running = false;
+                        log.success = Some(success);
+                        log.report = Some(report);
+                        log.follow = false;
+                        log.scroll = 0;
+                    }
+                    self.status = if success { "✓ Report ready" } else { "! Report incomplete · see details" }.into();
+                }
+                Message::JsonWorkflowFinished { .. } => {}
                 Message::WorkflowOutput { request, line }
                     if self.workflow_stream_request == Some(request) =>
                 {
                     if let Some(log) = self.workflow_log.as_mut() {
-                        log.lines.push(line);
+                        if log.json {
+                            log.lines.extend(line.split('\n').map(crate::backend::strip_ansi));
+                        } else { log.lines.push(line); }
                         if log.lines.len() > WORKFLOW_LOG_LIMIT {
                             let overflow = log.lines.len() - WORKFLOW_LOG_LIMIT;
                             log.lines.drain(0..overflow);

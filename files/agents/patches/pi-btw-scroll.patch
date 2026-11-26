@@ -1,0 +1,86 @@
+--- a/btw-ui.ts
++++ b/btw-ui.ts
+@@ -25,7 +25,7 @@
+  */
+ 
+ import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
+-import type { OverlayOptions } from "@earendil-works/pi-tui";
++import type { OverlayOptions, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
+ import {
+ 	type Component,
+ 	Key,
+@@ -76,6 +76,8 @@
+ 	private answer = "";
+ 	private error = "";
+ 	private scrollOffset = 0;
++	private maxScrollOffset = 0;
++	private viewportRows = 1;
+ 	private trimmed = false;
+ 	private history: BtwTurn[];
+ 
+@@ -118,15 +120,30 @@
+ 			return;
+ 		}
+ 		if (matchesKey(data, Key.up)) {
+-			this.scrollOffset = Math.max(0, this.scrollOffset - 1);
++			this.scrollBy(1);
+ 			this.tui.requestRender();
+ 			return;
+ 		}
+ 		if (matchesKey(data, Key.down)) {
+-			this.scrollOffset = this.scrollOffset + 1;
++			this.scrollBy(-1);
+ 			this.tui.requestRender();
+ 			return;
+ 		}
++		if (matchesKey(data, Key.pageUp)) {
++			this.scrollBy(this.viewportRows);
++			this.tui.requestRender();
++			return;
++		}
++		if (matchesKey(data, Key.pageDown)) {
++			this.scrollBy(-this.viewportRows);
++			this.tui.requestRender();
++			return;
++		}
++		if (matchesKey(data, Key.home) || matchesKey(data, Key.end)) {
++			this.scrollOffset = matchesKey(data, Key.home) ? this.maxScrollOffset : 0;
++			this.tui.requestRender();
++			return;
++		}
+ 		if (data === "x") {
+ 			this.history = [];
+ 			this.onClearHistory();
+@@ -136,6 +153,16 @@
+ 		}
+ 	}
+ 
++	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
++		if (event.type !== "wheel") return undefined;
++		this.scrollBy(-(event.wheelDelta ?? 0));
++		return { handled: true, render: true };
++	}
++
++	private scrollBy(lines: number): void {
++		this.scrollOffset = Math.max(0, Math.min(this.maxScrollOffset, this.scrollOffset + lines));
++	}
++
+ 	render(width: number): string[] {
+ 		const banner = this.renderBanner(width);
+ 		const historyLines = this.history.map((h) => this.historyLine(userMessageText(h.userMessage), width));
+@@ -176,11 +203,13 @@
+ 		// ↑/↓ scrolls the top (history) up into the clipped region.
+ 		const termRows = (this.tui.terminal as { rows?: number }).rows ?? 24;
+ 		const maxRows = Math.max(4, Math.floor(termRows * BTW_MAX_HEIGHT_RATIO));
++		this.viewportRows = maxRows;
++		this.maxScrollOffset = Math.max(0, natural.length - maxRows);
++		this.scrollOffset = Math.min(this.scrollOffset, this.maxScrollOffset);
+ 		if (natural.length <= maxRows) {
+ 			return natural;
+ 		}
+-		const excess = natural.length - maxRows;
+-		if (this.scrollOffset > excess) this.scrollOffset = excess;
++		const excess = this.maxScrollOffset;
+ 		// scrollOffset=0 shows the BOTTOM (newest). Scrolling up reveals older history.
+ 		const start = excess - this.scrollOffset;
+ 		return natural.slice(start, start + maxRows);

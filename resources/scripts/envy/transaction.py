@@ -85,7 +85,7 @@ def transaction_lock(path: Path):
 
 
 class FileTransaction:
-    """Restore captured paths unless commit() is reached without an exception."""
+    """Restore captured paths unless committed successfully or explicitly preserved."""
 
     def __init__(self, paths: list[Path], *, missing_paths: Iterable[Path] = ()):
         forced_missing = {path.expanduser().resolve() for path in missing_paths}
@@ -95,12 +95,17 @@ class FileTransaction:
             for path in paths
         ]
         self._committed = False
+        self._preserve_current = False
 
     def __enter__(self) -> "FileTransaction":
         return self
 
     def commit(self) -> None:
         self._committed = True
+
+    def preserve_current(self) -> None:
+        """Opt out of automatic rollback, including when the context exits with an error."""
+        self._preserve_current = True
 
     def rollback(self) -> None:
         errors: list[OSError] = []
@@ -113,6 +118,6 @@ class FileTransaction:
             raise RuntimeError(f"failed to restore {len(errors)} transaction file(s)") from errors[0]
 
     def __exit__(self, exc_type, exc, traceback) -> bool:
-        if exc_type is not None or not self._committed:
+        if not self._preserve_current and (exc_type is not None or not self._committed):
             self.rollback()
         return False

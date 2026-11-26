@@ -1,13 +1,13 @@
 """Doctor orchestration and terminal rendering."""
 
 from collections.abc import Callable, Iterable
-import json
 
 from rich.table import Table
 from rich.text import Text
 
 from envy import log
-from envy.doctor.checks import agents, apps, config, network, system
+from envy.jsonio import write_document
+from envy.doctor.checks import agents, apps, config, habits, network, system
 from envy.doctor.model import (
     SECTION_AGENTS,
     SECTION_AUTH,
@@ -33,9 +33,10 @@ CHECKS: dict[str, CheckFn] = {
     "apps": apps.run_checks,
     "network": network.run_checks,
     "agents": agents.run_checks,
+    "habits": habits.run_checks,
 }
 
-DEFAULT_CHECKS = ["config", "system", "apps", "agents"]
+DEFAULT_CHECKS = ["config", "system", "apps", "agents", "habits"]
 
 
 CONFIG_RESULT_SECTIONS: set[DoctorSection] = {
@@ -76,6 +77,12 @@ def run_sections(
             log.step("doctor", f"checking {section}")
         if section == "apps":
             results.extend(apps.run_checks(selection=selection))
+        elif section == "habits":
+            checked = check()
+            if SECTION_STATE in selection.sections and SECTION_RUNTIME not in selection.sections:
+                for result in checked:
+                    result.section = SECTION_STATE
+            results.extend(checked)
         else:
             results.extend(check())
     return errors + filter_results(results, selection)
@@ -86,6 +93,8 @@ def _scope_needed(section: str, selection: DoctorSelection) -> bool:
         return False
     if not selection.sections:
         return True
+    if section == "habits":
+        return bool(selection.sections & {SECTION_RUNTIME, SECTION_STATE})
     if section == "agents":
         return SECTION_AGENTS in selection.sections
     if section == "config":
@@ -161,7 +170,9 @@ def render(results: list[CheckResult]) -> None:
         log.ok("doctor", "all checks passed")
 
 
-def render_json(results: list[CheckResult], *, strict: bool = False) -> None:
+def render_json(
+    results: list[CheckResult], *, strict: bool = False, command: str | None = None,
+) -> None:
     payload = {
         "schemaVersion": 1,
         "summary": {
@@ -173,7 +184,14 @@ def render_json(results: list[CheckResult], *, strict: bool = False) -> None:
         },
         "results": [result.to_dict() for result in results],
     }
-    log.console.print_json(json.dumps(payload, ensure_ascii=False, default=str))
+    if command is not None:
+        failed = exit_code(results, strict=strict) != 0
+        payload = {
+            **payload, "command": command, "ok": not failed, "data": payload,
+            "warnings": [result.message for result in results if result.warned],
+            **({"error": {"code": "doctor-check-failed", "message": "Doctor checks failed"}} if failed else {}),
+        }
+    write_document(payload)
 
 
 def exit_code(results: list[CheckResult], *, strict: bool = False) -> int:

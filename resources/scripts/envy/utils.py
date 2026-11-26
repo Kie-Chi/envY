@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from envy import log
-from envy.process import run_process
+from envy.process import CommandError, run_process
 from envy.secure_io import atomic_write_text, secure_copy
 from envy.sops_format import content_is_sops_encrypted
 
@@ -203,19 +203,21 @@ def machine_config_file(machine_id: str | None = None, platform: str | None = No
     return machine_config_dir(platform) / f"{machine_id or current_machine_id()}.nix"
 
 
-def machine_manifest_attr(machine_id: str | None = None) -> str:
+def machine_manifest_attr(machine_id: str | None = None, *, source: Path | None = None) -> str:
     selected = machine_id or current_machine_id()
+    root = f"path:{source}" if source is not None else "path:."
     if platform_name() == "darwin":
-        return f"path:.#darwinConfigurations.{selected}.config.envy.machine.manifest"
-    return f"path:.#homeConfigurations.{selected}.config.envy.machine.manifest"
+        return f"{root}#darwinConfigurations.{selected}.config.envy.machine.manifest"
+    return f"{root}#homeConfigurations.{selected}.config.envy.machine.manifest"
 
 
-def machine_build_attr(machine_id: str | None = None, *, drv_path: bool = False) -> str:
+def machine_build_attr(machine_id: str | None = None, *, drv_path: bool = False, source: Path | None = None) -> str:
     selected = machine_id or current_machine_id()
+    root = f"path:{source}" if source is not None else "path:."
     if platform_name() == "darwin":
-        attr = f"path:.#darwinConfigurations.{selected}.config.system.build.toplevel"
+        attr = f"{root}#darwinConfigurations.{selected}.config.system.build.toplevel"
     else:
-        attr = f"path:.#homeConfigurations.{selected}.activationPackage"
+        attr = f"{root}#homeConfigurations.{selected}.activationPackage"
     return f"{attr}.drvPath" if drv_path else attr
 
 
@@ -284,7 +286,7 @@ def _get_sudo_passwd() -> str | None:
     return None
 
 
-def _sudo_ticket_available() -> bool:
+def _sudo_ticket_available(sudo_binary: str = "sudo") -> bool:
     """Return whether sudo can authenticate without prompting right now.
 
     The TUI runs streamed workflows with stdin closed.  A cached sudo
@@ -294,7 +296,7 @@ def _sudo_ticket_available() -> bool:
     """
     try:
         result = subprocess.run(
-            ["sudo", "-n", "-v"],
+            [sudo_binary, "-n", "-v"],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -332,36 +334,90 @@ def backup_sensitive_file(filepath: Path) -> Optional[Path]:
 def esudo(
     *args: str, capture: bool = False, cwd: Path | None = None,
     activity: str | None = None,
+    sudo_binary: str = "sudo", non_interactive: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """sudo with automatic password injection from sops.
     capture=False: stream output live (default, for long-running commands).
-    capture=True:  capture output for return-value inspection."""
+    capture=True:  capture output for return-value inspection.
+    non_interactive=True: use sops or a cached ticket once, capturing and
+    discarding authentication output and raising only fixed diagnostics.
+    """
     effective_cwd = str(cwd or ENVY_ROOT)
     passwd = _get_sudo_passwd()
     if passwd:
-        # Try password-based sudo first
-        result = run_process(
-            ["sudo", "-S", *args],
+        suffix = (passwd[-1] if passwd[-1].isprintable() else "?") if len(passwd) > 1 else ""
+        log.diagnostic_console.print(
+            f"sudo: password is given (******{suffix}) source=sops",
+            markup=False, highlight=False,
+        )
+    if non_interactive:
+        if passwd:
+            command = [sudo_binary, "-S", *args]
+        elif _sudo_ticket_available(sudo_binary=sudo_binary):
+            command = [sudo_binary, "-n", *args]
+        else:
+            raise CommandError(subprocess.CompletedProcess(
+                [sudo_binary, "-n", *args], 1, "",
+                "sudo authentication unavailable: no non-interactive credentials",
+            ))
+        # Never stream authentication diagnostics or retry a business command.
+        try:
+            result = run_process(
+                command, stdin_data=passwd, capture=True, check=False,
+                cwd=effective_cwd, activity=activity,
+            )
+            returncode = result.returncode
+        except CommandError as exc:
+            returncode = exc.returncode
+        except OSError:
+            returncode = 1
+        if returncode != 0:
+            raise CommandError(subprocess.CompletedProcess(
+                command, returncode, "", "sudo authentication failed",
+            )) from None
+        cached = " (cached authorization)" if not passwd else ""
+        log.diagnostic_console.print(
+            f"sudo: authentication succeeded{cached}", markup=False, highlight=False,
+        )
+        return subprocess.CompletedProcess(command, 0, "", "")
+    if passwd:
+        # Authenticate separately: a business failure must never replay activation.
+        authentication = run_process(
+            [sudo_binary, "-S", "-v"],
             stdin_data=passwd,
-            capture=capture,
+            capture=True,
             check=False,
             cwd=effective_cwd,
-            activity=activity,
+            activity="sudo authentication",
         )
-        if result.returncode == 0:
+        if authentication.returncode == 0:
+            log.diagnostic_console.print("sudo: authentication succeeded", markup=False, highlight=False)
+            result = run_process(
+                [sudo_binary, "-n", *args],
+                capture=capture, check=True, cwd=effective_cwd, activity=activity,
+            )
             if capture and result.stdout:
                 print(result.stdout)
             return result
-        # Fall through to interactive sudo
+        # Only authentication has run, so an interactive fallback is safe.
     # A cached sudo ticket can authenticate without a prompt even when the TUI
     # has closed stdin for a streamed workflow. Reuse it explicitly before
     # deciding that this apply needs the outer interactive terminal.
     if not sys.stdin.isatty():
-        if _sudo_ticket_available():
-            return run_process(
-                ["sudo", "-n", *args], cwd=effective_cwd, capture=capture,
+        ticket_available = (
+            _sudo_ticket_available() if sudo_binary == "sudo"
+            else _sudo_ticket_available(sudo_binary=sudo_binary)
+        )
+        if ticket_available:
+            result = run_process(
+                [sudo_binary, "-n", *args], cwd=effective_cwd, capture=capture,
                 check=True, activity=activity,
             )
+            log.diagnostic_console.print(
+                "sudo: authentication succeeded (cached authorization)",
+                markup=False, highlight=False,
+            )
+            return result
         # Interactive sudo needs a TTY to prompt for the password. When stdin
         # is not a terminal, refuse instead of hanging on an invisible prompt.
         log.error(
@@ -370,10 +426,12 @@ def esudo(
             hint="run this in a terminal, or provision the sops sudo password",
         )
         raise SystemExit(1)
-    return run_process(
-        ["sudo", *args], cwd=effective_cwd, capture=capture, check=True,
+    result = run_process(
+        [sudo_binary, *args], cwd=effective_cwd, capture=capture, check=True,
         activity=activity,
     )
+    log.diagnostic_console.print("sudo: authentication succeeded", markup=False, highlight=False)
+    return result
 
 # ==========================================
 # APPLY ROUTING
@@ -391,9 +449,11 @@ def run_hm(*args: str) -> None:
         ], capture=False, activity="Home Manager activation")
 
 
-def run_darwin_switch() -> None:
-    """Run nix-darwin switch with sudo."""
-    etc_migration = ENVY_ROOT / "resources" / "scripts" / "nix-darwin-etc.sh"
+def run_darwin_switch(*, source: Path | None = None, machine: str | None = None) -> None:
+    """Run nix-darwin switch with sudo, optionally from a frozen source."""
+    target = f"path:{source}#{machine or current_machine_id()}" if source is not None else flake_target()
+    inputs_from = f"path:{source}" if source is not None else "path:."
+    etc_migration = (source if source is not None else ENVY_ROOT) / "resources" / "scripts" / "nix-darwin-etc.sh"
     if not etc_migration.is_file():
         raise RuntimeError(f"missing nix-darwin /etc migration script: {etc_migration}")
     log.step("darwin", "preparing /etc for nix-darwin")
@@ -406,15 +466,15 @@ def run_darwin_switch() -> None:
     runner = shutil.which("darwin-rebuild")
     if runner:
         log.info("darwin", "using installed runner", path=runner)
-        command = [runner, "switch", "--flake", flake_target(), "--impure"]
+        command = [runner, "switch", "--flake", target, "--impure"]
     else:
         log.warn("darwin", "darwin-rebuild not found, using repository-locked fallback")
         command = [
             # sudo does not retain bootstrap's NIX_CONFIG or the user's Nix
             # configuration, so enable flake support on this invocation too.
             "nix", "--extra-experimental-features", "nix-command flakes",
-            "run", "--inputs-from", "path:.", "darwin", "--", "switch",
-            "--flake", flake_target(), "--impure",
+            "run", "--inputs-from", inputs_from, "darwin", "--", "switch",
+            "--flake", target, "--impure",
         ]
     esudo(
         "--preserve-env=HOME,NIX_CONFIG", *command, capture=False,
@@ -424,13 +484,10 @@ def run_darwin_switch() -> None:
 
 
 def run_apply() -> None:
-    """Apply configuration — routes to platform-appropriate method."""
-    if PLATFORM == "darwin":
-        run_darwin_switch()
-    else:
-        log.step("hm", "applying Home Manager configuration")
-        run_hm("switch", "--flake", flake_target(), "--impure")
-        log.ok("hm", "configuration applied, new generation created")
+    """Build and activate a frozen source, recording only verified baselines."""
+    from envy.workflows.system import apply_frozen_configuration
+
+    apply_frozen_configuration()
 
 
 def _command_exists(name: str) -> bool:

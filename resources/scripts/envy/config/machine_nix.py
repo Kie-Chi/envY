@@ -44,6 +44,7 @@ def _read_nix_assignments(path: Path) -> dict:
     if not path.exists():
         return values
     string_pattern = re.compile(r'^\s*([A-Za-z0-9_.-]+)\s*=\s*"((?:\\.|[^"])*)"\s*;')
+    int_pattern = re.compile(r'^\s*([A-Za-z0-9_.-]+)\s*=\s*(-?[0-9]+)\s*;')
     bool_pattern = re.compile(r'^\s*([A-Za-z0-9_.-]+)\s*=\s*(true|false)\s*;')
     for line in path.read_text().splitlines():
         string_match = string_pattern.match(line)
@@ -53,6 +54,10 @@ def _read_nix_assignments(path: Path) -> dict:
         bool_match = bool_pattern.match(line)
         if bool_match:
             values[bool_match.group(1)] = bool_match.group(2)
+            continue
+        int_match = int_pattern.match(line)
+        if int_match:
+            values[int_match.group(1)] = int_match.group(2)
     return values
 
 
@@ -64,7 +69,25 @@ def read_machine_nix(machine_id: str | None = None) -> dict:
     return _read_nix_assignments(machine_config_file(machine_id))
 
 
-def _render_machine_block(values: dict) -> str:
+def _custom_block_lines(block: str) -> list[str]:
+    """Preserve hand-written policy inside the managed block across rewrites."""
+    managed_paths = {field.path for field in MACHINE_FIELDS} | set(OBSOLETE_MACHINE_KEYS)
+    assignment = re.compile(r"^\s*([A-Za-z0-9_.-]+)\s*=.*;\s*$")
+    kept = []
+    for line in block.splitlines():
+        stripped = line.strip()
+        if (not stripped or stripped == MANAGED_START.strip() or stripped == MANAGED_END.strip()
+                or stripped.startswith("# ---") or (stripped.startswith("#")
+                                                    and "updates only this block" in stripped)):
+            continue
+        match = assignment.match(line)
+        if match and match.group(1) in managed_paths:
+            continue
+        kept.append(line)
+    return kept
+
+
+def _render_machine_block(values: dict, custom: list[str] | None = None) -> str:
     groups = sorted(set(f.group for f in MACHINE_FIELDS))
     lines = [MANAGED_START + "\n", "  # `envy config` updates only this block. Other machine policy stays intact.\n"]
     for group in groups:
@@ -79,8 +102,16 @@ def _render_machine_block(values: dict) -> str:
                     raise ValueError(f"{f.path} must be true or false")
                 val = raw.lower()
                 lines.append(f"  {f.path} = {val};\n")
+            elif f.nix_type == "int":
+                raw = str(value)
+                if not re.fullmatch(r"-?[0-9]+", raw):
+                    raise ValueError(f"{f.path} must be an integer")
+                lines.append(f"  {f.path} = {int(raw)};\n")
             else:
                 lines.append(f"  {f.path} = {_render_string(value)};\n")
+    if custom:
+        lines.append("\n")
+        lines.extend(line + "\n" for line in custom)
     lines.append(MANAGED_END)
     return "".join(lines)
 
@@ -92,11 +123,13 @@ def write_machine_nix(values: dict, machine_id: str | None = None) -> None:
         raise FileNotFoundError(f"machine configuration is missing: {path}")
 
     text = path.read_text()
-    block = _render_machine_block(values)
     managed_pattern = re.compile(
         rf"(?ms)^{re.escape(MANAGED_START)}$.*?^{re.escape(MANAGED_END)}$"
     )
-    if managed_pattern.search(text):
+    existing = managed_pattern.search(text)
+    custom = _custom_block_lines(existing.group(0)) if existing else []
+    block = _render_machine_block(values, custom)
+    if existing:
         # A callable keeps re from reading backslashes in block as escapes.
         updated = managed_pattern.sub(lambda _: block, text, count=1)
     else:

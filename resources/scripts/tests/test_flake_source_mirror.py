@@ -223,6 +223,16 @@ class FlakeSourceMirrorTests(unittest.TestCase):
                 process.run_process(["nix", "eval"], cwd=root, env=env, check=False)
             self.assertEqual(calls.read_text().splitlines(), ["called"])
 
+    def test_metadata_skips_input_prefetch_but_build_keeps_it(self):
+        root = Path("/fixture")
+        env = {"ENVY_MIRROR": "china"}
+        with patch.object(process, "prime_flake_sources") as prime:
+            for nix in ("nix", "/nix/store/fixture/bin/nix"):
+                process._maybe_prime_flake_sources([nix, "flake", "metadata", "--json"], root, env)
+            prime.assert_not_called()
+            process._maybe_prime_flake_sources(["nix", "build", "path:.#fixture"], root, env)
+            prime.assert_called_once_with(root, env)
+
     def test_prime_retries_after_lock_changes(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = self.fixture(temporary)

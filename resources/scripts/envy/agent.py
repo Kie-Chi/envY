@@ -11,13 +11,18 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import sys
+from contextlib import nullcontext, redirect_stdout
 from pathlib import Path
 from typing import Any, Optional
 
 import typer
 
 from envy import error, log
-from envy.agent_models import API_CHOICES, MODEL_LIMIT_FIELDS, model_bindings, profile_fields
+from envy.agent_auth import update_auth
+from envy.schemas.common.config import valid_thinking_level_map
+from envy.agent_models import API_CHOICES, MODEL_DEFAULT_FIELDS, MODEL_LIMIT_FIELDS, model_bindings, profile_fields
+from envy.agent_codex import CATALOG_NAME, model_catalog
 from envy.agent_completion import (
     complete_adapters,
     complete_agent_names,
@@ -36,12 +41,12 @@ from envy.config.secret_store import read_secrets_data
 from envy.config.updates import set_secret_value
 from envy.errno import ErrorCode
 from envy.evaluation import invalidate_machine_manifest, machine_manifest
-from envy.jsonio import emit, emit_error
+from envy.jsonio import emit, emit_error, write_document
 from envy.mutation import offer_mutation_commit
 from envy.nix_literals import LiteralError, LiteralReader, escape_string
 from envy.secure_io import atomic_write_text, ensure_private_directory
 from envy.transaction import FileTransaction
-from envy.structured_config import update_file
+from envy.structured_config import ConflictError, merge, update_file
 from envy.utils import SECRETS_FILE, current_machine_id
 
 
@@ -53,12 +58,12 @@ _SAFE_SECRET_PATH = re.compile(r"^[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*$")
 _KNOWN_ENDPOINTS = {"stepfun-openai", "stepfun-anthropic", "deepseek-openai"}
 _KNOWN_CREDENTIALS = {"stepfun", "deepseek"}
 _RUNTIME_DIR = Path.home() / ".config" / "envy" / "agent-runtime"
-_LIVE_AGENT_FIELDS = {"model", "endpoint", "credential", "api", "contextWindow", "maxTokens"}
+_LIVE_AGENT_FIELDS = {"thinkingLevelMap", "model", "endpoint", "credential", "api", "contextWindow", "maxTokens"}
 _LIVE_ENDPOINT_FIELDS = {"baseUrl", "protocol"}
-_PROFILE_FIELDS = ("api", "contextWindow", "credential", "endpoint", "maxTokens", "model")
+_PROFILE_FIELDS = ("thinkingLevelMap", "api", "contextWindow", "credential", "endpoint", "maxTokens", "model")
 _AGENT_FIELDS = (
     "adapter", "additionalSettings", "aliases", "api", "args", "command", "contextWindow",
-    "credential", "endpoint", "maxTokens", "model", "models", "moreThinking", "profile", "skills",
+    "credential", "endpoint", "maxTokens", "model", "models", "moreThinking", "profile", "skills", "thinkingLevelMap",
 )
 _ENDPOINT_FIELDS = ("baseUrl", "protocol")
 _ENDPOINT_PROTOCOLS = ("anthropic-compatible", "native", "openai-compatible")
@@ -204,6 +209,9 @@ def _validate_issues(values: dict[str, Any]) -> list[error.ConfigError]:
             flat_profiles.add(name)
             if field not in _PROFILE_FIELDS:
                 issues.append(error.unknown_field(path, _PROFILE_FIELDS))
+            elif field == "thinkingLevelMap":
+                if not valid_thinking_level_map(value):
+                    issues.append(error.invalid_type(path, "a Pi thinking level map or null"))
             elif field in MODEL_LIMIT_FIELDS:
                 if value is not None and (
                     isinstance(value, bool) or not isinstance(value, int) or value <= 0
@@ -218,6 +226,9 @@ def _validate_issues(values: dict[str, Any]) -> list[error.ConfigError]:
             flat_agents.add(name)
             if field not in _AGENT_FIELDS:
                 issues.append(error.unknown_field(path, _AGENT_FIELDS))
+            elif field == "thinkingLevelMap":
+                if not valid_thinking_level_map(value):
+                    issues.append(error.invalid_type(path, "a Pi thinking level map or null"))
             elif field in MODEL_LIMIT_FIELDS:
                 if value is not None and (
                     isinstance(value, bool) or not isinstance(value, int) or value <= 0
@@ -290,33 +301,43 @@ def _validate_issues(values: dict[str, Any]) -> list[error.ConfigError]:
             if value not in declared_profiles:
                 issues.append(
                     error.unknown_reference(
-                        path, "agent profile", declared="envy.agentProfiles.<name>"
+                        path, "profile", name=value, declared=f"envy.agentProfiles.{value}"
                     )
                 )
             continue
-        if not path.startswith("envy.agents.") or not path.endswith((".endpoint", ".credential")):
+        if not path.startswith(("envy.agents.", "envy.agentProfiles.")) or not path.endswith((".endpoint", ".credential")):
             continue
         if not isinstance(value, str):
             continue
         if path.endswith(".endpoint") and value not in declared_endpoints | _KNOWN_ENDPOINTS:
             issues.append(
-                error.unknown_reference(path, "endpoint", declared="envy.llm.endpoints.<name>")
+                error.unknown_reference(path, "endpoint", name=value, declared=f"envy.llm.endpoints.{value}.baseUrl")
             )
         if path.endswith(".credential") and value not in declared_credentials | _KNOWN_CREDENTIALS:
             issues.append(
-                error.unknown_reference(path, "credential", declared="envy.llm.credentials.<name>")
+                error.unknown_reference(path, "credential", name=value, declared=f"envy.llm.credentials.{value}.secretPath")
             )
 
     _, agents = _managed_manifest(values)
     for name, item in agents.items():
-        if not isinstance(item, dict) or "models" not in item:
+        if not isinstance(item, dict):
             continue
         path = f"envy.agents.{name}.models"
-        if item["models"] and (name != "pi" or item.get("adapter") != "pi"):
-            issues.append(error.invalid_value(path, "only the pi agent supports a non-empty model list"))
+        profile = _profile_values(values).get(item.get("profile"), {})
+        if item.get("adapter") != "pi" and (item.get("thinkingLevelMap") is not None or profile.get("thinkingLevelMap") is not None):
+            issues.append(error.invalid_value(f"envy.agents.{name}.thinkingLevelMap", "thinkingLevelMap requires the pi adapter"))
+        supports_models = (name, item.get("adapter")) in {("pi", "pi"), ("codex", "codex")}
+        if item.get("models") and not supports_models:
+            issues.append(error.invalid_value(path, "model lists require the pi or codex agent with its matching adapter"))
             continue
         try:
-            model_bindings(_initial_values() | values, item)
+            if item.get("adapter") == "codex":
+                _codex_bindings(_initial_values() | values, item, name=name)
+            elif item.get("adapter") == "pi" or "models" in item:
+                model_bindings(_initial_values() | values, item, name=name)
+        except error.ConfigValidationError as exc:
+            if not any(issue.path == exc.issue.path and issue.code == exc.issue.code for issue in issues):
+                issues.append(exc.issue)
         except (ValueError, TypeError) as exc:
             issues.append(error.invalid_value(path, str(exc)))
     return sorted(set(issues), key=lambda item: (item.path, item.message))
@@ -477,16 +498,17 @@ def config_view(
     for name, agent in sorted(normalized_agents.items()):
         for field in ("adapter", "endpoint", "credential", "model", "contextWindow", "maxTokens", "command"):
             add_field(f"envy.agents.{name}.{field}", agent.get(field))
-        if agent.get("adapter") == "pi":
+        if agent.get("adapter") in {"pi", "codex"}:
             add_field(
                 f"envy.agents.{name}.api",
                 agent.get("api"),
                 list(API_CHOICES),
             )
         if agent.get("adapter") == "pi":
+            add_field(f"envy.agents.{name}.thinkingLevelMap", json.dumps(agent.get("thinkingLevelMap"), ensure_ascii=False))
             add_field(f"envy.agents.{name}.moreThinking", agent["moreThinking"], ["true", "false"])
-            if name == "pi":
-                add_field(f"envy.agents.{name}.models", json.dumps(agent.get("models", []), ensure_ascii=False))
+        if (name, agent.get("adapter")) in {("pi", "pi"), ("codex", "codex")}:
+            add_field(f"envy.agents.{name}.models", json.dumps(agent.get("models", []), ensure_ascii=False))
 
     return {
         "evaluated": evaluated,
@@ -573,7 +595,8 @@ def _secret_value(data: dict[str, Any], path: str | None) -> str:
 
 def _runtime_env(values: dict[str, Any], agent: dict[str, Any], secrets: dict[str, Any]) -> str:
     adapter = str(agent.get("adapter") or "")
-    bindings = model_bindings(_initial_values() | values, agent) if adapter == "pi" else []
+    bindings = (model_bindings(_initial_values() | values, agent) if adapter == "pi"
+                else _codex_bindings(_initial_values() | values, agent) if adapter == "codex" else [])
     if bindings:
         values = _initial_values() | values
         agent = agent | bindings[0]["selection"]
@@ -603,7 +626,7 @@ def _runtime_env(values: dict[str, Any], agent: dict[str, Any], secrets: dict[st
         lines.append(f"export ENVY_AGENT_MODEL={shlex.quote(str(agent['model']))}")
     else:
         lines.append("unset ENVY_AGENT_MODEL")
-    if bindings:
+    if bindings and adapter == "pi":
         lines.append(f"export ENVY_AGENT_PROVIDER={shlex.quote(bindings[0]['provider'])}")
         if agent.get("models"):
             keys = {entry["keyVariable"]: entry["selection"]["credential"] for entry in bindings}
@@ -636,9 +659,12 @@ def _pi_model_data(agent: dict[str, Any], api: str) -> dict[str, Any]:
         thinking_level_map.update({"xhigh": "xhigh", "max": "max", "ultra": "ultra"})
     if api in ("openai-completions", "openai-responses") and (
         model == "gpt-6.1-sol" or model.startswith("gpt-6.1-sol-")
+        or model in {"stepcode-gpt-6.1-sol", "stepcode-gpt-6.1-sol-eastus2"}
     ):
         # Sol cannot disable reasoning or use minimal/ultra.
         thinking_level_map.update({"off": None, "minimal": None, "ultra": None})
+    if agent.get("thinkingLevelMap") is not None:
+        thinking_level_map = agent["thinkingLevelMap"]
     if thinking_level_map:
         model_data["thinkingLevelMap"] = thinking_level_map
     return model_data
@@ -657,17 +683,115 @@ def _runtime_pi_models(values: dict[str, Any], agent: dict[str, Any]) -> dict[st
     return {"providers": providers}
 
 
+def _codex_provider_id(endpoint_name: str) -> str:
+    return f"envy-{endpoint_name}"
+
+
+def _codex_bindings(values: dict[str, Any], agent: dict[str, Any], *, name: str = "codex") -> list[dict[str, Any]]:
+    """Resolve Codex candidates and enforce its single connection and wire API."""
+    if "models" in agent and not isinstance(agent["models"], list):
+        raise error.ConfigValidationError(error.invalid_type(f"envy.agents.{name}.models", "a list"))
+    if not agent.get("models") and not agent.get("profile") and (
+        not agent.get("model") or not values.get(f"envy.llm.endpoints.{agent.get('endpoint')}.baseUrl")
+    ):
+        return []
+    bindings = model_bindings(values, agent, name=name, default_api="openai-responses")
+    first = bindings[0]["selection"]
+    for entry in bindings:
+        selection = entry["selection"]
+        if entry["api"] != "openai-responses" or entry["endpoint"]["protocol"] != "openai-compatible":
+            raise error.ConfigValidationError(error.invalid_value(
+                f"envy.agents.{name}.models" if agent.get("models") else f"envy.agents.{name}.api",
+                "Codex requires openai-responses on an OpenAI-compatible endpoint; Chat Completions and Anthropic are unsupported",
+            ))
+        if any(selection[field] != first[field] for field in ("endpoint", "credential")):
+            raise error.ConfigValidationError(error.invalid_value(
+                f"envy.agents.{name}.models", "Codex models must use the same endpoint and credential",
+            ))
+        if selection["maxTokens"] != first["maxTokens"]:
+            raise error.ConfigValidationError(error.invalid_value(
+                f"envy.agents.{name}.models", "Codex models must share one maxTokens limit",
+            ))
+    return bindings
+
+
+def _codex_settings(values: dict[str, Any], agent: dict[str, Any]) -> dict[str, Any]:
+    """Render one codex instance into the shape Codex reads from config.toml."""
+    bindings = _codex_bindings(values, agent)
+    if not bindings:
+        return {}
+    selection = bindings[0]["selection"]
+    endpoint_name = selection["endpoint"]
+    provider = _codex_provider_id(endpoint_name)
+    provider_config: dict[str, Any] = {
+        "name": endpoint_name, "base_url": bindings[0]["endpoint"]["baseUrl"], "wire_api": "responses",
+    }
+    if selection.get("credential") is not None:
+        provider_config["requires_openai_auth"] = True
+    settings = {
+        "model": selection["model"],
+        "model_provider": provider,
+        "model_providers": {provider: provider_config},
+    }
+    if agent.get("models"):
+        settings["model_catalog_json"] = str(Path.home() / ".codex" / CATALOG_NAME)
+    elif isinstance(selection.get("contextWindow"), int):
+        settings["model_context_window"] = selection["contextWindow"]
+    if isinstance(selection.get("maxTokens"), int):
+        settings["model_max_output_tokens"] = selection["maxTokens"]
+    return settings
+
+
+def _codex_runtime(values: dict[str, Any], agents: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """Return the merged Codex declaration and the default instance secret path."""
+    codex = {name: agent for name, agent in agents.items()
+             if isinstance(agent, dict) and agent.get("adapter") == "codex"}
+    if not codex:
+        return {}, ""
+    data: dict[str, Any] = {}
+    # Sorted attribute order matches runtime-files.nix aggregation, so the last
+    # instance owns the scalar model and model_provider defaults.
+    for name in sorted(codex):
+        data = merge(data, _codex_settings(values, codex[name]))
+    # The "codex" instance owns the shared auth.json credential, matching
+    # providers/codex.nix; fall back to the last instance when it is absent.
+    default = codex["codex"] if "codex" in codex else codex[sorted(codex)[-1]]
+    bindings = _codex_bindings(values, default)
+    credential = bindings[0]["selection"]["credential"] if bindings else None
+    secret_path = (
+        _nested_value(values, "envy.llm.credentials", credential, "secretPath", "")
+        if isinstance(credential, str) else ""
+    )
+    return data, str(secret_path or "")
+
+
+class RuntimeRefreshConflict(RuntimeError):
+    """A runtime merge conflicted; current files were preserved without rollback."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Configuration changed concurrently. Close the application and retry. "
+            "Runtime refresh failed; current runtime files were retained without rollback. "
+            "Earlier writes may remain (partial refresh)."
+        )
+
+
 def refresh_runtime(*, values: dict[str, Any] | None = None) -> list[str]:
-    """Refresh private overrides; keep Pi's non-envY providers and roll back failures."""
+    """Refresh private overrides; roll back failures except concurrent application writes."""
     values = values if values is not None else _read_values()
+    issues = _validate_issues(values)
+    if issues:
+        raise error.ConfigValidationError(issues[0])
     profiles = _profile_values(values)
     _, agents = _managed_manifest(values)
     for item in agents.values():
         profile_name = item.get("profile")
-        # Pi resolves its profile per binding; eager merging would replace
-        # the shared limits with the default profile's limits for every model.
-        if item.get("adapter") != "pi" and isinstance(profile_name, str) and profile_name in profiles:
+        # Model-list adapters resolve profiles per binding so shared limits
+        # and explicit candidate overrides survive until resolution.
+        if item.get("adapter") not in {"pi", "codex"} and isinstance(profile_name, str) and profile_name in profiles:
             item.update(_profile_agent_fields(profiles[profile_name]))
+    lookup = _initial_values() | values
+    codex_config, codex_secret_path = _codex_runtime(lookup, agents)
     pi_agent = agents.get("pi", {})
     pi_data = _runtime_pi_models(values, pi_agent) if pi_agent.get("adapter") == "pi" else None
     secrets, decrypt_ok = read_secrets_data()
@@ -680,16 +804,58 @@ def refresh_runtime(*, values: dict[str, Any] | None = None) -> list[str]:
     pi_models = Path.home() / ".pi" / "agent" / "models.json"
     if pi_data is not None:
         targets.append(pi_models)
+    codex_key = _secret_value(secrets, codex_secret_path)
+    codex_config_target = Path.home() / ".codex" / "config.toml"
+    codex_auth_target = Path.home() / ".codex" / "auth.json"
+    codex_catalog_target = Path.home() / ".codex" / CATALOG_NAME
+    codex_agent = agents.get("codex", {})
+    codex_catalog = (model_catalog([entry["selection"] for entry in _codex_bindings(lookup, codex_agent)])
+                     if codex_agent.get("adapter") == "codex" and codex_agent.get("models") else None)
+    if codex_catalog is not None:
+        targets.append(codex_catalog_target)
+    if codex_config:
+        targets.extend([codex_config_target, codex_auth_target])
     ensure_private_directory(_RUNTIME_DIR)
     with FileTransaction(targets) as transaction:
-        if pi_data is not None:
-            ensure_private_directory(pi_models.parent)
-            update_file(pi_models, pi_data, managed_key_prefixes={"providers": "envy-pi"})
-            pi_models.chmod(0o600)
+        try:
+            if pi_data is not None:
+                ensure_private_directory(pi_models.parent)
+                update_file(pi_models, pi_data, managed_key_prefixes={"providers": "envy-pi"})
+                pi_models.chmod(0o600)
+            if codex_config:
+                ensure_private_directory(codex_config_target.parent)
+                if codex_catalog is not None:
+                    atomic_write_text(codex_catalog_target, json.dumps(codex_catalog, ensure_ascii=False, indent=2) + "\n", mode=0o600)
+                update_file(
+                    codex_config_target, codex_config, format="toml",
+                    managed_key_prefixes={"model_providers": "envy"},
+                    managed_keys=["model_catalog_json", "model_context_window", "model_max_output_tokens"],
+                )
+        except ConflictError as exc:
+            # Any snapshot can be stale, including targets written earlier in this refresh.
+            transaction.preserve_current()
+            raise RuntimeRefreshConflict() from exc
+        if codex_key:
+            update_auth(codex_auth_target, codex_key)
         for name, env in rendered.items():
             atomic_write_text(_RUNTIME_DIR / f"{name}.env", env, mode=0o600, private_parent=True)
         transaction.commit()
     return list(rendered)
+
+
+def _refresh_runtime_or_exit(
+    command: str, *, json_output: bool, values: dict[str, Any] | None = None,
+) -> list[str]:
+    """Report partial refresh conflicts through the caller's output contract."""
+    try:
+        return refresh_runtime(values=values)
+    except RuntimeRefreshConflict as exc:
+        if json_output:
+            emit_error(command, str(exc), code="conflict")
+        else:
+            log.error("agents", str(exc))
+        raise typer.Exit(code=1) from exc
+
 
 def _profile_values(values: dict[str, Any]) -> dict[str, dict[str, Any]]:
     profiles: dict[str, dict[str, Any]] = {}
@@ -743,6 +909,11 @@ def _set(path: str, value: Any) -> Path:
                 )
             ])
         )
+    if path.endswith(".thinkingLevelMap"):
+        try:
+            value = json.loads(value) if isinstance(value, str) else value
+        except (ValueError, TypeError):
+            raise typer.BadParameter(error.summary([error.invalid_type(path, "a JSON object or null")])) from None
     if path.startswith("envy.agents."):
         field = path.rsplit(".", 1)[-1]
         if field in {"args", "aliases", "skills"}:
@@ -806,7 +977,7 @@ def _set(path: str, value: Any) -> Path:
         )
     if path.startswith("envy.agents.") and path.rsplit(".", 1)[-1] in _LIVE_AGENT_FIELDS:
         agent_prefix = f"envy.agents.{path.split('.')[2]}."
-        if values.get(agent_prefix + "adapter") != "pi" or path.rsplit(".", 1)[-1] not in MODEL_LIMIT_FIELDS:
+        if values.get(agent_prefix + "adapter") not in {"pi", "codex"} or path.rsplit(".", 1)[-1] not in MODEL_DEFAULT_FIELDS:
             values.pop(agent_prefix + "profile", None)
     values[path] = value
     issues = _validate_issues(values)
@@ -933,14 +1104,14 @@ def cmd_profile_use(
             error.not_found("managed agent", agent_name, hint="Run: envy agent list")
         ]))
     for field, value in _profile_agent_fields(profile).items():
-        if values[agent_prefix + "adapter"] != "pi" or field not in MODEL_LIMIT_FIELDS:
+        if values[agent_prefix + "adapter"] != "pi" or field not in MODEL_DEFAULT_FIELDS:
             values[agent_prefix + field] = value
     values[agent_prefix + "profile"] = profile_name
     issues = _validate_issues(values)
     if issues:
         raise typer.BadParameter(error.summary(issues, prefix="profile cannot be applied"))
     target = _write_values(values)
-    refreshed = refresh_runtime(values=values)
+    refreshed = _refresh_runtime_or_exit("agent.profile.use", json_output=json_output, values=values)
     offer_mutation_commit([target], f"chore(agent): use profile {profile_name} for {agent_name}", quiet=json_output or yes)
     if json_output:
         emit("agent.profile.use", data={"agent": agent_name, "profile": profile_name, "runtimeRefreshed": bool(refreshed)})
@@ -954,7 +1125,14 @@ def cmd_profile_use(
 @app.command(name="refresh")
 def cmd_refresh(json_output: bool = typer.Option(False, "--json")):
     """Refresh private runtime overrides without running Nix apply."""
-    refreshed = refresh_runtime()
+    try:
+        refreshed = _refresh_runtime_or_exit("agent.refresh", json_output=json_output)
+    except error.ConfigValidationError as exc:
+        if json_output:
+            emit_error("agent.refresh", str(exc), code=exc.issue.code.value)
+        else:
+            error.report("agents", [exc.issue])
+        raise typer.Exit(code=1) from exc
     if json_output:
         emit("agent.refresh", data={"agents": refreshed})
     else:
@@ -1001,7 +1179,7 @@ def cmd_show(
         if not detail:
             fields = (
                 "adapter", "command", "aliases", "profile", "model", "models", "api",
-                "contextWindow", "maxTokens", "moreThinking", "endpoint", "credential",
+                "contextWindow", "maxTokens", "moreThinking", "thinkingLevelMap", "endpoint", "credential",
                 "endpointConfigured", "credentialSet",
             )
             selected = {
@@ -1009,7 +1187,7 @@ def cmd_show(
                 for field in fields
                 if field in selected and selected[field] is not None and selected[field] != []
             }
-        log.console.print_json(json.dumps({"name": name, "agent": selected}, ensure_ascii=False))
+        write_document({"name": name, "agent": selected})
 
 
 @app.command(name="set")
@@ -1028,7 +1206,7 @@ def cmd_set(
             raise typer.Exit(code=1) from exc
         raise
     changed_kind = _runtime_change_kind(path)
-    refreshed = refresh_runtime() if changed_kind == "live" else []
+    refreshed = _refresh_runtime_or_exit("agent.set", json_output=json_output) if changed_kind == "live" else []
     if changed_kind == "live" and not json_output:
         log.ok("agents", "runtime configuration refreshed", agents=", ".join(refreshed) or "none")
         log.hint("Changes apply to newly started agent processes.")
@@ -1120,13 +1298,14 @@ def cmd_credential_set(
                 "expected slash-separated letters, digits, '_' or '-'",
             )
         ]))
-    value = __import__("sys").stdin.read().rstrip("\r\n")
+    value = sys.stdin.read().rstrip("\r\n")
     machine_path = machine_config_file()
     with FileTransaction([machine_path, SECRETS_FILE]) as transaction:
-        set_secret_value(secret_path, value)
+        with redirect_stdout(sys.stderr) if json_output else nullcontext():
+            set_secret_value(secret_path, value)
         _set(f"envy.llm.credentials.{name}.secretPath", secret_path)
         transaction.commit()
-    refreshed = refresh_runtime()
+    refreshed = _refresh_runtime_or_exit("agent.credential-set", json_output=json_output)
     if not json_output:
         log.ok("agents", "credential runtime configuration refreshed", agents=", ".join(refreshed) or "none")
         log.hint("Changes apply to newly started agent processes.")

@@ -50,9 +50,12 @@ class AgentCompletionTests(unittest.TestCase):
         for group in ("agent", "config"):
             paths = self.complete(group, "set", "path", "envy.agents.")
             self.assertIn("envy.agents.local-pi.moreThinking", paths)
+            self.assertIn("envy.agents.local-pi.thinkingLevelMap", paths)
+            self.assertNotIn("envy.agents.inherited.thinkingLevelMap", paths)
             self.assertIn("envy.agents.local-pi.profile", paths)
             profile_paths = self.complete(group, "set", "path", "envy.agentProfiles.fast.")
             self.assertIn("envy.agentProfiles.fast.model", profile_paths)
+            self.assertIn("envy.agentProfiles.fast.thinkingLevelMap", profile_paths)
             self.assertIn("envy.agents.inherited.model", paths)
             self.assertIn("envy.agents.other-pi.api", paths)
             self.assertNotIn("envy.agents.local-pi.args", paths)

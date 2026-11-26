@@ -23,6 +23,18 @@ let
       model = "partial-model";
       contextWindow = 10000;
     };
+    agentProfiles.thinking = {
+      endpoint = "a";
+      model = "thinking-model";
+      api = "openai-responses";
+      thinkingLevelMap = { off = null; minimal = null; ultra = null; };
+    };
+    agentProfiles.thinking-cleared = {
+      endpoint = "a";
+      model = "thinking-model";
+      api = "openai-responses";
+      thinkingLevelMap = null;
+    };
     agentProfiles.budget = {
       endpoint = "a";
       credential = "a";
@@ -91,6 +103,15 @@ let
 in
 assert lib.all invalid [
   { models = [ {} ]; }
+  { thinkingLevelMap = { invalid = null; }; }
+  { thinkingLevelMap = { off = false; }; }
+  { thinkingLevelMap = { high = ""; }; }
+  { models = [ { profile = "thinking"; thinkingLevelMap = []; } ]; }
+  { models = [ { profile = "thinking"; thinkingLevelMap = { bogus = "high"; }; } ]; }
+  { models = [ { profile = "thinking"; } { profile = "thinking"; thinkingLevelMap = {}; } ]; }
+  { adapter = "codex"; thinkingLevelMap = {}; }
+  { adapter = "codex"; profile = "thinking"; }
+  { adapter = "claude-code"; models = [ { profile = "thinking"; } ]; }
   { models = [ { profile = "missing"; } ]; }
   { models = [ { profile = "fast"; model = null; } ]; }
   { models = [ { profile = "fast"; endpoint = null; } ]; }
@@ -103,6 +124,17 @@ assert lib.all invalid [
   { models = [ { profile = "fast"; } { profile = "fast"; contextWindow = 1000; } ]; }
 ];
 [
+  ((fixture "thinking-profile-inheritance" { models = [ { profile = "thinking"; } ]; } 1 1 "thinking-model") // { expectedThinking."thinking-model" = { off = null; minimal = null; ultra = null; }; })
+  ((fixture "thinking-entry-override" { models = [ { profile = "thinking"; thinkingLevelMap = { off = "none"; }; } ]; } 1 1 "thinking-model") // { expectedThinking."thinking-model" = { off = "none"; }; })
+  ((fixture "thinking-entry-clear" { models = [ { profile = "thinking"; thinkingLevelMap = null; } ]; } 1 1 "thinking-model") // { expectedThinking."thinking-model" = null; })
+  ((fixture "thinking-scalar-profile-override" { profile = "thinking"; thinkingLevelMap = {}; } 1 1 "thinking-model") // { expectedThinking."thinking-model" = null; })
+  ((fixture "thinking-scalar-profile-clear" { profile = "thinking"; thinkingLevelMap = null; } 1 1 "thinking-model") // { expectedThinking."thinking-model" = null; })
+  ((fixture "thinking-profile-clears-shared-default" {
+    thinkingLevelMap = { off = null; };
+    models = [ { profile = "thinking-cleared"; } ];
+  } 1 1 "thinking-model") // { expectedThinking."thinking-model" = null; })
+  (fixture "thinking-shared-default" { thinkingLevelMap = { off = null; }; models = candidates; } 2 3 "gpt-6.1-sol")
+  ((fixture "thinking-profile-default" { profile = "thinking"; } 1 1 "thinking-model") // { expectedThinking."thinking-model" = { off = null; minimal = null; ultra = null; }; })
   (fixture "list-only" { models = candidates; } 2 3 "gpt-6.1-sol")
   (fixture "list-reordered" { models = lib.reverseList candidates; } 2 3 "other")
   (fixture "profile-and-list" { profile = "fast"; model = "stale"; contextWindow = 999; models = candidates; } 2 3 "gpt-6.1-sol")

@@ -4,6 +4,7 @@ mod configure;
 mod detail;
 mod home;
 mod popups;
+mod storage;
 mod table;
 #[cfg(test)]
 mod tests;
@@ -103,31 +104,19 @@ fn render_top_bar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(context), right);
 }
 
-fn page_keys(screen: Screen) -> &'static str {
-    match screen {
-        Screen::Sources => "Enter select source  s sync metadata",
-        Screen::Software => "Enter toggle  w why  / filter",
-        Screen::Search => "Enter add  / query",
-        Screen::Doctor => "Enter details  f filter",
-        Screen::History => "v view  Space mark  d diff",
-        Screen::Home => "2 Configure  3 Activity",
-        Screen::Config => "Enter edit host / setting",
-        Screen::Mirror => "Enter source",
-        _ => "r refresh",
-    }
-}
-
-fn compact_page_keys(screen: Screen) -> &'static str {
-    match screen {
-        Screen::Sources => "↵ source  s sync",
+fn page_keys(app: &App) -> &'static str {
+    match app.screen {
+        Screen::Sources => "↵ select  s sync",
         Screen::Software => "↵ toggle  w why  / filter",
-        Screen::Search => "↵ add  / query",
-        Screen::Doctor => "↵ details  f filter",
-        Screen::History => "v view  Space mark  d diff",
-        Screen::Home => "2 Configure  3 Activity",
-        Screen::Config => "↵ edit setting",
+        Screen::Search => "↵ add  / search",
+        Screen::Doctor => "↵ details  f problems",
+        Screen::History if app.history_view == HistoryView::Operations => "↵ receipt",
+        Screen::History => "↵ details  Space mark  d diff",
+        Screen::Storage => "[ ] view  p project  ↵ details  a actions",
+        Screen::Home => "t Storage",
+        Screen::Config => "↵ edit",
         Screen::Mirror => "↵ source",
-        _ => "r refresh",
+        _ => "↵ details",
     }
 }
 
@@ -167,56 +156,61 @@ fn hint_spans(hints: &str) -> Vec<Span<'static>> {
 }
 
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
-    let (mode, mode_color) = match app.input_mode {
-        InputMode::Normal => ("NORMAL", OK),
-        InputMode::Search => ("SEARCH", ACCENT),
-        InputMode::SoftwareFilter => ("FILTER", ACCENT),
-        InputMode::SettingValue => ("EDIT", ACCENT),
+    if app.storage_actions.open {
+        let actions = &app.storage_actions;
+        let line = format!("{} / {}  ·  ↑↓ scroll  ·  q back", actions.scroll + 1, actions.scroll_max + 1);
+        frame.render_widget(Paragraph::new(Line::from(hint_spans(&line))).alignment(Alignment::Right), area);
+        return;
+    }
+    let mode = match app.input_mode {
+        InputMode::Normal => None,
+        InputMode::Search => Some("SEARCH"), InputMode::SoftwareFilter => Some("FILTER"),
+        InputMode::SettingValue => Some("EDIT"), InputMode::StorageProject => Some("PROJECT"),
     };
-    let activity = if app.mutation_loading {
-        format!("  {} verifying", spinner())
-    } else if app.mirror_loading {
-        format!("  {} mirror", spinner())
-    } else if app.mirror_measuring {
-        format!("  {} measuring", spinner())
-    } else if app.loading() {
-        if app.current_has_content() {
-            format!("  {} refreshing", spinner())
-        } else {
-            format!("  {} loading", spinner())
-        }
-    } else {
-        String::new()
+    let busy = if app.setting_loading { Some("Saving…") }
+        else if app.mutation_loading { Some("Preparing change…") }
+        else if app.mirror_loading { Some("Loading sources…") }
+        else if app.mirror_measuring { Some("Measuring…") }
+        else if app.loading() { Some(if app.current_has_content() { "Refreshing…" } else { "Loading…" }) }
+        else { None };
+    let display_title = match app.screen {
+        Screen::Config => "Settings", Screen::Doctor => "Health",
+        Screen::History if app.history_view == HistoryView::Operations => "Operations",
+        Screen::History => "Generations", _ => app.screen.title(),
     };
-    let status = Line::from(vec![
-        theme::chip(mode, mode_color),
-        Span::raw(format!("  {}", app.status)),
-        Span::styled(activity, Style::new().fg(WARN)),
-    ]);
-    // Show as many hints as fit beside the status; the help hint always stays.
-    let room = usize::from(area.width).saturating_sub(status.width() + 3);
+    let steady = [format!("{} ready", app.screen.title()), format!("{} cached", app.screen.title()),
+        format!("{display_title} ready"), format!("{display_title} cached")];
+    let label = if let Some(busy) = busy { format!("{} {busy}", spinner()) }
+        else if steady.contains(&app.status) || app.status == "✓ Storage ready" { String::new() }
+        else { app.status.clone() };
+    let color = if app.current_error().is_some() || app.overlay_error.is_some() { ERROR }
+        else if label.starts_with("! Storage ·") { WARN }
+        else if label.starts_with('!') { ERROR }
+        else if label.starts_with('✓') { OK } else if busy.is_some() { WARN } else { theme::MUTED };
+    // Reserve space for the page action before fitting a long notification.
+    let status_budget = (Span::raw(label.as_str()).width() as u16 + if mode.is_some() { 9 } else { 0 }).min(area.width / 3);
+    let room = area.width.saturating_sub(status_budget + 2) as usize;
+    let primary = match app.input_mode {
+        InputMode::Normal => page_keys(app),
+        InputMode::Search => "↵ search  Esc cancel",
+        InputMode::SettingValue => "↵ review  Esc cancel",
+        InputMode::StorageProject => "↵ add  Esc cancel",
+        InputMode::SoftwareFilter => "↵ keep  Esc cancel",
+    };
     let hints = [
-        format!(
-            "{}  │  ↑↓ select  Tab section  v view  r refresh  ? help  q quit",
-            page_keys(app.screen)
-        ),
-        format!(
-            "{}  │  Tab section  v view  ? help  q quit",
-            compact_page_keys(app.screen)
-        ),
-        format!("{}  │  ? help  q quit", compact_page_keys(app.screen)),
-    ]
-    .into_iter()
-    .find(|hints| Span::raw(hints.as_str()).width() <= room)
-    .unwrap_or_else(|| "? help  q quit".to_string());
-    let hint_width = (Span::raw(hints.as_str()).width() as u16 + 1).min(area.width);
-    let [left, right] =
-        Layout::horizontal([Constraint::Fill(1), Constraint::Length(hint_width)]).areas(area);
-    frame.render_widget(Paragraph::new(status), left);
-    frame.render_widget(
-        Paragraph::new(Line::from(hint_spans(&hints))).alignment(Alignment::Right),
-        right,
-    );
+        format!("{primary}  r refresh  ? help  q quit"),
+        format!("{primary}  ? help  q quit"),
+        format!("{primary}  ? help"),
+        "? help  q quit".into(),
+    ].into_iter().find(|hint| Span::raw(hint.as_str()).width() <= room).unwrap_or_else(|| "? help".into());
+    let hint_width = (Span::raw(hints.as_str()).width() as u16).min(area.width);
+    let [left, right] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(hint_width)]).areas(area);
+    let mut status = Vec::new();
+    if let Some(mode) = mode { status.extend([theme::chip(mode, ACCENT), Span::raw(" ")]); }
+    let used = status.iter().map(Span::width).sum::<usize>() as u16;
+    status.push(Span::styled(table::ellipsize(&label, left.width.saturating_sub(used + 1)), Style::new().fg(color)));
+    frame.render_widget(Paragraph::new(Line::from(status)), left);
+    frame.render_widget(Paragraph::new(Line::from(hint_spans(&hints))).alignment(Alignment::Right), right);
 }
 
 fn render_section_navigation(frame: &mut Frame, app: &App, area: Rect) {
@@ -239,13 +233,14 @@ fn render_section_navigation(frame: &mut Frame, app: &App, area: Rect) {
         }
         NavigationSection::Activity => {
             let selected = match (app.screen, app.history_view) {
+                (Screen::Storage, _) => 3,
                 (Screen::History, HistoryView::Generations) => 1,
                 (Screen::History, HistoryView::Operations) | (Screen::Journal, _) => 2,
                 _ => 0,
             };
             (
                 "Activity",
-                ["Health", "Generations", "Operations"].as_slice(),
+                ["Health", "Generations", "Operations", "Storage"].as_slice(),
                 selected,
             )
         }
@@ -299,7 +294,10 @@ fn render_body(frame: &mut Frame, app: &App, area: Rect) {
         render_section_navigation(frame, app, navigation);
         content
     };
-    if let Some(error) = app.current_error().filter(|_| !app.current_has_content()) {
+    if let Some(error) = app
+        .current_error()
+        .filter(|_| !app.current_has_content() && app.screen != Screen::Storage)
+    {
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(Span::styled(
@@ -323,6 +321,26 @@ fn render_body(frame: &mut Frame, app: &App, area: Rect) {
     }
     match app.screen {
         Screen::Home => render_home(frame, app, content_area),
+        Screen::Storage => storage::render_storage(
+            frame,
+            content_area,
+            storage::StoragePage {
+                view: app.storage_view,
+                report: app.storage_report(),
+                selected: app.storage_selected,
+                scroll: app.scroll,
+                loading: app.loading(),
+                error: app.current_error(),
+                projects: &app.storage_projects,
+                project_input: (app.input_mode == InputMode::StorageProject)
+                    .then_some(app.storage_project_input.as_str()),
+                timing: storage::StorageTiming {
+                    received_at: app.current_state().and_then(|state| state.received_at),
+                    saved_at: app.current_state().and_then(|state| state.saved_at),
+                    now: app.now(),
+                },
+            },
+        ),
         Screen::Sources => render_sources(frame, app, content_area),
         Screen::Software => render_software(frame, app, content_area),
         Screen::Search => render_search(frame, app, content_area),
@@ -334,7 +352,10 @@ fn render_body(frame: &mut Frame, app: &App, area: Rect) {
         // History/Operations view and Hosts feeds the Settings host selector.
         Screen::Journal | Screen::Hosts => {}
     }
-    if app.loading() && !app.current_has_content() && app.screen != Screen::Search {
+    if app.loading()
+        && !app.current_has_content()
+        && !matches!(app.screen, Screen::Search | Screen::Storage)
+    {
         frame.render_widget(Clear, content_area);
         frame.render_widget(
             Paragraph::new(format!("  {} Loading complete envY data…", spinner()))
@@ -367,6 +388,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     ])
     .areas(frame.area());
     render_top_bar(frame, app, top_bar);
+    if app.storage_actions.open {
+        storage::render_actions(frame, body, &mut app.storage_actions);
+        render_footer(frame, app, footer);
+        return;
+    }
     render_body(frame, app, body);
     render_footer(frame, app, footer);
     render_overlays(frame, app);

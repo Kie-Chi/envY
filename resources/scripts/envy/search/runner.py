@@ -12,6 +12,7 @@ import typer
 from rich.table import Table
 
 from envy import log
+from envy.jsonio import write_document
 from envy.evaluation import machine_manifest, manifest_software_groups
 from envy.search.index import RegistryIndex
 from envy.search.model import ProviderReport, SearchResult
@@ -101,7 +102,7 @@ def search_and_render(
             "providers": [report.to_dict() for report in reports],
             "sources": [source.to_dict() for sid, source in declared.items() if sid in active],
         }
-        log.console.print_json(json.dumps(payload, ensure_ascii=False))
+        write_document(payload)
         return
 
     for report in reports:

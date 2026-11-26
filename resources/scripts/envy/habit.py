@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import typer
 from rich.table import Table
 
 from envy import log
+from envy.jsonio import write_document
+from envy.habit_verification import readback_error, verify
 from envy.config.machine_nix import machine_config_file
 from envy.config.updates import set_config_value
 from envy.evaluation import machine_manifest, manifest_software_groups
@@ -43,6 +44,7 @@ class Implementation:
     ownership: str
     note: str
     requirements: tuple[Requirement, ...]
+    readback: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -52,6 +54,7 @@ class Implementation:
             "ownership": self.ownership,
             "note": self.note,
             "requirements": [item.to_dict() for item in self.requirements],
+            "readback": self.readback,
         }
 
 
@@ -59,14 +62,17 @@ class Implementation:
 class Habit:
     id: str
     label: str
-    gesture: str
+    gesture: str | None
     semantic: str
     implementations: tuple[Implementation, ...]
+    kind: str = "binding"
+    declaration_valid: bool = True
 
     def to_dict(self) -> dict[str, object]:
         return {
             "id": self.id,
             "label": self.label,
+            "kind": self.kind,
             "gesture": self.gesture,
             "semantic": self.semantic,
             "implementations": [item.to_dict() for item in self.implementations],
@@ -94,7 +100,6 @@ class HabitCheck:
 _ENTRY_KEYS = (
     "id",
     "label",
-    "gesture",
     "semantic",
     "context",
     "backend",
@@ -183,14 +188,26 @@ def habits_from_manifest(manifest: dict[str, Any] | None) -> tuple[list[Habit], 
     if not isinstance(entries, list):
         return [], ["manifest habits must be a list"]
 
-    grouped: dict[str, list[tuple[dict[str, str], Implementation]]] = {}
+    grouped: dict[str, list[tuple[dict[str, Any], Implementation]]] = {}
     errors: list[str] = []
     for position, raw in enumerate(entries, start=1):
         if not isinstance(raw, dict):
             errors.append(f"habit entry {position} is not an attribute set")
             continue
-        values: dict[str, str] = {}
+        values: dict[str, Any] = {}
+        kind = raw.get("kind", "binding")
+        if kind not in ("binding", "preference"):
+            errors.append(f"habit entry {position} has an invalid kind")
+            continue
+        values["kind"] = kind
+        gesture = raw.get("gesture")
         missing = []
+        if gesture is None and kind == "preference":
+            values["gesture"] = None
+        elif isinstance(gesture, str) and gesture.strip():
+            values["gesture"] = gesture.strip()
+        else:
+            missing.append("gesture")
         for key in _ENTRY_KEYS:
             value = raw.get(key)
             if not isinstance(value, str) or not value.strip():
@@ -234,24 +251,31 @@ def habits_from_manifest(manifest: dict[str, Any] | None) -> tuple[list[Habit], 
             ownership=values["ownership"],
             note=str(raw.get("note", "")).strip(),
             requirements=tuple(requirements),
+            readback=raw.get("readback"),
         )
+        error = readback_error(implementation.readback, manifest.get("platform"), implementation.context)
+        if error:
+            errors.append(f"habit '{values['id']}'/{values['context']}: {error}")
         grouped.setdefault(values["id"], []).append((values, implementation))
 
     habits: list[Habit] = []
     for habit_id, implementations in grouped.items():
         first, _ = implementations[0]
-        expected = (first["label"], first["gesture"], first["semantic"])
+        expected = (first["label"], first["gesture"], first["semantic"], first["kind"])
         contexts: set[str] = set()
         normalized: list[Implementation] = []
+        declaration_valid = True
         for values, implementation in implementations:
-            actual = (values["label"], values["gesture"], values["semantic"])
+            actual = (values["label"], values["gesture"], values["semantic"], values["kind"])
             if actual != expected:
+                declaration_valid = False
                 errors.append(
-                    f"habit '{habit_id}' uses inconsistent label, gesture, or semantic text "
+                    f"habit '{habit_id}' uses inconsistent label, gesture, semantic text, or kind "
                     f"between contexts"
                 )
                 continue
             if implementation.context in contexts:
+                declaration_valid = False
                 errors.append(f"habit '{habit_id}' declares context '{implementation.context}' more than once")
                 continue
             contexts.add(implementation.context)
@@ -259,6 +283,8 @@ def habits_from_manifest(manifest: dict[str, Any] | None) -> tuple[list[Habit], 
         if normalized:
             habits.append(Habit(
                 id=habit_id,
+                kind=first["kind"],
+                declaration_valid=declaration_valid,
                 label=first["label"],
                 gesture=first["gesture"],
                 semantic=first["semantic"],
@@ -285,11 +311,16 @@ def _software_state(manifest: dict[str, Any]) -> dict[str, tuple[set[str], set[s
     return state
 
 
-def check_habits(manifest: dict[str, Any] | None) -> tuple[list[HabitCheck], bool]:
-    """Check contract consistency and selected software prerequisites."""
+def check_habits(
+    manifest: dict[str, Any] | None, *, declaration_only: bool = False,
+) -> tuple[list[HabitCheck], bool]:
+    """Check declarations and prerequisites, then sample safe native evidence."""
     habits, errors = habits_from_manifest(manifest)
     results = [
-        HabitCheck("contract", "manifest", "error", error, {})
+        HabitCheck("contract", "manifest", "error", error, {"verification": verify(
+            manifest if isinstance(manifest, dict) else {}, {"id": "contract", "error": error}, {"context": "manifest", "ownership": "declarative"},
+            declaration_valid=False, declaration_only=True,
+        )})
         for error in errors
     ]
     if not isinstance(manifest, dict):
@@ -298,9 +329,13 @@ def check_habits(manifest: dict[str, Any] | None) -> tuple[list[HabitCheck], boo
     software = _software_state(manifest)
     for habit in habits:
         for implementation in habit.implementations:
+            start = len(results)
+            prerequisite_states = []
             for requirement in implementation.requirements:
                 effective, excluded = software.get(requirement.group, (set(), set()))
                 details = requirement.to_dict()
+                prerequisite_states.append({**details, "selected": requirement.item in effective,
+                                            "excluded": requirement.item in excluded})
                 if requirement.item in effective:
                     results.append(HabitCheck(
                         habit.id,
@@ -334,13 +369,34 @@ def check_habits(manifest: dict[str, Any] | None) -> tuple[list[HabitCheck], boo
                     {"binding": implementation.binding, "backend": implementation.backend},
                 ))
             else:
+                kind = "preference" if habit.kind == "preference" else "binding"
                 results.append(HabitCheck(
                     habit.id,
                     implementation.context,
                     "ok",
-                    f"Nix renders binding from the implementation source: {implementation.binding}",
+                    f"Nix renders {kind} from the implementation source: {implementation.binding}; declaration only, manual runtime verification required",
                     {"binding": implementation.binding, "backend": implementation.backend},
                 ))
+            verification = verify(
+                manifest, {"id": habit.id, "kind": habit.kind, "gesture": habit.gesture,
+                           "label": habit.label, "semantic": habit.semantic},
+                implementation.to_dict(), declaration_only=declaration_only,
+                declaration_valid=habit.declaration_valid and not any(item.status == "error" for item in results[start:]),
+                prerequisites=prerequisite_states,
+            )
+            drift = any(verification[axis]["status"] == "mismatch" for axis in ("stored", "runtime"))
+            for index in range(start, len(results)):
+                item = results[index]
+                results[index] = replace(item, details={**item.details, "verification": verification})
+            last = results[-1]
+            if verification["declaration"]["status"] == "invalid":
+                results[-1] = replace(last, status="error", message="habit declaration is invalid")
+            elif drift:
+                results[-1] = replace(last, status="error", message="native habit value differs from the declaration")
+            elif implementation.readback is not None and implementation.ownership != "application" and not declaration_only:
+                evidence = "; ".join(f"{axis}={verification[axis]['status']}" for axis in ("stored", "runtime", "pending"))
+                unknown = all(verification[axis]["status"] == "unknown" for axis in ("stored", "runtime"))
+                results[-1] = replace(last, status="info" if unknown else "ok", message=evidence)
     failed = any(result.status == "error" for result in results)
     return results, failed
 
@@ -372,7 +428,7 @@ def _render_habit_list(habits: list[Habit], errors: list[str], machine: object) 
     table.add_column("Semantic")
     for habit in habits:
         contexts = ", ".join(item.context for item in habit.implementations)
-        table.add_row(habit.gesture, habit.label, contexts, habit.semantic)
+        table.add_row(habit.gesture or "—", habit.label, contexts, habit.semantic)
     log.console.print(table)
     for error in errors:
         log.warn("habit", error)
@@ -382,7 +438,7 @@ def _render_habit(habit: Habit) -> None:
     summary = Table.grid(padding=(0, 2))
     summary.add_column(style="cyan", no_wrap=True)
     summary.add_column()
-    summary.add_row("Gesture", habit.gesture)
+    summary.add_row("Gesture", habit.gesture or "—")
     summary.add_row("Semantic", habit.semantic)
     log.console.print(summary)
 
@@ -435,7 +491,7 @@ def cmd_list(
     manifest = _manifest_or_exit(refresh)
     habits, errors = habits_from_manifest(manifest)
     if json_output:
-        log.console.print_json(json.dumps(_payload(manifest, habits, errors), ensure_ascii=False))
+        write_document(_payload(manifest, habits, errors))
         return
     _render_habit_list(habits, errors, manifest.get("id", "current"))
 
@@ -459,7 +515,7 @@ def cmd_show(
         raise typer.Exit(code=1)
     if json_output:
         payload = _payload(manifest, [habit], errors)
-        log.console.print_json(json.dumps(payload, ensure_ascii=False))
+        write_document(payload)
         return
     _render_habit(habit)
     for error in errors:
@@ -472,8 +528,9 @@ def cmd_check(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ):
     """Validate declared habit contracts and their selected software prerequisites."""
-    manifest = _manifest_or_exit(refresh)
+    manifest = machine_manifest(refresh=refresh)
     results, failed = check_habits(manifest)
+    manifest = manifest if isinstance(manifest, dict) else {}
     payload = {
         "schemaVersion": 1,
         "machine": manifest.get("id", "current"),
@@ -482,11 +539,21 @@ def cmd_check(
         "results": [result.to_dict() for result in results],
     }
     if json_output:
-        log.console.print_json(json.dumps(payload, ensure_ascii=False))
+        _write_check_document(payload, failed)
     else:
         _render_checks(results, manifest.get("id", "current"))
     if failed:
         raise typer.Exit(code=1)
+
+
+def _write_check_document(payload: dict[str, Any], failed: bool) -> None:
+    document = {
+        **payload, "command": "habit.check", "ok": not failed,
+        "data": payload, "warnings": [],
+    }
+    if failed:
+        document["error"] = {"code": "habit-check-failed", "message": "Habit verification failed"}
+    write_document(document)
 
 
 @app.command(name="set")
@@ -520,7 +587,7 @@ def cmd_repair(
 ):
     """Apply the selected machine's desired Habit policy to its desktop backend."""
     manifest = _manifest_or_exit(refresh)
-    results, failed = check_habits(manifest)
+    results, failed = check_habits(manifest, declaration_only=True)
     if failed:
         _render_checks(results, manifest.get("id", "current"))
         log.error("habit", "cannot repair while a required implementation is unavailable")

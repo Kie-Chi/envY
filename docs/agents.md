@@ -18,6 +18,28 @@ envY 的 modules/agents 管理 agent 安装、provider wrapper、skill catalog �
 - linux/：Codex wrapper（Darwin 用 cask 安装 Codex）、rtk 与桌面机的 Cursor。
 - files/agents/：非 Nix 静态文件，包括 provider prompt（prompts/）和 Pi 补丁（patches/）。
 
+## 可写配置预览与冲突保护
+
+`sys.mergeWritable` 继续调用 `envy.structured_config`，仅合并 feature 声明的键及命名空间。独立预览可在开发环境运行 `python -m envy.structured_config --source /path/to/declared.json --target /path/to/settings.json --dry-run --json`；TOML/YAML 目标需要对应的 `--format`，托管键参数与 activation 一致。dry-run 不创建目录、临时文件或修改权限。
+
+预览只列最终变化的键路径及 add/change/remove，以及 create/write/replace_symlink/chmod 操作，不输出旧值、新值、正文或内容摘要。JSON envelope 的 command 为 `structured-config.merge`，并明确提示并发限制。普通 activation 保持成功时静默及原有 bool 返回语义。
+
+准备阶段读取文件与父路径身份，写入前在临时文件 fsync 后复核；内容、身份、权限或链接发生变化时以 conflict 停止并保留当前文件。有效链接读取源内容后替换链接自身，悬空链接、特殊文件或无法解析的配置不会覆盖。幂等返回和仅权限调整也进行检查；私密模式及非托管字段继续保留。
+
+即时 agent 刷新检测到冲突时会保留整个运行态文件事务，不再用旧快照自动回滚；此前已完成的写入可能保留，CLI 以 conflict 失败说明 partial 状态。其他错误继续使用原有回滚流程。
+
+这属于乐观复核，复核与替换之间仍有窗口，无法代替应用配合的原子锁。冲突后应关闭相关应用、重新预览再执行；接口不自动覆盖竞争者写入，也不为应用会话、历史或数据库增加托管范围。
+
+## Codex 配置与凭据
+
+`providers/codex.nix` 把 `envy.agents.codex`（先经 `envy.agentProfiles` 解析）渲染成 Codex 自己的 `~/.codex/config.toml`：托管 `model`、`model_context_window`、`model_max_output_tokens`、`model_provider` 和 `model_providers.envy-<endpoint>`。Codex 只允许 OpenAI 兼容 endpoint 上的 `openai-responses`，未设置 api 时也使用 Responses；Chat Completions 和 Anthropic 在写入前报错。`runtime-files.nix` 按 adapter 聚合所有 codex 实例后只写一次，机器 `additionalSettings` 仍覆盖生成值；`managedKeyPrefixes.model_providers = "envy"` 只替换 envY 命名的 provider，保留 Codex 的 `projects`、`tui`、`plugins` 等键。
+
+Codex 多模型模式由 activation 和即时刷新共用 `envy.agent_codex` 生成 `~/.codex/envy-models.json`，通过 `model_catalog_json` 加载。生成器在临时 `CODEX_HOME` 中运行已安装客户端的 `codex debug models --bundled`，离线复用原生指令和匹配模型的元数据；不调用模型接口，不读取真实认证。模型不在内置目录时沿用原生指令，并使用保守的能力声明。多模型目录在启动时加载，修改后需重启对应客户端；桌面端模型选择器是否展示候选项取决于其内嵌 Codex 版本。
+
+默认选择沿用顶层 profile/model；未指定默认模型时使用列表第一项。多模型的 `contextWindow` 写入各模型元数据，避免全局上下文窗口覆盖切换后的模型；`maxTokens` 保留全局映射，因此候选项必须一致。移除候选项会重写目录，清空列表会解除 envY 生成的目录引用，并清除过期的全局模型限制，保留用户的其他配置。
+
+Codex 从 `~/.codex/auth.json` 读取 API key，而不是 `OPENAI_API_KEY`。activation 的 `mergeCodexAuth` 与 `envy agent refresh` 都会把解密后的 `envy.llm.credentials.<name>` 写入该文件的 `OPENAI_API_KEY`（`auth_mode = "apikey"`）并保留其他 Codex 字段；这是 envY 唯一写入应用 auth 文件的位置，`codex login` 之后需要重新 apply 或 refresh。`envy agent` 用同一套渲染规则即时写 `config.toml` 和 `auth.json`，`tests/test_agent_codex.py` 对比 Nix 与 Python 输出。
+
 ## Pi 补丁
 
 pi/package.nix 在 Pi 的 workspace 构建阶段打补丁，库和打包后的 CLI 会一起重新编译。上游求值时会从 `source` 读取 package 与 lock 文件，所以不能给 `source` 套补丁派生，否则会变成 import-from-derivation，导致在另一平台上无法求值那个平台的机器。
@@ -30,15 +52,19 @@ pi/package.nix 在 Pi 的 workspace 构建阶段打补丁，库和打包后的 C
 
 ### 模型档位与 btw
 
-`pi/default.nix` 为 OpenAI Completions/Responses 下的 `gpt-6.1-sol` 及其带 `-` 后缀的别名、快照声明合法思考档位：排除 `off`、`minimal`、`ultra`，保留 `low/medium/high`；开启 `moreThinking` 时还保留 `xhigh/max`。显式请求不支持的档位由 Pi 钳制到合法档位，其他模型和 Anthropic 兼容设置保持原样。
+`pi/default.nix` 为 OpenAI Completions/Responses 下的 `gpt-6.1-sol` 及其带 `-` 后缀的快照，以及已知网关别名 `stepcode-gpt-6.1-sol`、`stepcode-gpt-6.1-sol-eastus2` 声明合法思考档位：排除 `off`、`minimal`、`ultra`，保留 `low/medium/high`；开启 `moreThinking` 时还保留 `xhigh/max`。显式请求不支持的档位由 Pi 钳制到合法档位。
+
+自定义模型可在 Pi 默认配置、profile 或 `models` 条目中声明 `thinkingLevelMap`，无需继续扩展模型名称匹配。显式映射整体替换兼容默认值；映射中的 `null` 禁用对应档位，整个字段设为 `null` 则清除继承映射并恢复兼容默认值。例如，采用相同 Sol 能力限制的网关模型可声明 `thinkingLevelMap = { off = null; minimal = null; ultra = null; };`。模型 ID 原样用于网关路由，Nix 部署与 Python 即时刷新采用同一语义；其他 adapter 拒绝这项 Pi 专属能力配置。
 
 `/btw` 不继承主会话的思考档位。未指定档位的 Sol 请求省略推理 effort，由服务端采用默认值，避免发送会被拒绝的 `none`；不改扩展的认证、上下文、无工具或会话隔离边界。
+
+`pi-btw-scroll.patch` 在扩展解包时修正弹层的滚动方向和边界。长回答使用 ↑/↓、PageUp/PageDown、Home/End 浏览；全屏模式下，指针位于弹层内时也可用滚轮，抵达边界仍由弹层消费事件。关闭弹层后焦点恢复到编辑器。`pi-coexist-tests` 使用真实 BTW、Goal 和宿主输入分发验证这些边界，其 `.tui` 入口覆盖隔离 CLI/PTY 交互。
 
 `envy agent` 的 Python 运行时生成器使用相同兼容规则，切换 profile 时不会把不支持的档位重新写回 `models.json`。`tests/models.nix` 求值实际 provider 的托管配置；`tests/pi-models.py` 对比 Nix 与运行时配置；`tests/model-lists.nix` 通过实际选项 schema 和共享默认值验证模型列表、profile 覆盖、显式 null、去重及非法输入；`tests/pi-models.mjs` 用真实 `/btw` 执行函数与 Pi 请求编码器执行离线回归，检查模型 schema、档位钳制及两种 OpenAI API 和 Anthropic 的参数。两平台的 `pi-model-tests` flake check 和 CI 运行这些检查；使用假凭据，在请求发送前捕获参数并禁止 fetch，不调用模型。
 
 ### Pi 多模型列表
 
-`envy.agents.pi.models` 可以同时注册多个模型，混用 `openai-completions`、`openai-responses` 和 `anthropic-messages`。只有 Pi 实例支持非空列表，其他 adapter 的配置不变。
+`envy.agents.pi.models` 可以同时注册多个模型，混用 `openai-completions`、`openai-responses` 和 `anthropic-messages`。`envy.agents.codex.models` 也支持同样的 profile 继承、显式覆盖和去重，但所有候选项（含默认选择）必须使用同一个 endpoint、credential 和 `maxTokens`，且 API 必须为 Responses；其他 adapter 不支持非空列表。
 
 ```nix
 envy.agents.pi.models = [
@@ -114,7 +140,13 @@ envy.agents.pi.models = [
 
 `pi/extensions.nix` 将 `steeringMode`、`followUpMode` 默认设为 `one-at-a-time`，并通过 writable merge 管理 `keybindings.json` 的三个动作：`Enter` 提交 steer、`Alt+Enter` 添加 follow-up、`Alt+Up` 进入队列编辑。选中行后直接编辑文本，`Alt+Up/Down` 切换行，`Alt+Shift+Up/Down` 重排，`Alt+X` 标记删除，`Alt+Left/Right` 或 `Alt+T` 切换 follow-up/steer，`Enter` 保存、`Escape` 撤销。输入框为空时按 `Enter` 可将队首 follow-up 提升为 steer。macOS 的 Alt 对应 Option。重排、删除和类型切换沿用插件固定按键。
 
-队列、草稿、恢复快照与会话数据归 Pi 和扩展所有。`tests/pi-queue.mjs` 通过真实 Pi 扩展发现流程、宿主模块和编辑器执行离线检查，覆盖逐条发送、编辑、重排、删除、转为 steer、取消与暂停恢复；不调用模型。两平台的 `pi-queue-tests` flake check 和 CI 运行这些检查。配置通过 `envy apply` 部署后，新启动 Pi 或执行 `/reload` 生效。
+envY 通过 `pi-queue-commands.patch` 给同一可见队列增加 `/queue` 命令，不创建第二个队列控制器。裸 `/queue` 显示状态与用法；`/queue list` 按执行顺序列出行 ID、类型和内容；`/queue add <内容>` 添加 follow-up，`/queue steer <内容>` 添加当前运行的 steer；`/queue edit [行ID]` 打开原有行编辑器，省略 ID 时选择最新入队行；`/queue remove <行ID>` 删除待发送行；`/queue clear` 确认后清空待发送队列，但不终止当前运行；`/queue resume` 恢复原有逐条调度，不把 follow-up 提升为 steer，也不解除单行暂停。已有 `/pause` 与 `/queue-drain` 保持安全暂停和合并发送的语义。
+
+命令空闲入队时保持暂停，使用 `/queue resume` 开始执行；运行中入队沿用原有发送边界，不解除已有暂停。未保存行编辑、执行中的控制操作及尚未完成的安全暂停会阻止冲突命令。清空确认后重新核对队列与会话边界，拒绝过期确认；同步恢复发送失败时保留原行、暂停并显示错误。基础命令同时支持交互 TUI 与 RPC，`/queue edit` 使用交互 TUI；桌面投递计划另通过 RPC 控制请求复用同一编辑会话。RPC 的普通输入继续使用宿主原生队列，不被扩展拦截。RPC 通过 `setStatus("queue", ...)` 上报扩展中 follow-up 的数量、暂停或控制状态及内容摘要，steer 保持独立语义，不计入 Queue 摘要。摘要最多展示 8 行、每行 400 字符，并标记截断及其余条目；`/queue list` 保留完整内容。相同摘要去重，发送、删除、清空及会话切换会更新或移除状态，官方移动客户端可复用既有 Pi 扩展状态入口查看。
+
+`/queue` 的参数候选包含子命令、用法和说明；`edit`、`remove` 的候选来自当前待发送行，显示稳定 ID、类型、暂停标记及内容摘要。输入前缀后按 `Tab` 选择候选，已完整输入的子命令或 ID 不再重复弹出候选，避免 `Enter` 被无意义补全吞掉。未知子命令、缺少参数或无效行 ID 会给出用法提示。
+
+队列、草稿、恢复快照与会话数据归 Pi 和扩展所有。`tests/pi-queue.mjs` 通过真实 Pi 扩展发现流程、宿主模块和编辑器执行离线检查，覆盖逐条发送、编辑、重排、删除、转为 steer、取消、暂停恢复、命令控制、确认竞态、真实补全提供器，以及 RPC 状态摘要、steer 区分、截断、恢复和发送失败；不调用模型。两平台的 `pi-queue-tests` flake check 和 CI 运行这些检查；`pi-coexist-tests.tui` 另通过真实 CLI/PTY 验证子命令和行 ID 补全、入队、行编辑、删除、取消清空及编辑器恢复，所有模型请求进入离线替身。配置通过 `envy apply` 部署后，新启动 Pi 或执行 `/reload` 生效。
 
 ### goal-x 扩展
 
@@ -124,6 +156,30 @@ envy.agents.pi.models = [
 - 全局 `~/.pi/agent/pi-goal-x-settings.json` 通过 writable merge 只管理 `hideUnfocusedBanner = true`、`hideUnfocusedPrompt = true`、`autoSelectSingleGoal = false`，保留其他字段。没有焦点的会话不被自动提示阻拦，也不自动接管旧目标。仍可用 `/goal-list`、`/goal-focus`、`/goal-resume` 手动选择。扩展自身的环境变量与项目设置仍按上游优先级覆盖全局默认。
 - 普通 goal 与 Sisyphus 都保留完整阶段、顺序、约束和完成条件；不再要求正文只写一句。`create_goal` 支持与正文一起保存经过校验的父子任务树；未显式提供任务树时，从编号、清单及中英文阶段标记中派生任务，单步骤工作不强制拆分。直接创建时仍尊重关闭任务跟踪的设置。引导草拟还校验用户原始阶段数，拒绝阶段更少的摘要提案。
 - 界面短标题和 `get_goal` 默认摘要不是完整需求；正文用 `get_goal section=objective`、任务用 `section=tasks` 分页读取。补丁不反向重建以前已被模型压缩的目标，也不能仅凭阶段数判断每个阶段的语义是否完整，仍需核对确认提案。
+
+Goal 紧凑任务列表使用 `Ctrl+Shift+↑/↓` 滚动；envY 将 Pi 全屏主聊天的上一条／下一条导航限定为 `Ctrl+↑/↓`，避免宿主先消费 Goal 按键。只有任务数超过紧凑窗口时才发生列表滚动。键位通过现有 writable merge 部署，重启 Pi 后加载。
+
+### T3 Code（Linux 与 Darwin）
+
+`providers/t3code/` 为两平台提供同一个 Nix nightly 包与通用配置，版本由 `nix-t3code` flake input 锁定。上游 flake 自带所需工具链，不要求跟随 envY 的 nixpkgs。机器通过软件 include/exclude 选择 `t3code-nightly`；Darwin 不再安装 Homebrew 的 `t3-code`。
+
+Goal 的 RPC 摘要与 `goal-tasks` widget 分别去重，任务树通过 provider session 的 `extensionStatuses[].goalTasks` 传递。Queue 同样通过 `queue-messages` widget 发送结构化 follow-up 快照，落在 `extensionStatuses[].queueMessages`，手机继续读取原有文字摘要。快照保留稳定行 ID、顺序、多行正文、队列及单行暂停状态和附件数量，不传输附件数据，也不混入 steer；最多展示 64 条，每条正文 4000 字符，界面明确标记剩余条目和正文截断。`t3code-pi-goal-tasks.patch` 在源码的 patchPhase 应用，buildPhase 同时生成界面、协议和内置后台；构建检查分别核验后台与前端，避免旧后台被新界面掩盖。网页与桌面分别显示 Goal 和紧贴输入框的 Delivery plan，复用 Banner 的正文缩进以对齐标题和边框。投递计划直接复用 Pi 的队首、批次及编辑阻塞计算，区分全队暂停、单行暂停、编辑阻塞、控制操作和下一次派发边界；steer 只影响等待原因，不混入 follow-up 数量和正文。面板默认展示 3 条，支持展开正文及更多条目；行菜单提供编辑、暂停、删除和重排，空输入框的队列编辑快捷键优先操作 Pi 队列。`provider.queue.control` 需 orchestration operate 权限，只访问当前线程的现有 Pi 会话，使用带版本校验的 `/queue-control` 请求及 `queue-control-result` 回执；不创建聊天消息或模型回合。编辑沿用 Pi 的编辑持有语义，保留附件及原输入框草稿；客户端每 30 秒续约，离开视图取消，失联 2 分钟后释放持有。完整编辑正文上限为 65536 字符，失效时保留界面草稿以便重开编辑。仅有文字状态的旧扩展继续显示通用状态栏，旧结构化快照保持只读。移动端保留 Goal 的相应 Sheet 实现。`t3code-pi-queue-messages.patch` 接入 Queue 协议和卡片，构建同时检查两类 widget 的后台标记与界面，并运行 Pi adapter、Goal 和 Queue 列表回归。构建先运行受影响组件的 React Compiler 覆盖检查，再检查六个相关项目的类型；ChatView 依赖编译器稳定渲染输入，新增 ref 必须通过组件边界传递。
+
+桌面和 `t3` CLI 来自同一个 Nix 包。应用自身更新关闭，更新使用 `envy update inputs nix-t3code`，构建验证后运行 `envy apply`。公共模块同时管理稳定的包入口和 `~/.local/bin/t3`，避免旧运行包继续占用命令入口。`packages.<system>.t3code-nightly` 暴露定制包，构建时执行定向协议与任务列表回归；`checks.<system>.t3code-settings` 验证两平台的配置、命令路径、主题和排除策略。
+
+应用继续使用 `~/.t3/userdata`，macOS 浏览器资料继续使用 `~/Library/Application Support/t3code-v2`。配置合并声明的 Agent、外观和桌面客户端模式，不接管认证、历史、缓存和会话文件。
+
+选中 T3 Code 时，envY 使用上游标准的 Darwin `com.t3tools.t3code.service` LaunchAgent 或 Linux `t3code.service` 用户服务运行同一个 Nix 包的 `t3 serve`；桌面关闭内置本地环境，通过配对连接此服务。首次从桌面内置后台切换前，应先退出桌面，避免两个后台争用数据锁与端口；启动服务后用 `t3 pair` 的应用链接完成配对。退出桌面不停止服务。Linux 服务随用户会话启动；注销后运行取决于系统的 linger 设置，envY 不主动修改它。
+
+机器文件中的 `envy.t3code.service.host`、`port`、`lan` 声明 `~/.t3/service.env` 的三个网络字段。激活和服务启动时保留其它变量、多行值和注释，原子合并声明字段，并保持文件权限 `0600`。环境文件按 dotenv 数据解析，不作为 shell 执行；认证和自定义凭据仍由应用管理。默认地址为 `127.0.0.1:3773`；当前 MacBook Air 显式使用 `::`、端口 `3773` 和 `lan = true`，接受 IPv4 与 IPv6。
+
+服务定义声明 `T3CODE_HOME`、Nix 包路径与版本元数据，标准 `t3 service status` 和 `t3 service restart` 操作同一个原生服务。Nix 包或声明的网络配置变化会改变启动脚本与服务定义的路径，Home Manager 在 activation 中重启；声明未变化时保持运行。版本号相同而补丁不同也通过包路径区分。首次迁移会先停用旧 `org.envy.t3code`／`envy-t3code.service`，避免双后台争用数据目录。
+
+安装与修复由 `envy apply` 部署声明式服务；`t3 service install` 对当前 Nix 服务保持幂等，需要修复时提示重新激活 Nix 配置。Nix 托管模式拒绝下载官方 pinned runtime，`t3 update` 和远程自更新也遵循这一边界。服务设置 `settings.json` 支持文件监听重读；`service.env` 与后台程序在进程启动时加载，修改后需要重启，前端资源更新则需要刷新网页或重开桌面。排除 T3 Code 时，envY 不再声明服务，保留用户数据和可写配置。
+
+Darwin 从上游包同一工具链的 Electron 构建完整的 `T3 Code.app`，主程序和辅助进程均在自有应用包内，统一显示为 T3 Code。Finder 入口经过外层 wrapper，继承上游运行路径、资源监控及更新政策；Linux 桌面入口也统一名称。桌面 wrapper 清除后端可能传下来的 `ELECTRON_RUN_AS_NODE`，确保启动图形界面。
+
+在已登录的 macOS 图形会话中，运行 `python3 checks/t3code-desktop.py ~/.local/state/envy/t3code/package` 可检查带该环境变量的隔离启动、系统应用名称、原生进程路径、渲染进程、主窗口及后台就绪。检查使用临时 HOME、T3 数据目录和模拟钥匙串，避免临时 HOME 触发系统默认钥匙串提示；正式启动使用原登录钥匙串。旧版原生手机应用需要升级后才能展示结构化任务树。
 
 ### 子 Agent 角色与工具
 

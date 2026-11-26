@@ -16,7 +16,7 @@
         };
 
         "nas" = {
-            HostName = "nas.fl0wer.cn";
+            HostName = "nas.home.xikai.site";
             Port = 6611;
             User = "chi";
         };

@@ -29,6 +29,16 @@ let
 
 in
 {
+  envy.machine.activationActions = lib.optional (artifacts != []) {
+    id = "native-artifacts";
+    owner = "modules/software/linux/artifacts.nix";
+    manager = "native-artifact";
+    summary = "Ensure ${toString (builtins.length artifacts)} selected system artifacts are installed on a compatible Linux package manager.";
+    effects = [ "Download and verify missing selected deb/rpm artifacts, install them with elevated privileges, and observe repository bootstrap changes; package scripts may run." ];
+    verification = "Inspect selected artifact metadata and installed package state; metadata inspection does not download artifacts or invoke the native installer.";
+    repeatability = "Installed package names are skipped and incompatible manager/format pairs are skipped; activation does not reconcile existing versions. This description does not authorize a retry.";
+    rollbackBoundary = "A generation rollback does not uninstall artifacts, restore native package state, or undo repository bootstrap, package scripts, and service changes.";
+  };
   home.activation.installSystemArtifacts = sys.task.activation {
     name = "system-artifacts";
     after = [ "configureNativeRepositories" ];

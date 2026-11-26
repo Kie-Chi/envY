@@ -15,7 +15,7 @@ let
     # In-process subagent sessions have no UI and must not report readiness.
     substituteInPlace "$out/notify.ts" --replace-fail \
       'pi.on("agent_settled", async () => {' \
-      'pi.on("agent_settled", async (_event, ctx) => { if (!process.stdout.isTTY || !ctx.hasUI) return;'
+      'pi.on("agent_settled", async (_event, ctx) => { if (!process.stdout.isTTY || !ctx.hasUI || ctx.mode !== "tui" || Reflect.get(ctx.ui, Symbol.for("cmux.pi.cmux-dialog-hooks"))) return;'
   '';
   fetchPiExtension = import ./npm-extension.nix { inherit pkgs; };
   piSelected = !(builtins.elem "pi" config.envy.software.nix.packages.exclude);
@@ -40,6 +40,10 @@ let
       version = "2.15.0";
       url = "https://registry.npmjs.org/@juicesharp/rpiv-btw/-/rpiv-btw-2.15.0.tgz";
       hash = "sha512-lJ1uelu5id+aQctYdpi6Plk7JQu5QkwNDqkTPgzmnxZAktgyI8JlNvDnRiGOUUnLHjLxvqHZzPmugYyJmUG/4Q==";
+      postUnpack = ''
+        ${pkgs.patch}/bin/patch --batch --fuzz=0 -p1 < ${../../../../files/agents/patches/pi-btw-scroll.patch}
+        ${pkgs.patch}/bin/patch --batch --fuzz=0 -p1 < ${../../../../files/agents/patches/pi-btw-rpc.patch}
+      '';
     };
   };
   link = target: source: lib.nameValuePair target { inherit source; };
@@ -72,6 +76,9 @@ in
         "tui.input.submit" = "enter";
         "app.message.followUp" = "alt+enter";
         "app.message.dequeue" = "alt+up";
+        # Goal compact scrolling owns Ctrl+Shift+arrows; retain chat navigation.
+        "tui.altScreen.previousPrompt" = [ "ctrl+up" ];
+        "tui.altScreen.nextPrompt" = [ "ctrl+down" ];
       };
     }
     {

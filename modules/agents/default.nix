@@ -16,7 +16,7 @@
     ++ lib.optionals (machinePlatform == "linux") [ ./linux ];
 
   config.assertions = lib.mapAttrsToList (name: agent: {
-    assertion = agent.models == [] || (name == "pi" && agent.adapter == "pi");
-    message = "Model lists are currently supported only by envy.agents.pi with the pi adapter.";
+    assertion = agent.models == [] || (name == "pi" && agent.adapter == "pi") || (name == "codex" && agent.adapter == "codex");
+    message = "Model lists require envy.agents.pi or envy.agents.codex with the matching adapter.";
   }) config.envy.agents;
 }

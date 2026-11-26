@@ -11,6 +11,11 @@ from envy import log
 JSON_SCHEMA_VERSION = 1
 
 
+def write_document(payload: Any) -> None:
+    """Write JSON without terminal styling, wrapping, or markup interpretation."""
+    print(json.dumps(payload, ensure_ascii=False, default=str, indent=2), file=log.console.file)
+
+
 def emit(
     command: str,
     *,
@@ -29,7 +34,7 @@ def emit(
     }
     if error is not None:
         payload["error"] = error
-    log.console.print_json(json.dumps(payload, ensure_ascii=False, default=str))
+    write_document(payload)
 
 
 def emit_error(command: str, message: str, *, code: str = "error") -> None:

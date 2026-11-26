@@ -10,6 +10,8 @@ import typer
 from rich.console import Console
 
 from envy import log
+from envy.provenance import SnapshotError
+from envy.evaluation import informative_nix_error
 from envy.workflows import check, generations, plan
 
 
@@ -45,11 +47,11 @@ class MachineCheckTests(unittest.TestCase):
                 self.assertEqual(check.run_machine_checks([("darwin", "mac")]), [("darwin", "mac", False)])
         self.assertIn("machine failed", self.output.getvalue())
 
-    def test_failure_hint_keeps_the_last_nonempty_line_and_length_limit(self):
+    def test_failure_hint_preserves_unrecognized_stderr_without_truncation(self):
         stderr = "first line\n" + "x" * 600 + "\n \n"
         with patch.object(check, "run_process", return_value=subprocess.CompletedProcess([], 7, "", stderr)), patch.object(log, "hint") as hint:
             check.run_machine_checks([("linux", "desk")])
-        hint.assert_called_once_with("x" * 500)
+        hint.assert_called_once_with(stderr)
 
     def test_build_only_builds_the_local_platform(self):
         with patch.object(check, "platform_name", return_value="darwin"), patch.object(
@@ -79,34 +81,37 @@ class MachineCheckTests(unittest.TestCase):
     def test_plan_keeps_json_when_the_closure_diff_fails_with_blank_stderr(self):
         current = generations.Generation(1, Path("/profile"), Path("/before"), "fixture", True)
         with patch.object(plan, "current_machine_id", return_value="mac"), patch.object(
-            plan, "machine_build_attr", return_value="fixture"
-        ), patch.object(plan, "current_generation", return_value=current), patch.object(
-            plan, "run_process", return_value=subprocess.CompletedProcess([], 0, "/after\n", "")
+            plan, "build_snapshot", return_value=({}, None, Path("/nix/store/after"))
+        ), patch.object(plan, "baseline_for_generation", return_value=None), patch.object(
+            plan, "current_generation", return_value=current
         ), patch.object(generations, "run_process", return_value=subprocess.CompletedProcess([], 7, "", "\n \n")):
             plan.plan_configuration(json_output=True)
         payload = json.loads(self.output.getvalue())
         self.assertTrue(payload["ok"])
-        self.assertEqual(payload["target"], "/after")
-        self.assertEqual(payload["closureDiff"], "")
+        self.assertEqual(payload["command"], "plan")
+        self.assertEqual(payload["target"], "/nix/store/after")
+        self.assertIsNone(payload["closureDiff"])
+        self.assertEqual(payload["data"]["sections"]["closure"]["status"], "unavailable")
 
     def test_plan_blank_stderr_keeps_json_and_exit_code(self):
         for stderr in (None, "", "\n \t\n", "first\nlast\n \n"):
             for json_output in (False, True):
+                expected = informative_nix_error(stderr, fallback="plan build failed")
                 with self.subTest(stderr=stderr, json_output=json_output), patch.object(plan, "current_machine_id", return_value="mac"), patch.object(
-                    plan, "machine_build_attr", return_value="fixture"
-                ), patch.object(plan, "run_process", return_value=subprocess.CompletedProcess([], 7, "", stderr)):
+                    plan, "build_snapshot", side_effect=SnapshotError(expected, code=7)
+                ):
                     self.output.seek(0)
                     self.output.truncate()
                     with self.assertRaises(typer.Exit) as raised:
                         plan.plan_configuration(json_output=json_output)
                     self.assertEqual(raised.exception.exit_code, 7)
-                    expected = "last" if stderr and "last" in stderr else "plan build failed"
                     if json_output:
                         payload = json.loads(self.output.getvalue())
                         self.assertFalse(payload["ok"])
-                        self.assertEqual(payload["error"], expected)
+                        self.assertEqual(payload["error"]["message"], expected)
+                        self.assertIn("sections", payload["data"])
                     else:
-                        self.assertIn(expected, self.output.getvalue())
+                        self.assertIn(expected.strip(), self.output.getvalue())
 
 
 if __name__ == "__main__":

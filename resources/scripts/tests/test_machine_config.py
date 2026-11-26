@@ -70,6 +70,53 @@ class DarwinMachineConfigTests(unittest.TestCase):
             side_effect=lambda machine_id=None: self.machines / f"{machine_id or 'test-mac'}.nix",
         )
 
+    def assert_archive_refinement(self, repository, mount_source, expected_errors):
+        values = self.values()
+        values["envy.storage.archive.repository"] = repository
+        values["envy.storage.archive.mountSource"] = mount_source
+        before = self.machine.read_text()
+        with patch.object(machine_nix, "machine_config_file", return_value=self.machine), patch.object(
+            machine_nix, "read_machine_nix", return_value=values
+        ), patch.object(machine_nix, "write_machine_nix") as write_machine, patch.object(
+            refine, "refine_agents", return_value=refine.RefineReport()
+        ), patch.object(refine, "log"):
+            report = refine.refine_config(write=False, strict=True)
+
+        self.assertEqual(report.errors, expected_errors)
+        self.assertEqual(report.ok, not expected_errors)
+        self.assertFalse(report.changed)
+        write_machine.assert_not_called()
+        self.assertEqual(self.machine.read_text(), before)
+
+    def test_refine_sftp_archive_does_not_require_mount_source(self):
+        self.assert_archive_refinement("sftp:fixture@nas:/archive/restic", "", [])
+
+    def test_refine_unconfigured_archive_does_not_require_mount_source(self):
+        self.assert_archive_refinement("", "", [])
+
+    def test_refine_mounted_archive_requires_mount_source(self):
+        self.assert_archive_refinement(
+            "/Volumes/archive/restic", "", ["envy.storage.archive.mountSource"]
+        )
+
+    def test_refine_mounted_archive_accepts_mount_source(self):
+        self.assert_archive_refinement("/Volumes/archive/restic", "//fixture@nas/share", [])
+
+    def test_service_port_round_trips_as_an_integer(self):
+        values = self.values()
+        values["envy.t3code.service.port"] = "4773"
+        with self.machine_file_patch(), patch.object(
+            machine_nix, "current_machine_id", return_value="test-mac"
+        ), patch.object(machine_nix, "set_device_machine_id"):
+            machine_nix.write_machine_nix(values)
+            read = machine_nix.read_machine_nix()
+        self.assertEqual(read["envy.t3code.service.port"], "4773")
+        self.assertIn("envy.t3code.service.port = 4773;", self.machine.read_text())
+        field = next(f for f in COMMON_MACHINE_FIELDS if f.path == "envy.t3code.service.port")
+        self.assertIsNone(field.validators[0]("4773"))
+        for invalid in ["0", "65536", "-1", "1.5", "not-a-port", "9" * 5000]:
+            self.assertIsNotNone(field.validators[0](invalid))
+
     def test_writer_preserves_hand_maintained_machine_policy(self):
         with self.machine_file_patch(), patch.object(
             machine_nix, "current_machine_id", return_value="test-mac"
@@ -94,6 +141,31 @@ class DarwinMachineConfigTests(unittest.TestCase):
         self.assertEqual(text.count(machine_nix.MANAGED_START), 1)
         self.assertIn('envy.vscode.mode = "local";', text)
         self.assertIn('envy.software.nix.packages.exclude = [ "okular" ];', text)
+
+    def test_managed_block_keeps_hand_written_rules(self):
+        with self.machine_file_patch(), patch.object(
+            machine_nix, "current_machine_id", return_value="test-mac"
+        ), patch.object(machine_nix, "set_device_machine_id"):
+            machine_nix.write_machine_nix(self.values())
+            text = self.machine.read_text()
+            custom = (
+                '  envy.storage.rules.exclude = [ "go-build-cache" ];\n'
+                '  envy.storage.rules.include.old-installers.minAgeDays = 60;\n'
+                '  envy.storage.rules.include.machine-cache = {\n'
+                '    path = "/tmp/demo/cache";\n'
+                '    action = "quarantine";\n'
+                '  };\n'
+            )
+            self.machine.write_text(text.replace(machine_nix.MANAGED_END,
+                                                 custom + machine_nix.MANAGED_END))
+            values = self.values()
+            values["envy.vscode.mode"] = "local"
+            machine_nix.write_machine_nix(values)
+            machine_nix.write_machine_nix(values)
+        text = self.machine.read_text()
+        self.assertIn(custom, text)
+        self.assertEqual(text.count("envy.storage.rules.include.machine-cache"), 1)
+        self.assertIn('envy.vscode.mode = "local";', text)
 
     def test_mirror_block_is_independent_from_machine_config_block(self):
         overrides = {

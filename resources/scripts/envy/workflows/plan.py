@@ -1,78 +1,72 @@
-"""Build and compare the selected machine without activating it."""
-
+"""Build and compare a frozen selected machine without activating it."""
 from __future__ import annotations
-
-import json
-from pathlib import Path
 
 import typer
 from rich.panel import Panel
 from rich.table import Table
 
 from envy import log
-from envy.process import run_process
-from envy.utils import ENVY_ROOT, current_machine_id, machine_build_attr, platform_name
+from envy.behavior import (REPORT_VERSION, ROLLBACK_BOUNDARY, activation_preview,
+                           comparison_report, emit_report, section, semantic_snapshot)
+from envy.journal import baseline_for_generation
+from envy.provenance import SnapshotError, build_snapshot
+from envy.utils import current_machine_id, platform_name
 from envy.workflows.generations import closure_diff, current_generation
 
 
 def plan_configuration(*, json_output: bool = False) -> None:
     machine = current_machine_id()
-    attr = machine_build_attr(machine)
+    payload = {"reportVersion": REPORT_VERSION, "machine": machine, "platform": platform_name(),
+               "current": None, "target": None, "changed": None, "closureDiff": None, "source": None,
+               "sections": {}, "activation": section("unavailable", "Preview did not complete", coverage="partial", actions=[]),
+               "rollbackBoundary": ROLLBACK_BOUNDARY}
     if not json_output:
-        log.step("plan", "building selected machine without activation", machine=machine)
-    result = run_process(
-        ["nix", "build", "--no-link", "--print-out-paths", "--impure", attr],
-        cwd=ENVY_ROOT, capture=True, check=False,
-        activity=f"build plan for {machine}",
-    )
-    if result.returncode != 0:
-        lines = [line.strip() for line in (result.stderr or "").splitlines() if line.strip()]
-        detail = lines[-1] if lines else "plan build failed"
-        if json_output:
-            log.console.print_json(json.dumps({
-                "schemaVersion": 1, "machine": machine, "ok": False,
-                "error": detail[:500],
-            }, ensure_ascii=False))
+        log.step("plan", "building frozen selected machine without activation", machine=machine)
+    try:
+        source, manifest, target = build_snapshot(machine)
+        payload.update(source=source, target=str(target))
+        semantics = semantic_snapshot(manifest)
+        payload["sections"] = comparison_report(None, semantics)
+        payload["activation"] = activation_preview(semantics)
+        current = current_generation()
+        payload.update(current=current.to_dict() if current else None, changed=current is None or current.target != target)
+        payload["sections"] = comparison_report(baseline_for_generation(current), semantics)
+        if current is None:
+            closure = section("unknown", "Current generation could not be identified")
         else:
-            log.error("plan", "selected machine build failed")
-            log.hint(detail[:500])
-        raise typer.Exit(code=result.returncode or 1)
-    outputs = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
-    if not outputs:
-        log.error("plan", "Nix build returned no output path")
-        raise typer.Exit(code=1)
-    target = Path(outputs[-1])
-    current = current_generation()
-    diff = ""
-    if current is not None:
-        try:
-            diff = closure_diff(current.target, target)
-        except RuntimeError as exc:
-            if not json_output:
-                log.warn("plan", "closure diff is unavailable", reason=str(exc))
-    payload = {
-        "schemaVersion": 1,
-        "machine": machine,
-        "platform": platform_name(),
-        "ok": True,
-        "current": current.to_dict() if current is not None else None,
-        "target": str(target),
-        "changed": current is None or current.target != target,
-        "closureDiff": diff,
-    }
+            try:
+                diff = closure_diff(current.target, target)
+                payload["closureDiff"] = diff
+                closure = section("compared", diff=diff, changed=bool(diff))
+            except RuntimeError:
+                closure = section("unavailable", "Nix closure comparison failed")
+        payload["sections"]["closure"] = closure
+    except (SnapshotError, OSError, RuntimeError, ValueError) as exc:
+        payload.update(getattr(exc, "partial", {}))
+        for name in ("closure", "settings", "software", "sources", "behavior"):
+            payload["sections"].setdefault(name, section("unavailable", "Preview did not complete"))
+        if json_output:
+            emit_report("plan", payload, ok=False, error=str(exc))
+        else:
+            log.error("plan", "selected machine preview failed")
+            log.hint(str(exc))
+        raise typer.Exit(code=getattr(exc, "code", 1)) from exc
     if json_output:
-        log.console.print_json(json.dumps(payload, ensure_ascii=False))
+        emit_report("plan", payload)
         return
     table = Table(title=f"envY plan - {machine}")
     table.add_column("Field")
     table.add_column("Value")
-    table.add_row("Current", str(current.target) if current is not None else "<unknown>")
+    table.add_row("Current", str(current.target) if current else "<unknown>")
     table.add_row("Target", str(target))
     table.add_row("Changed", "yes" if payload["changed"] else "no")
+    for name, item in payload["sections"].items():
+        table.add_row(name, f"{item['status']}: {item.get('reason') or ('changed' if item.get('changed') else 'unchanged')}")
     log.console.print(table)
-    log.console.print(Panel(
-        diff or "No Nix closure differences.",
-        title="Closure diff",
-        border_style="yellow" if diff else "green",
-    ))
-    log.hint("This is a closure preview; activation scripts and runtime side effects are not fully simulated.")
+    closure = payload["sections"]["closure"]
+    text = (payload["closureDiff"] or "No Nix closure differences.") if closure["status"] == "compared" else closure["reason"]
+    log.console.print(Panel(text, title="Closure diff", border_style="green" if closure["status"] == "compared" else "yellow"))
+    for action in payload["activation"].get("actions", []):
+        log.info("activation", action["summary"], manager=action["manager"],
+                 preview=action["mergePreview"]["status"])
+    log.hint(ROLLBACK_BOUNDARY)

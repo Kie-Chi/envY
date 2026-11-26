@@ -1,0 +1,191 @@
+--- a/index.ts
++++ b/index.ts
+@@ -1003,7 +1003,7 @@
+ 		if (ctx.isIdle() && !paused && !blockingActivity) dispatchFromIdle(ctx);
+ 	};
+ 
+-	const selectQueueItem = (ctx: ExtensionContext, direction: "previous" | "next"): void => {
++	const selectQueueItem = (ctx: ExtensionContext, direction: "previous" | "next", id?: string): void => {
+ 		activeContext = ctx;
+ 		if (queue.length === 0) {
+ 			ctx.ui.notify("No queued messages to edit", "info");
+@@ -1012,7 +1012,7 @@
+ 
+ 		if (!editSession) {
+ 			const composerDraft = ctx.ui.getEditorText();
+-			const selectedId = queue.mostRecentId();
++			const selectedId = id ?? queue.mostRecentId();
+ 			const selected = selectedId ? queue.get(selectedId) : undefined;
+ 			if (!selected) return;
+ 			editSession = new QueueEditSession(selected, composerDraft);
+@@ -1398,7 +1398,154 @@
+ 			}
+ 		},
+ 	});
++
++	// Command controls share the visible queue and its normal delivery boundaries.
++	const queueActions = [
++		{ name: "list", usage: "list", description: "List row IDs, delivery lanes and content" },
++		{ name: "add", usage: "add <text>", description: "Queue a follow-up; idle queues wait for /queue resume" },
++		{ name: "steer", usage: "steer <text>", description: "Queue steering before future follow-up runs" },
++		{ name: "edit", usage: "edit [row-id]", description: "Edit a row, or the most recently queued row" },
++		{ name: "remove", usage: "remove <row-id>", description: "Remove one pending row" },
++		{ name: "clear", usage: "clear", description: "Confirm and clear pending rows without aborting the run" },
++		{ name: "resume", usage: "resume", description: "Resume normal delivery without merging messages" },
++	];
++	let queueCommandGeneration = 0;
++	const queueStatus = (): string =>
++		`Queue: ${queue.length} pending; ${paused ? "paused" : "active"}${blockingActivity ? `; control: ${blockingActivity}` : ""}`;
++	const queueHelp = (): string => [
++		queueStatus(),
++		...queueActions.map(action => `/queue ${action.usage} — ${action.description}`),
++		"/pause — pause safely after in-flight tools finish",
++		"/queue-drain — merge dispatchable messages into one submission",
++		"Tab completes subcommands and row IDs; Enter saves row edits; Escape cancels.",
++	].join("\n");
+ 
++	pi.registerCommand("queue", {
++		description: "Control the visible queue: list, add, steer, edit, remove, clear, resume",
++		getArgumentCompletions: prefix => {
++			const input = prefix.trimStart();
++			if (!/\s/.test(input)) {
++				const actions = queueActions.filter(action => action.name.startsWith(input) && action.name !== input);
++				return actions.length ? actions.map(action => ({
++					value: action.name + (["add", "steer", "edit", "remove"].includes(action.name) ? " " : ""),
++					label: action.usage,
++					description: action.description,
++				})) : null;
++			}
++			const match = /^(edit|remove)\s+(\S*)$/.exec(input);
++			if (!match) return null;
++			const rows = queue.snapshot().filter(row => row.id.startsWith(match[2]!) && row.id !== match[2]);
++			// Pi replaces the complete argument prefix, including the subcommand.
++			return rows.length ? rows.map(row => ({
++				value: `${match[1]} ${row.id}`,
++				label: row.id,
++				description: `${laneLabel(row.lane)}${row.paused ? " (paused)" : ""} — ${row.text.replace(/\s+/g, " ").slice(0, 80)}`,
++			})) : null;
++		},
++		handler: async (args, ctx) => {
++			if (ctx.mode !== "tui") {
++				ctx.ui.notify("/queue requires Pi's interactive TUI; native headless queues are unchanged", "warning");
++				return;
++			}
++			activeContext = ctx;
++			const match = /^(\S+)(?:\s+([\s\S]*))?$/.exec(args.trim());
++			if (!match) {
++				ctx.ui.notify(queueHelp(), "info");
++				return;
++			}
++			const action = queueActions.find(candidate => candidate.name === match[1]);
++			const text = match[2] ?? "";
++			if (!action) {
++				ctx.ui.notify(`Unknown /queue action: ${match[1]}\n${queueHelp()}`, "warning");
++				return;
++			}
++			const needsText = action.name === "add" || action.name === "steer";
++			const takesId = action.name === "edit" || action.name === "remove";
++			if ((needsText && !text) || (action.name === "remove" && !text)
++				|| (takesId && /\s/.test(text)) || (!needsText && !takesId && text)) {
++				ctx.ui.notify(`Usage: /queue ${action.usage} — ${action.description}`, "warning");
++				return;
++			}
++			if (action.name === "list") {
++				ctx.ui.notify([
++					queueStatus(),
++					...queue.snapshot().map(row => `${row.id} [${laneLabel(row.lane)}${row.paused ? "; paused" : ""}] ${row.text}`),
++				].join("\n"), "info");
++				return;
++			}
++			const blocked = (): boolean => {
++				if (!editSession && !blockingActivity && !pauseAfterToolsArmed) return false;
++				ctx.ui.notify(editSession
++					? "Finish or cancel row editing before using /queue controls"
++					: pauseAfterToolsArmed
++						? "Wait for the graceful pause to finish before using /queue controls"
++						: "Wait for the current control command to finish before using /queue controls", "warning");
++				return true;
++			};
++			if (blocked()) return;
++			if (needsText) {
++				const row = action.name === "steer" ? queue.enqueueSteer(text) : queue.enqueue("followUp", text);
++				if (ctx.isIdle()) pauseQueue();
++				renderQueue(ctx);
++				persistCommittedQueue(ctx);
++				ctx.ui.notify(`Queued ${row.id} (${laneLabel(row.lane)})${paused ? "; /queue resume starts delivery" : ""}`, "info");
++				return;
++			}
++			if (takesId) {
++				if (text && !queue.get(text)) {
++					ctx.ui.notify(`Unknown queue row: ${text}; use /queue list or Tab to choose an ID`, "warning");
++					return;
++				}
++				if (action.name === "edit") {
++					selectQueueItem(ctx, "previous", text || undefined);
++					if (editSession) ctx.ui.notify("Editing queue row: Enter saves; Escape cancels; Alt+Up/Down selects; Alt+Shift+Up/Down reorders; Alt+T changes lane", "info");
++				} else {
++					queue.remove(text);
++					renderQueue(ctx);
++					persistCommittedQueue(ctx);
++					ctx.ui.notify(`Removed ${text}`, "info");
++				}
++				return;
++			}
++			if (queue.length === 0) {
++				ctx.ui.notify("Queue is empty; /queue add <text> adds a follow-up", "info");
++				return;
++			}
++			if (action.name === "clear") {
++				const generation = queueCommandGeneration;
++				const before = JSON.stringify(queue.snapshot());
++				const count = queue.length;
++				const confirmed = await ctx.ui.confirm("Clear queue?", `Remove ${count} pending rows? The current run will not be aborted.`);
++				// An old confirmation must not delete changed rows or cross sessions.
++				if (generation !== queueCommandGeneration || !confirmed) return;
++				if (blocked()) return;
++				if (before !== JSON.stringify(queue.snapshot())) {
++					ctx.ui.notify("Queue changed during confirmation; review /queue list and retry /queue clear", "warning");
++					return;
++				}
++				queue.clear();
++				renderQueue(ctx);
++				persistCommittedQueue(ctx);
++				ctx.ui.notify(`Cleared ${count} pending rows`, "info");
++				return;
++			}
++			resumeQueue();
++			renderQueue(ctx);
++			persistCommittedQueue(ctx);
++			if (ctx.isIdle() && !queue.peek()?.paused && !dispatchFromIdle(ctx)) {
++				// Keep synchronous dispatch errors visible and park the restored row.
++				pauseQueue();
++				renderQueue(ctx);
++				persistCommittedQueue(ctx);
++				return;
++			}
++			const head = queue.peek();
++			ctx.ui.notify(head?.paused
++				? `Queue resumed; row ${head.id} is held — /queue edit ${head.id}, then Alt+P and Enter release it`
++				: "Queue resumed; rows keep their original delivery lanes and order", "info");
++		},
++	});
++
+ 	pi.registerCommand(DRAIN_COMMAND, {
+ 		description: "Drain every queued message into the run as steering, in timeline order",
+ 		handler: async (_args, ctx) => {
+@@ -1460,6 +1607,7 @@
+ 	});
+ 
+ 	pi.on("session_start", async (event, ctx) => {
++		queueCommandGeneration += 1;
+ 		activeContext = ctx;
+ 		settingsManager = SettingsManager.create(ctx.cwd, undefined, { projectTrusted: ctx.isProjectTrusted() });
+ 		ctx.ui.setWidget(WIDGET_ID, undefined);
+@@ -1654,6 +1802,7 @@
+ 	});
+ 
+ 	pi.on("session_shutdown", (event, ctx) => {
++		queueCommandGeneration += 1;
+ 		cancelNativeFlushGrace();
+ 		const queuedNewHandoff =
+ 			event.reason === "new"

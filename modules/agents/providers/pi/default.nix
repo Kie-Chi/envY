@@ -47,10 +47,11 @@ let
     api = apiFor agent endpoint;
     isSolModel = builtins.elem api [ "openai-completions" "openai-responses" ]
       && agent.model != null
-      && (agent.model == "gpt-6.1-sol" || lib.hasPrefix "gpt-6.1-sol-" agent.model);
+      && (agent.model == "gpt-6.1-sol" || lib.hasPrefix "gpt-6.1-sol-" agent.model
+        || builtins.elem agent.model [ "stepcode-gpt-6.1-sol" "stepcode-gpt-6.1-sol-eastus2" ]);
     # Adaptive-thinking Anthropic models reject thinking.type=disabled, which
     # Pi sends for requests without a reasoning level (for example /btw).
-    thinkingLevelMap = lib.optionalAttrs (api == "anthropic-messages") {
+    compatibilityMap = lib.optionalAttrs (api == "anthropic-messages") {
       off = null;
     } // lib.optionalAttrs (agent.adapter == "pi" && agent.moreThinking) {
       xhigh = "xhigh";
@@ -63,6 +64,8 @@ let
       minimal = null;
       ultra = null;
     };
+    thinkingLevelMap = if (agent.thinkingLevelMap or null) == null
+      then compatibilityMap else agent.thinkingLevelMap;
   in {
     providers.${providerName} = {
       baseUrl = if endpoint == null then "https://api.openai.com/v1" else endpoint.baseUrl;

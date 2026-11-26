@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Real Pi CLI/TUI smoke test for context and optional diff views.
 
-Usage: python3 pi-context-tui.py <node> <pi-cli.js> <contextPackage> [diffPackage absoluteGit [JSON sourcePaths]]
+Usage: python3 pi-context-tui.py <node> <pi-cli.js> <contextPackage> [diffPackage absoluteGit [JSON sourcePaths [JSON keybindings]]]
 """
 import fcntl
 import json
@@ -25,7 +25,12 @@ assert isinstance(SOURCE_PATHS, list) and all(
     isinstance(source, str) and os.path.isabs(source) and "cron" not in source.lower()
     for source in SOURCE_PATHS
 ), "sourcePaths must be an array of absolute non-cron extension paths"
+KEYBINDINGS = json.loads(sys.argv[7]) if len(sys.argv) > 7 else None
+BTW_PACKAGE = next((source for source in SOURCE_PATHS if os.path.isfile(os.path.join(source, "btw-ui.ts"))), None)
+GOAL_PACKAGE = next((source for source in SOURCE_PATHS if os.path.isfile(os.path.join(source, "extensions/goal-widget.ts"))), None)
+HAS_SCROLL_VIEWS = bool(BTW_PACKAGE and GOAL_PACKAGE)
 HAS_FOOTER = any("pi-powerline" in os.path.basename(source) for source in SOURCE_PATHS)
+HAS_QUEUE = any(os.path.isfile(os.path.join(source, "queue-state.ts")) for source in SOURCE_PATHS)
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07")
 
 def plain(data: bytes) -> str:
@@ -46,13 +51,90 @@ def run_test(root: str) -> int:
         os.path.join(home, ".local/share"), os.path.join(home, ".local/state"),
     ):
         os.makedirs(directory, exist_ok=True)
+    if KEYBINDINGS is not None:
+        assert isinstance(KEYBINDINGS, dict), "keybindings must be a JSON object"
+        with open(os.path.join(agent, "keybindings.json"), "w", encoding="utf-8") as handle:
+            json.dump(KEYBINDINGS, handle)
+    frame_log = os.path.join(root, "scroll-frames.jsonl")
+    interaction_fixture = ""
+    if HAS_SCROLL_VIEWS:
+        # Import the deployed components, while keeping all content and state offline.
+        interaction_fixture = r'''
+const { showBtwOverlay } = await import(BTW_UI);
+const { GoalWidgetComponent } = await import(GOAL_WIDGET);
+const { syncTerminalInputPause } = await import(GOAL_INPUT);
+const { createGoal } = await import(GOAL_RECORD);
+let unsubscribe;
+let activeWidget;
+function transcript(tui) {
+  const visit = node => {
+    if (node?.primary === true && typeof node.scrollTop === "number") return node;
+    for (const child of node?.children ?? []) { const found = visit(child); if (found) return found; }
+  };
+  const found = tui.getMountedRoots().map(visit).find(Boolean);
+  if (!found) throw new Error("Scroll regression requires the real fullscreen transcript");
+  return found;
+}
+function observe(component, kind, ctx, tui) {
+  const render = component.render.bind(component);
+  component.render = width => {
+    const lines = render(width);
+    const chat = transcript(tui);
+    fs.appendFileSync(FRAME_LOG, JSON.stringify({kind, lines, scrollTop: chat.scrollTop,
+      history: JSON.stringify(ctx.sessionManager.getBranch())}) + "\n");
+    return lines;
+  };
+  return component;
+}
+pi.registerCommand("scroll-history", { handler: async () => {
+  pi.sendMessage({customType: "scroll-history", content: Array.from({length: 90},
+    (_, i) => "MAIN-HISTORY-" + String(i).padStart(3, "0")).join("\n"), display: true});
+} });
+pi.registerCommand("scroll-btw", { handler: async (_, ctx) => {
+  const watched = {...ctx, ui: {...ctx.ui, custom: (factory, options) =>
+    ctx.ui.custom((tui, theme, kb, done) => observe(factory(tui, theme, kb, done), "btw", ctx, tui), options)}};
+  const shown = showBtwOverlay({ctx: watched, question: "Offline scrolling regression", history: [],
+    controller: new AbortController(), onClearHistory() {}});
+  (await shown.controllerReady).setAnswer(Array.from({length: 100},
+    (_, i) => "BTW-LINE-" + String(i).padStart(3, "0")).join("\n"));
+  await shown.overlayPromise;
+} });
+pi.registerCommand("scroll-goal", { handler: async (_, ctx) => {
+  const goal = createGoal({objective: "Offline compact overflow regression", autoContinue: false});
+  goal.taskList = {tasks: Array.from({length: 30}, (_, i) => ({id: "task-" + i,
+    title: "GOAL-TASK-" + String(i).padStart(3, "0"), status: "pending"})), blockCompletion: false};
+  const core = {goalModalDepth: 0, state: {goal}, auditProgress: null,
+    isDashboardExpanded: () => false, goalWidgetComponentRef: {current: null}};
+  ctx.ui.setWidget("scroll-regression", (tui, theme) => {
+    activeWidget = observe(new GoalWidgetComponent({tui, theme, getGoal: () => goal}), "goal", ctx, tui);
+    core.goalWidgetComponentRef.current = activeWidget;
+    return activeWidget;
+  });
+  syncTerminalInputPause(core, ctx);
+  unsubscribe = () => core.terminalInputUnsubscribe?.();
+} });
+pi.registerCommand("scroll-clear", { handler: async (_, ctx) => {
+  unsubscribe?.(); activeWidget = undefined;
+  ctx.ui.setWidget("scroll-regression", undefined);
+  ctx.ui.notify("Scroll fixture closed", "info");
+} });
+'''
+        for token, value in {
+            "BTW_UI": os.path.join(BTW_PACKAGE, "btw-ui.ts"),
+            "GOAL_WIDGET": os.path.join(GOAL_PACKAGE, "extensions/widgets/goal-widget.ts"),
+            "GOAL_INPUT": os.path.join(GOAL_PACKAGE, "extensions/goal-widget.ts"),
+            "GOAL_RECORD": os.path.join(GOAL_PACKAGE, "extensions/goal-record.ts"),
+            "FRAME_LOG": frame_log,
+        }.items():
+            interaction_fixture = interaction_fixture.replace(token, json.dumps(value))
     request_log = os.path.join(root, "requests.log")
     fixture = os.path.join(root, "offline-fixture.ts")
     with open(fixture, "w", encoding="utf-8") as handle:
         handle.write(f'''
 import fs from "node:fs";
 import {{ createAssistantMessageEventStream }} from "@earendil-works/pi-ai";
-export default function(pi) {{
+export default async function(pi) {{
+{interaction_fixture}
   pi.registerCommand("footer-theme", {{ handler: async (args, ctx) => {{
     ctx.ui.setTheme(args.trim() === "light" ? "light" : "dark");
     ctx.ui.notify("Footer theme switched: " + args.trim(), "info");
@@ -180,6 +262,48 @@ export default function(pi) {{
             raise AssertionError("closing the context view made a model request")
         send("\x15")
 
+    def scroll_frames(kind: str) -> list[dict]:
+        if not os.path.exists(frame_log):
+            return []
+        with open(frame_log, encoding="utf-8") as handle:
+            return [frame for line in handle if line.endswith("\n")
+                    and (frame := json.loads(line))["kind"] == kind]
+
+    def wait_frame(kind: str, predicate, after: int = 0) -> dict:
+        deadline = time.monotonic() + 10
+        last_count, changed_at = -1, time.monotonic()
+        while time.monotonic() < deadline:
+            frames = scroll_frames(kind)
+            if len(frames) != last_count:
+                last_count, changed_at = len(frames), time.monotonic()
+            if len(frames) > after and time.monotonic() - changed_at >= 0.2 and predicate(frames[-1]):
+                return frames[-1]
+            ready, _, _ = select.select([master], [], [], 0.1)
+            if ready:
+                try:
+                    output.extend(os.read(master, 65536))
+                except OSError:
+                    break
+            if process.poll() is not None:
+                break
+        recent = [{**frame, "history": "<omitted>"} for frame in scroll_frames(kind)[-2:]]
+        raise AssertionError(f"missing {kind} scroll frame; frames={recent}; "
+                             f"tail={plain(bytes(output))[-3000:]}")
+
+    def visible_ids(frame: dict, prefix: str) -> list[int]:
+        # The compact dashboard repeats the current task outside its viewport.
+        lines = [line for line in frame["lines"] if "Current" not in plain(line.encode())]
+        return [int(value) for value in re.findall(prefix + r"(\d{3})", "\n".join(lines))]
+
+    def scroll_key(kind: str, key: str, baseline: dict, expected) -> dict:
+        before = len(scroll_frames(kind))
+        send(key)
+        frame = wait_frame(kind, expected, before)
+        assert frame["scrollTop"] == baseline["scrollTop"], f"{kind} key moved main history"
+        assert frame["history"] == baseline["history"], f"{kind} key changed session history"
+        assert request_count() == 1, f"{kind} scrolling made a model request"
+        return frame
+
     def wait_for_exit(timeout: float = 15.0) -> None:
         deadline = time.monotonic() + timeout
         while process.poll() is None and time.monotonic() < deadline:
@@ -270,6 +394,91 @@ export default function(pi) {{
                 read_until("Footer theme switched: " + theme, since=mark)
             if request_count() != 1:
                 raise AssertionError("footer interactions made a model request")
+        if HAS_SCROLL_VIEWS:
+            # A tall real transcript makes accidental host scrolling observable.
+            mark = len(output)
+            send("/scroll-history\r")
+            read_until("MAIN-HISTORY-089", since=mark)
+            send("/scroll-btw\r")
+            bottom = wait_frame("btw", lambda frame: 99 in visible_ids(frame, "BTW-LINE-"))
+            assert bottom["scrollTop"] > 0, "main history must overflow for scroll isolation"
+            oldest = min(visible_ids(bottom, "BTW-LINE-"))
+            scroll_key("btw", "\x1b[A", bottom,
+                            lambda frame: min(visible_ids(frame, "BTW-LINE-")) == oldest - 1)
+            scroll_key("btw", "\x1b[B", bottom, lambda frame: frame["lines"] == bottom["lines"])
+            scroll_key("btw", "\x1b[5~", bottom,
+                              lambda frame: min(visible_ids(frame, "BTW-LINE-")) < oldest - 1)
+            scroll_key("btw", "\x1b[6~", bottom, lambda frame: frame["lines"] == bottom["lines"])
+            scroll_key("btw", "\x1b[H", bottom, lambda frame: 0 in visible_ids(frame, "BTW-LINE-"))
+            scroll_key("btw", "\x1b[F", bottom, lambda frame: frame["lines"] == bottom["lines"])
+            # SGR wheel events hit the real overlay mouse dispatcher.
+            scroll_key("btw", "\x1b[<64;20;35M", bottom,
+                       lambda frame: min(visible_ids(frame, "BTW-LINE-")) < oldest)
+            scroll_key("btw", "\x1b[<65;20;35M", bottom, lambda frame: frame["lines"] == bottom["lines"])
+            close_view("\x1b", "envy-editor-after-btw-scroll", 1)
+            send("/scroll-goal\r")
+            initial = wait_frame("goal", lambda frame: bool(visible_ids(frame, "GOAL-TASK-")))
+            first = min(visible_ids(initial, "GOAL-TASK-"))
+            scroll_key("goal", "\x1b[1;6B", initial,
+                       lambda frame: min(visible_ids(frame, "GOAL-TASK-")) == first + 1)
+            scroll_key("goal", "\x1b[1;6A", initial, lambda frame: frame["lines"] == initial["lines"])
+            # Main-chat Ctrl+Up still navigates prompts without moving the goal list.
+            before = len(scroll_frames("goal"))
+            send("\x1b[1;5A")
+            moved = wait_frame("goal", lambda frame: frame["scrollTop"] < initial["scrollTop"], before)
+            assert moved["lines"] == initial["lines"], "main-chat scroll changed compact goal"
+            assert moved["history"] == initial["history"], "main-chat scroll changed session history"
+            before = len(scroll_frames("goal"))
+            send("\x1b[1;5F")
+            wait_frame("goal", lambda frame: frame["scrollTop"] == initial["scrollTop"], before)
+            mark = len(output)
+            send("/scroll-clear\r")
+            read_until("Scroll fixture closed", since=mark)
+            mark = len(output)
+            send("envy-editor-after-goal-scroll")
+            read_until("envy-editor-after-goal-scroll", since=mark)
+            send("\x15")
+            assert request_count() == 1, "scroll fixture or editor recovery made a model request"
+        if HAS_QUEUE:
+            # Exercise argument completion and command dispatch through the real editor.
+            mark = len(output)
+            send("/queue ad")
+            read_until(r"add <text>", since=mark)
+            send("\t")
+            send("TUI-queued-中文\r")
+            read_until(r"Queued follow-up-1", since=mark)
+            assert request_count() == 1, "idle command enqueue made a model request"
+            mark = len(output)
+            send("/queue edit follow")
+            read_until(r"follow-up-1", since=mark)
+            send("\t\r")
+            read_until(r"Editing queue row", since=mark)
+            mark = len(output)
+            send("\x15TUI-edited-中文\r")
+            read_until(r"TUI-edited-中文", since=mark)
+            mark = len(output)
+            send("/queue remove follow-up-1\r")
+            read_until(r"Removed follow-up-1", since=mark)
+            mark = len(output)
+            send("/queue add Clear-cancel-row\r")
+            read_until(r"Queued follow-up-2", since=mark)
+            mark = len(output)
+            send("/queue clear\r")
+            read_until(r"Clear queue\?", since=mark)
+            mark = len(output)
+            send("\x1b")
+            read_until(r"Queued follow-up-2", since=mark)
+            mark = len(output)
+            send("/queue list\r")
+            read_until(r"Queue: 1 pending; paused", since=mark)
+            mark = len(output)
+            send("/queue remove follow-up-2\r")
+            read_until(r"Removed follow-up-2", since=mark)
+            mark = len(output)
+            send("/queue\r")
+            read_until(r"Queue: 0 pending", since=mark)
+            read_until(r"Tab completes subcommands and row IDs", since=mark)
+            assert request_count() == 1, "queue controls or completion made a model request"
         send("/quit\r")
         wait_for_exit()
         if process.returncode != 0:
@@ -291,14 +500,15 @@ export default function(pi) {{
                 )
             finally:
                 os.close(slave2)
-            read_until(r"\[Extensions\]", 45)
+            if not HAS_SCROLL_VIEWS:
+                read_until(r"\[Extensions\]", 45)
             read_until(r"master inherited.*\$0\.125", 45)
             if request_count() != 1:
                 raise AssertionError("restoring footer state made a model request")
             send("/quit\r")
             wait_for_exit()
             assert process.returncode == 0, "restored Pi did not exit cleanly"
-        print("PTY context" + (" + diff" if DIFF_PACKAGE else "") + " TUI smoke passed; offline requests:", request_count())
+        print("PTY context" + (" + diff" if DIFF_PACKAGE else "") + (" + btw/goal scrolling" if HAS_SCROLL_VIEWS else "") + (" + queue commands" if HAS_QUEUE else "") + " TUI smoke passed; offline requests:", request_count())
         return 0
     finally:
         try:
@@ -307,6 +517,8 @@ export default function(pi) {{
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+            except PermissionError:
+                process.kill()
             process.wait()
         finally:
             os.close(master)

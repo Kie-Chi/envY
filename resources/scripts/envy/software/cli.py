@@ -1,6 +1,5 @@
 """Software CLI commands for the selected machine."""
 
-import json
 import sys
 from dataclasses import replace
 from typing import Any
@@ -11,7 +10,7 @@ from rich.text import Text
 
 from envy import log
 from envy.evaluation import machine_manifest, manifest_software_groups
-from envy.jsonio import emit, emit_error
+from envy.jsonio import emit, emit_error, write_document
 from envy.mutation import offer_mutation_commit
 from envy.search.index import RegistryIndex
 from envy.software.audit import audit_policy, explain_policy_item
@@ -379,7 +378,7 @@ def cmd_status(
         "excluded": excluded,
     }
     if json_output:
-        log.console.print_json(json.dumps(payload, ensure_ascii=False))
+        write_document(payload)
     else:
         log.info(
             "software", "policy status", machine=payload["machine"],
@@ -404,7 +403,7 @@ def cmd_audit(
         "findings": [finding.to_dict() for finding in findings],
     }
     if json_output:
-        log.console.print_json(json.dumps(payload, ensure_ascii=False))
+        write_document(payload)
     elif findings:
         table = Table(title=f"Software audit - {payload['machine']}")
         table.add_column("Severity")
@@ -453,7 +452,7 @@ def cmd_why(
         "matches": rows,
     }
     if json_output:
-        log.console.print_json(json.dumps(payload, ensure_ascii=False))
+        write_document(payload)
         return
     if not rows:
         log.error("software", "no exact policy item match", item=item)
@@ -632,7 +631,7 @@ def cmd_cache_status(
     stats = RegistryIndex().stats()
     payload = {"schemaVersion": 1, **stats}
     if json_output:
-        log.console.print_json(json.dumps(payload, ensure_ascii=False))
+        write_document(payload)
         return
     table = Table(title="Software registry index")
     table.add_column("Field")
@@ -811,7 +810,7 @@ def _print_policy(*, details: bool, json_output: bool = False) -> None:
                 } for item in items_by_group[group.key]],
             } for group in groups],
         }
-        log.console.print_json(json.dumps(payload, ensure_ascii=False))
+        write_document(payload)
         return
     table = Table(title=f"Machine software - {manifest.get('id', current_machine_id())}")
     table.add_column("Group")

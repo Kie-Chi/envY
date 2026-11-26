@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import codecs
 import hashlib
 import os
 import re
+import select
 import shlex
 import shutil
 import subprocess
@@ -12,7 +14,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import IO, Mapping, Sequence
 from urllib.parse import urlsplit, urlunsplit
 
 from envy import log
@@ -71,6 +73,9 @@ def _maybe_prime_flake_sources(
         None,
     )
     if nix_index is None:
+        return
+    # Metadata only needs the root source; avoid prefetching every locked input.
+    if tuple(command[nix_index + 1:nix_index + 3]) == ("flake", "metadata"):
         return
     nix_commands = {"build", "develop", "eval", "flake", "run", "search"}
     if not any(str(part) in nix_commands for part in command[nix_index + 1:]):
@@ -253,6 +258,91 @@ def _fire_completion_notification(label: str, duration: float, exit_code: int) -
         pass
 
 
+def _run_with_streamed_stderr(
+    command: list[str], *, cwd: Path | str | None, env: Mapping[str, str] | None,
+    stdin_data: str | None, timeout: int | float | None,
+) -> subprocess.CompletedProcess[str]:
+    chunks: list[str] = []
+    destination = sys.stderr
+    read_fd, write_fd = os.pipe()
+    with os.fdopen(read_fd, "rb") as reader, os.fdopen(write_fd, "wb") as writer:
+        with subprocess.Popen(
+            command, cwd=str(cwd) if cwd is not None else None,
+            env=dict(env) if env is not None else None,
+            stdin=subprocess.PIPE if stdin_data is not None else None,
+            stdout=subprocess.PIPE, stderr=writer, text=True,
+        ) as child:
+            writer.close()
+            # Keep draining diagnostics even when a tool emits invalid text bytes.
+            decoder = codecs.getincrementaldecoder(child.stdout.encoding)(errors="replace")
+            stop_relay = threading.Event()
+            relay_done = threading.Event()
+
+            def relay() -> None:
+                try:
+                    writable = True
+                    drain_deadline = None
+                    while True:
+                        # Drain queued diagnostics briefly without waiting for descendant EOF.
+                        if stop_relay.is_set() and drain_deadline is None:
+                            drain_deadline = time.monotonic() + 0.1
+                        if drain_deadline is not None and time.monotonic() >= drain_deadline:
+                            data = b""
+                        elif select.select([reader], [], [], 0.05)[0]:
+                            data = os.read(reader.fileno(), 8192)
+                        elif stop_relay.is_set():
+                            data = b""
+                        else:
+                            continue
+                        chunk = decoder.decode(data, final=not data)
+                        chunks.append(chunk)
+                        if writable and chunk:
+                            try:
+                                destination.write(chunk)
+                                destination.flush()
+                            except (OSError, ValueError):
+                                writable = False
+                        if not data:
+                            break
+
+                finally:
+                    relay_done.set()
+
+            thread = threading.Thread(target=relay, daemon=True)
+            thread.start()
+            try:
+                output, _ = child.communicate(input=stdin_data, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                try:
+                    # Descendants can retain stdout even after the direct child exits.
+                    output, _ = child.communicate(timeout=0.2)
+                except subprocess.TimeoutExpired as partial:
+                    child.wait()
+                    output = partial.stdout or b""
+                    if isinstance(output, bytes):
+                        output = output.decode(child.stdout.encoding, errors="replace")
+                        output = output.replace("\r\n", "\n").replace("\r", "\n")
+                finally:
+                    stop_relay.set()
+                    relay_done.wait()
+                raise subprocess.TimeoutExpired(command, timeout, output=output, stderr="".join(chunks)) from None
+            except BaseException:
+                stop_relay.set()
+                child.kill()
+                child.wait()
+                raise
+            finally:
+                try:
+                    relay_done.wait()
+                finally:
+                    stop_relay.set()
+                    # Wait for the target itself, even if a previous join was interrupted.
+                    relay_done.wait()
+                    thread.join()
+    return subprocess.CompletedProcess(command, child.returncode, output, "".join(chunks))
+
+
 def run_process(
     command: Sequence[str],
     *,
@@ -260,10 +350,17 @@ def run_process(
     env: Mapping[str, str] | None = None,
     stdin_data: str | None = None,
     capture: bool = False,
+    stream_stderr: bool = False,
+    stdout: IO | int | None = None,
+    stderr: IO | int | None = None,
     check: bool = True,
     timeout: int | float | None = None,
     activity: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    if stream_stderr and not capture:
+        raise ValueError("stream_stderr=True requires capture=True")
+    if capture and (stdout is not None or stderr is not None):
+        raise ValueError("capture=True cannot be combined with explicit stdout or stderr")
     argv = [str(part) for part in command]
     _maybe_prime_flake_sources(argv, cwd, env)
     displayed = command_display(argv)
@@ -275,21 +372,30 @@ def run_process(
     reporter.start()
     try:
         try:
-            result = subprocess.run(
-                argv,
-                cwd=str(cwd) if cwd is not None else None,
-                env=dict(env) if env is not None else None,
-                input=stdin_data,
-                text=True,
-                capture_output=capture,
-                check=False,
-                timeout=timeout,
-            )
+            if stream_stderr:
+                result = _run_with_streamed_stderr(
+                    argv, cwd=cwd, env=env, stdin_data=stdin_data, timeout=timeout,
+                )
+            else:
+                result = subprocess.run(
+                    argv,
+                    cwd=str(cwd) if cwd is not None else None,
+                    env=dict(env) if env is not None else None,
+                    input=stdin_data,
+                    text=True,
+                    capture_output=capture,
+                    stdout=stdout,
+                    stderr=stderr,
+                    check=False,
+                    timeout=timeout,
+                )
         except FileNotFoundError as exc:
             result = subprocess.CompletedProcess(argv, 127, "" if capture else None, str(exc))
         except subprocess.TimeoutExpired as exc:
-            stderr = f"command timed out after {timeout} seconds"
-            result = subprocess.CompletedProcess(argv, 124, exc.stdout, stderr)
+            diagnostic = f"command timed out after {timeout} seconds"
+            if stream_stderr and exc.stderr:
+                diagnostic = f"{exc.stderr}\n{diagnostic}"
+            result = subprocess.CompletedProcess(argv, 124, exc.stdout, diagnostic)
     finally:
         duration = reporter.stop()
 
@@ -373,21 +479,21 @@ def translate_failure(command: Sequence[str], stderr: str) -> str | None:
 
 def render_command_error(error: CommandError) -> None:
     command = error.cmd if isinstance(error.cmd, list) else [str(error.cmd)]
+    from envy.error import parse_nix_error
+
+    diagnostic = parse_nix_error(str(error.stderr or ""))
+    if diagnostic is not None:
+        log.error("config", diagnostic.message, code=diagnostic.code.value)
+        log.hint("Location: " + diagnostic.path)
+        if diagnostic.hint:
+            log.hint("Next: " + diagnostic.hint)
+        if not log.is_debug():
+            return
     log.error("command", "external command failed", exit_code=error.returncode)
     log.hint(command_display(command))
     stderr = str(error.stderr or "")
     if stderr:
-        lines = [line.strip() for line in stderr.splitlines() if line.strip()]
-        if log.is_debug():
-            selected = lines[-12:]
-        else:
-            important = [
-                line for line in lines
-                if re.search(r"\b(?:error|failed|failure|denied|timed out)\b", line, re.I)
-            ]
-            selected = [*(important[-2:]), *(lines[-2:])]
-        for line in dict.fromkeys(selected):
-            log.hint(line[:500])
+        log.console.print(stderr.rstrip(), markup=False, highlight=False)
     translation = translate_failure(command, stderr)
     if translation is not None:
         log.hint(translation)

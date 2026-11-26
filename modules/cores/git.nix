@@ -1,8 +1,55 @@
-{ lib, config, machinePlatform, ... }:
+{ pkgs, lib, config, machinePlatform, ... }:
 
+let
+  deltaPackage = lib.findFirst
+    (package: lib.getName package == "delta")
+    null
+    config.envy.software.nix.packages.effective;
+  deltaSelected = deltaPackage != null;
+  lazygitSelected = builtins.elem "lazygit" (map lib.getName config.envy.software.nix.packages.effective);
+  palette = import ./tokyo-night.nix;
+in
 {
+  envy.software.nix.packages.include = [ pkgs.delta pkgs.lazygit ];
+  envy.software.nix.packages.references = {
+    delta = "nix:delta";
+    lazygit = "nix:lazygit";
+  };
+  programs.lazygit = {
+    enable = lazygitSelected;
+    package = null;
+    enableBashIntegration = false;
+    enableFishIntegration = false;
+    enableNushellIntegration = false;
+    enableZshIntegration = false;
+    settings.gui = {
+      nerdFontsVersion = "3";
+      theme = {
+        activeBorderColor = [ (builtins.elemAt palette.ansi 4) "bold" ];
+        inactiveBorderColor = [ (builtins.elemAt palette.ansi 8) ];
+        selectedLineBgColor = [ palette.fzf."bg+" ];
+        defaultFgColor = [ palette.foreground ];
+      };
+    };
+  };
+  programs.delta.enable = false;
+
+  xdg.configFile."delta/config" = lib.mkIf deltaSelected {
+    text = builtins.readFile (pkgs.vimPlugins.tokyonight-nvim.src + "/extras/delta/tokyonight_night.gitconfig")
+      + lib.generators.toGitINI {
+        delta = {
+          syntax-theme = "tokyonight_night";
+          line-numbers = true;
+          line-numbers-zero-style = palette.fzf.info;
+          line-numbers-minus-style = builtins.elemAt palette.ansi 1;
+          line-numbers-plus-style = builtins.elemAt palette.ansi 2;
+          wrap-max-lines = "unlimited";
+        };
+      };
+  };
   programs.git = {
     enable = true;
+    includes = lib.mkIf deltaSelected [{ path = "${config.xdg.configHome}/delta/config"; }];
     settings = {
       user = {
         name = config.envy.git.name;
@@ -25,6 +72,12 @@
 
       color = {
         ui = true;
+      };
+    } // lib.optionalAttrs deltaSelected {
+      pager = {
+        diff = lib.getExe deltaPackage;
+        log = lib.getExe deltaPackage;
+        show = lib.getExe deltaPackage;
       };
     } // lib.optionalAttrs (machinePlatform == "linux") {
       core.editor = "vim";

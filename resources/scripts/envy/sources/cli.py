@@ -11,7 +11,7 @@ import typer
 
 from envy import log
 from envy.evaluation import machine_manifest, invalidate_machine_manifest
-from envy.jsonio import emit, emit_error
+from envy.jsonio import emit, emit_error, write_document
 from envy.secure_io import atomic_write_text
 from envy.sources.catalog import catalog
 from envy.sources.completion import complete_ecosystems, complete_source_ids
@@ -56,7 +56,7 @@ def display(command, data, json_output):
                           str(source["selected"]), str(source["ready"]), source["owner"])
         log.console.print(table)
     else:
-        log.console.print_json(json.dumps(data, ensure_ascii=False))
+        write_document(data)
 
 
 @app.command("ls")

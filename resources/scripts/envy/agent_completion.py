@@ -110,18 +110,18 @@ def complete_agent_paths(ctx, incomplete):
     paths = {}
     for name, agent in metadata["agents"].items():
         fields = list(_AGENT_FIELDS) + ["profile"]
-        if agent.get("adapter") == "pi":
+        if agent.get("adapter") in {"pi", "codex"}:
             fields.append("api")
         if agent.get("adapter") == "pi":
-            fields.append("moreThinking")
-            if name == "pi":
-                fields.append("models")
+            fields.extend(("moreThinking", "thinkingLevelMap"))
+        if (name, agent.get("adapter")) in {("pi", "pi"), ("codex", "codex")}:
+            fields.append("models")
         for field in fields:
             paths[f"envy.agents.{name}.{field}"] = "agent setting"
     profiles = _profile_values(_managed_values())
     for name in profiles:
         paths[f"envy.agentProfiles.{name}"] = "agent profile"
-        for field in ("endpoint", "credential", "api", "model", "contextWindow", "maxTokens"):
+        for field in ("endpoint", "credential", "api", "model", "contextWindow", "maxTokens", "thinkingLevelMap"):
             paths[f"envy.agentProfiles.{name}.{field}"] = "agent profile setting"
     for group, fields in (("endpoints", ("baseUrl", "protocol")), ("credentials", ("kind", "secretPath"))):
         for name in metadata[group]:

@@ -86,7 +86,7 @@ test("all supplied real extensions register together with builtin codemode only"
   const extensions = loader.getExtensions().extensions;
   const commands = extensions.flatMap(extension => [...extension.commands.keys()]);
   assert.equal(new Set(commands).size, commands.length, "commands must not collide");
-  for (const command of ["context", "diff"]) assert.ok(commands.includes(command), command);
+  for (const command of ["context", "diff", "queue"]) assert.ok(commands.includes(command), command);
   const registered = extensions.flatMap(extension => [...extension.tools.keys()]);
   assert.equal(new Set(registered).size, registered.length, "extension tools must not collide");
   for (const name of ["subagent", "lsp_diagnostics"]) assert.ok(registered.includes(name), name);

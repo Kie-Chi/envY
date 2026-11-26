@@ -91,7 +91,7 @@ class Source:
             "flake": {"input", "output", "follows"},
             "local": {"path"},
             "native": {"apt", "dnf", "pacman", "zypper", "distros", "system"},
-            "tap": {"tap", "url"},
+            "tap": {"tap", "url", "trustedFormulae"},
             "registry": {"registry", "index", "metadata", "discoveryOnly"},
             "artifact": {"url", "format", "packageName", "version", "architecture", "hash", "bootstrapRepository"},
         }
@@ -111,8 +111,14 @@ class Source:
             raise SourceError("source ID conflicts with flake input binding")
         if self.type == "tap" and (not isinstance(self.parameters.get("tap"), str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", self.parameters["tap"])):
             raise SourceError("invalid Homebrew tap")
-        if self.type == "tap" and self.id != "homebrew:" + self.parameters["tap"]:
-            raise SourceError("source ID must match its Homebrew tap")
+        if self.type == "tap":
+            if self.id != "homebrew:" + self.parameters["tap"]:
+                raise SourceError("source ID must match its Homebrew tap")
+            formulae = self.parameters.get("trustedFormulae", [])
+            if not isinstance(formulae, list) or not all(
+                    isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9+_.@-]*", name)
+                    for name in formulae):
+                raise SourceError("trustedFormulae must list individual formula names in this tap")
         if self.type == "native":
             if "system" in self.parameters and not isinstance(self.parameters["system"], bool):
                 raise SourceError("system source marker must be boolean")

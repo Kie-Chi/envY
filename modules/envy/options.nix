@@ -36,9 +36,86 @@ in
         readOnly = true;
         description = "Normalized evaluated machine policy for envY tooling.";
       };
-      habits = mkOption {
+      activationActions = mkOption {
         type = types.listOf (types.submodule {
           options = {
+            id = mkOption {
+              type = types.nonEmptyStr;
+              description = "Stable identifier for an owning feature's activation action.";
+            };
+            owner = mkOption {
+              type = types.nonEmptyStr;
+              description = "Module that declares the actual activation behavior.";
+            };
+            manager = mkOption {
+              type = types.nonEmptyStr;
+              description = "Backend responsible for the action; never an executable command.";
+            };
+            summary = mkOption {
+              type = types.nonEmptyStr;
+              description = "Description derived from the evaluated activation policy.";
+            };
+            effects = mkOption {
+              type = types.listOf types.str;
+              description = "Known categories of activation side effects.";
+            };
+            verification = mkOption {
+              type = types.nonEmptyStr;
+              description = "Read-only verification guidance; inspection does not execute the action.";
+            };
+            repeatability = mkOption {
+              type = types.nonEmptyStr;
+              description = "Repeatability limits, without granting permission to retry.";
+            };
+            rollbackBoundary = mkOption {
+              type = types.nonEmptyStr;
+              description = "State a generation rollback does not guarantee to restore.";
+            };
+            merge = mkOption {
+              type = types.nullOr (types.submodule {
+                options = {
+                  target = mkOption {
+                    type = types.nonEmptyStr;
+                    description = "Absolute path of the writable application configuration.";
+                  };
+                  format = mkOption {
+                    type = types.enum [ "json" "toml" "yaml" ];
+                    description = "Writable target format.";
+                  };
+                  source = mkOption {
+                    type = types.nonEmptyStr;
+                    description = "Declared JSON store artifact also consumed by activation.";
+                  };
+                  managedKeys = mkOption {
+                    type = types.listOf types.str;
+                    description = "Top-level keys managed by the existing merge declaration.";
+                  };
+                  managedKeyPrefixes = mkOption {
+                    type = types.attrsOf types.str;
+                    description = "Object key namespaces managed by the existing merge declaration.";
+                  };
+                };
+              });
+              default = null;
+              description = "Existing structured merge inputs for read-only preview.";
+            };
+          };
+        });
+        default = [ ];
+        internal = true;
+        description = ''
+          Module-owned facts about existing activation actions. These contributions
+          describe behavior for inspection; they are not commands or retry authorization.
+        '';
+      };
+      habits = mkOption {
+        type = types.listOf (types.submodule ({ config, ... }: {
+          options = {
+            kind = mkOption {
+              type = types.enum [ "binding" "preference" ];
+              default = "binding";
+              description = "Whether this implementation declares an interaction binding or a stored preference.";
+            };
             id = mkOption {
               type = types.strMatching "[a-z][a-z0-9-]*";
               description = "Stable semantic habit identifier.";
@@ -47,10 +124,10 @@ in
               type = types.nonEmptyStr;
               description = "Human-readable habit label.";
             };
-            gesture = mkOption {
-              type = types.nonEmptyStr;
-              description = "Canonical user gesture, independent of platform key syntax.";
-            };
+            gesture = mkOption ({
+              type = if config.kind == "binding" then types.nonEmptyStr else types.nullOr types.nonEmptyStr;
+              description = "Canonical user gesture for a binding; preferences need no gesture.";
+            } // lib.optionalAttrs (config.kind == "preference") { default = null; });
             semantic = mkOption {
               type = types.nonEmptyStr;
               description = "User-facing action semantics, such as toggling a scratchpad.";
@@ -65,7 +142,7 @@ in
             };
             binding = mkOption {
               type = types.nonEmptyStr;
-              description = "Platform-native key binding or hotkey representation.";
+              description = "Platform-native key binding or preference key representation.";
             };
             ownership = mkOption {
               type = types.enum [ "declarative" "application" ];
@@ -75,6 +152,38 @@ in
               type = types.str;
               default = "";
               description = "Short implementation note shown by envY inspection commands.";
+            };
+            readback = mkOption {
+              type = types.nullOr (types.submodule {
+                options = {
+                  adapter = mkOption {
+                    type = types.nonEmptyStr;
+                    description = "Identifier of a fixed read-only adapter; never an executable command.";
+                  };
+                  expected = mkOption {
+                    type = types.oneOf [
+                      types.bool
+                      types.int
+                      types.str
+                      (types.addCheck (types.submodule {
+                        options = {
+                          names = mkOption {
+                            type = types.listOf types.nonEmptyStr;
+                            description = "Native keyboard layout names expected from the compositor.";
+                          };
+                          current_idx = mkOption {
+                            type = types.ints.u8;
+                            description = "Expected active keyboard layout index in the native IPC response.";
+                          };
+                        };
+                      }) (value: builtins.isAttrs value && value ? names && value ? current_idx))
+                    ];
+                    description = "Expected native value derived from the owning module's actual configuration.";
+                  };
+                };
+              });
+              default = null;
+              description = "Optional native-state verification contract for an allowlisted adapter.";
             };
             requirements = mkOption {
               type = types.listOf (types.submodule {
@@ -93,13 +202,13 @@ in
               description = "Software selected by the machine policy for this implementation.";
             };
           };
-        });
+        }));
         default = [ ];
         internal = true;
         description = ''
-          Module-owned implementations of stable personal interaction habits.
-          Their gestures come from envy.habits machine policy; this option only
-          aggregates implementation facts for the evaluated manifest.
+          Module-owned implementations of stable personal interaction habits
+          and preferences. Binding gestures come from envy.habits machine policy;
+          this option aggregates implementation and readback facts for the manifest.
         '';
       };
     };
@@ -161,6 +270,24 @@ in
           Non-sensitive machine-specific Zsh initialization appended after
           shared and feature-owned initialization.
         '';
+      };
+    };
+
+    t3code.service = {
+      host = mkOption {
+        type = types.strMatching "[A-Za-z0-9_.:%-]+";
+        default = "127.0.0.1";
+        description = "T3 Code user service bind address; :: accepts IPv6 and dual-stack IPv4.";
+      };
+      port = mkOption {
+        type = types.ints.between 1 65535;
+        default = 3773;
+        description = "T3 Code user service HTTP and WebSocket port.";
+      };
+      lan = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Advertise private network access for the T3 Code user service.";
       };
     };
 

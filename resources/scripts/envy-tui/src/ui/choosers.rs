@@ -61,7 +61,7 @@ pub(super) fn render_group_chooser(frame: &mut Frame, app: &App, area: Rect) {
     }
     lines.push(Line::from(""));
     lines.push(Line::from(
-        "Enter prepares a verified dry-run; Esc cancels.",
+        "↵ preview   Esc cancel",
     ));
     popup(
         frame,
@@ -81,9 +81,9 @@ pub(super) fn render_setting_chooser(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("EDIT  ", theme::heading()),
             Span::styled(chooser.title.clone(), theme::strong()),
         ]),
+        Line::styled(chooser.key.label(), theme::faint()),
         Line::from(format!("Current  {}", chooser.current)),
         Line::from(""),
-        Line::from(Span::styled("Choose a value", theme::heading())),
     ];
     for (index, option) in chooser.options.iter().enumerate() {
         lines.push(Line::from(vec![
@@ -107,7 +107,7 @@ pub(super) fn render_setting_chooser(frame: &mut Frame, app: &App, area: Rect) {
     }
     lines.push(Line::from(""));
     lines.push(Line::from(
-        "Enter confirms (then explicit apply); Esc cancels.",
+        "↵ review change   Esc cancel",
     ));
     popup(
         frame,
@@ -130,7 +130,7 @@ pub(super) fn render_setting_edit(frame: &mut Frame, app: &App, area: Rect) {
     render_input_field(
         frame,
         rows[0],
-        "VALUE · Enter save · Esc cancel · Ctrl-U clear",
+        "VALUE · ↵ review · Esc cancel · Ctrl-U clear",
         &edit.buffer,
         true,
         "type a new value",
@@ -144,7 +144,7 @@ pub(super) fn render_setting_edit(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-pub(super) fn render_setting_confirm(frame: &mut Frame, app: &App, area: Rect) {
+pub(super) fn render_setting_confirm(frame: &mut Frame, app: &mut App, area: Rect) {
     let Some(pending) = &app.pending_setting else {
         return;
     };
@@ -153,27 +153,34 @@ pub(super) fn render_setting_confirm(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         pending.previous.clone()
     };
-    popup(
-        frame,
-        centered_size(72, 13, area),
-        "CONFIRM SETTING CHANGE",
-        vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                pending.key.label(),
-                Style::new().fg(WARN).bold(),
-            )),
-            Line::from(""),
-            Line::from(format!("From  {previous}")),
-            Line::from(vec![
-                Span::raw("To    "),
-                Span::styled(pending.value.clone(), Style::new().fg(OK).bold()),
-            ]),
-            Line::from(""),
-            Line::from("This writes the selected machine file. Enter/y confirms; Esc/n cancels."),
-        ],
-        0,
-    );
+    let settings = app.settings_rows();
+    let row = settings.iter().find(|row| row.key == pending.key);
+    let title = row.map(|row| row.title()).unwrap_or_else(|| pending.key.title());
+    let effect = row.map(|row| row.effect_hint()).unwrap_or("");
+    let lines = vec![
+        Line::from(Span::styled(title, Style::new().fg(WARN).bold())),
+        Line::from(""),
+        Line::from(format!("From  {previous}")),
+        Line::from(vec![Span::raw("To    "), Span::styled(pending.value.clone(), Style::new().fg(OK).bold())]),
+        Line::from(""),
+        Line::styled(pending.key.label(), theme::faint()),
+        Line::from(effect.to_string()),
+    ];
+    let scroll = pending.scroll;
+    let width = centered_size(82, 13, area).width.saturating_sub(6);
+    let height = Paragraph::new(lines.clone()).wrap(ratatui::widgets::Wrap { trim: false }).line_count(width).saturating_add(5).min(32) as u16;
+    let region = centered_size(82, height, area);
+    frame.render_widget(Clear, region);
+    let block = dialog_block("SAVE SETTING");
+    let inner = inset_rect(block.inner(region), 2, 1);
+    frame.render_widget(block, region);
+    let sections = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
+    let (visible, maximum, scroll) = super::detail::report_window(lines, sections[0].width, sections[0].height, scroll);
+    if let Some(pending) = app.pending_setting.as_mut() { pending.scroll = scroll; }
+    frame.render_widget(Paragraph::new(visible), sections[0]);
+    let mut footer = "↵ save  Esc cancel".to_string();
+    if maximum > 0 { footer.push_str(if sections[1].width >= 42 { "  ↑↓ scroll" } else { "  ↑↓" }); }
+    frame.render_widget(Paragraph::new(footer), sections[1]);
 }
 
 /// Return the inclusive-start/exclusive-end source range that keeps the chosen
@@ -265,15 +272,15 @@ pub(super) fn render_mirror_chooser(frame: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(if app.mirror_measuring {
             format!(
-                "Measurement  {} running in background (r forces refresh)",
+                "{} Measuring…",
                 spinner()
             )
         } else {
-            "Measurement  cached result or last completed run (r re-measures)".to_string()
+            "r refresh measurements".to_string()
         }),
         Line::from(""),
         Line::from(Span::styled(
-            "Choose a source discovered by chsrc or the catalog fallback",
+            "Sources",
             theme::heading(),
         )),
         Line::from(format!(
@@ -347,7 +354,7 @@ pub(super) fn render_mirror_chooser(frame: &mut Frame, app: &App, area: Rect) {
     }
     lines.push(Line::from(""));
     lines.push(Line::from(
-        "↑↓/j k select (loops) · PgUp/PgDn page · g/G ends · Enter preview · Esc cancel.",
+        "↑↓ select · PgUp/PgDn page · ↵ preview · Esc cancel",
     ));
     popup(frame, region, "SELECT MIRROR SOURCE", lines, 0);
 }
@@ -373,7 +380,7 @@ pub(super) fn render_mirror_confirm(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(format!("URL     {}", pending.source.url)),
         Line::from(format!("Provider {}", pending.source.provider)),
         Line::from(""),
-        Line::from(Span::styled("Generated assignments", theme::heading())),
+        Line::from(Span::styled("Changes", theme::heading())),
     ];
     let mut assignments = plan
         .get("after")
@@ -399,10 +406,8 @@ pub(super) fn render_mirror_confirm(frame: &mut Frame, app: &App, area: Rect) {
         );
     }
     lines.push(Line::from(""));
-    lines.push(Line::from(
-        "This writes the selected machine file's ENVY mirror block.",
-    ));
-    lines.push(Line::from("Enter/y confirms; Esc/n cancels."));
+    lines.push(Line::from("Run envy apply to activate."));
+    lines.push(Line::from("↵ / y save   Esc / n cancel"));
     popup(
         frame,
         centered_size(104, 20, area),

@@ -27,6 +27,11 @@ let
         mcpNixosPackage = inputs.mcp-nixos.packages.${system}.default;
         piSource = inputs.pi.outPath;
         piPackage = inputs.pi.packages.${system}.default;
+        t3codePackage = import ../modules/agents/providers/t3code/package.nix {
+          inherit (pkgs) lib;
+          inherit pkgs;
+          package = inputs.nix-t3code.packages.${system}.t3code-nightly;
+        };
         softwareSourceBindings = import ../modules/software/nix-sources.nix;
         nixGLDefault = null;
       };
@@ -61,6 +66,11 @@ let
   sunshineExcluded = mkConfiguration "policy-sunshine-excluded" "desktop" "gnome" [ "sunshine" ];
   vscodeExcluded = mkConfiguration "policy-vscode-excluded" "desktop" "gnome" [ "vscode" ];
   waydroidExcluded = mkConfiguration "policy-waydroid-excluded" "desktop" "gnome" [ "waydroid" ];
+  terminalToolsExcluded = mkConfiguration "policy-terminal-tools-excluded" "server" "none"
+    [ "bat" "btop" "tmux" "fzf" "zoxide" "delta" "atuin"
+      "direnv" "nix-direnv" "yazi" "lazygit" "lnav" "lazydocker" "watchexec" "xh" ];
+  desktopTerminalsExcluded = mkConfiguration "policy-desktop-terminals-excluded" "desktop" "niri" [ "alacritty" "ghostty" ];
+  nixDirenvExcluded = mkConfiguration "policy-nix-direnv-excluded" "server" "none" [ "nix-direnv" ];
   directSelections = mkConfigurationWith
     "policy-direct-selections"
     "server"
@@ -70,6 +80,7 @@ let
       envy.environment.sessionVariables = {
         EDITOR = "machine-editor";
         ENVY_POLICY_CHECK = "enabled";
+        FZF_DEFAULT_OPTS = "--height=60%";
       };
       envy.environment.sessionPath = [ "/opt/envy-policy-check/bin" ];
       envy.shell.zsh.aliases = {
@@ -105,7 +116,7 @@ let
     builtins.hasAttr name configuration.config.home.activation;
 
   serverForbiddenPackages = inputs.nixpkgs.lib.intersectLists
-    [ "sunshine" "waydroid" "google-chrome" "fcitx5-with-addons" "vscode" "cursor" "niri" "tilix" ]
+    [ "sunshine" "waydroid" "google-chrome" "fcitx5-with-addons" "vscode" "cursor" "niri" "tilix" "ghostty" ]
     (packageNames server);
   serverForbiddenActivations = inputs.nixpkgs.lib.intersectLists
     [ "installWayDroid" "rimeDeploy" "setupSunshineInput" "swayosdSystemSetup" "niriStartUp" ]
@@ -188,6 +199,45 @@ assert !hasPackage "vscode" vscodeExcluded;
 assert !vscodeExcluded.config.programs.vscode.enable;
 assert !hasActivation "vscodeProfiles" vscodeExcluded;
 assert !hasActivation "vscodeRemoteSyncNotice" vscodeExcluded;
+assert hasPackage "bat" server && hasPackage "btop" server && hasPackage "tmux" server;
+assert builtins.hasAttr "bat/config" server.config.xdg.configFile;
+assert hasActivation "batCache" server;
+assert !hasPackage "bat" terminalToolsExcluded;
+assert !hasPackage "btop" terminalToolsExcluded;
+assert !hasPackage "tmux" terminalToolsExcluded;
+assert !hasPackage "fzf" terminalToolsExcluded;
+assert !hasPackage "zoxide" terminalToolsExcluded;
+assert !hasPackage "delta" terminalToolsExcluded;
+assert !hasPackage "atuin" terminalToolsExcluded;
+assert !(inputs.nixpkgs.lib.hasInfix "/bin/atuin init zsh" terminalToolsExcluded.config.programs.zsh.initContent);
+assert !(builtins.hasAttr "atuin/config.toml" terminalToolsExcluded.config.xdg.configFile);
+assert !(builtins.hasAttr "delta/config" terminalToolsExcluded.config.xdg.configFile);
+assert !(builtins.hasAttr "pager" terminalToolsExcluded.config.programs.git.settings);
+assert !(inputs.nixpkgs.lib.hasInfix "/bin/fzf --zsh" terminalToolsExcluded.config.programs.zsh.initContent);
+assert !(inputs.nixpkgs.lib.hasInfix "/bin/zoxide init zsh" terminalToolsExcluded.config.programs.zsh.initContent);
+assert inputs.nixpkgs.lib.all (name: hasPackage name server && !hasPackage name terminalToolsExcluded)
+  [ "direnv" "nix-direnv" "yazi" "lazygit" "lnav" "lazydocker" "watchexec" "xh" ];
+assert inputs.nixpkgs.lib.hasInfix "/bin/direnv hook zsh" server.config.programs.zsh.initContent;
+assert !(inputs.nixpkgs.lib.hasInfix "/bin/direnv hook zsh" terminalToolsExcluded.config.programs.zsh.initContent);
+assert !(builtins.hasAttr "direnv/lib/nix-direnv.sh" terminalToolsExcluded.config.xdg.configFile);
+assert inputs.nixpkgs.lib.hasInfix "/bin/direnv hook zsh" nixDirenvExcluded.config.programs.zsh.initContent;
+assert !(builtins.hasAttr "direnv/lib/nix-direnv.sh" nixDirenvExcluded.config.xdg.configFile);
+assert !(builtins.hasAttr "yazi/theme.toml" terminalToolsExcluded.config.xdg.configFile);
+assert !terminalToolsExcluded.config.programs.lazygit.enable;
+assert !hasPackage "alacritty" desktopTerminalsExcluded;
+assert !desktopTerminalsExcluded.config.programs.alacritty.enable;
+assert !(builtins.hasAttr "alacritty/alacritty.toml" desktopTerminalsExcluded.config.xdg.configFile);
+assert hasPackage "ghostty" niri && niri.config.programs.ghostty.enable;
+assert hasPackage "ghostty" gnome && gnome.config.programs.ghostty.enable;
+assert !hasPackage "ghostty" desktopTerminalsExcluded;
+assert !desktopTerminalsExcluded.config.programs.ghostty.enable;
+assert !(builtins.hasAttr "ghostty/config" desktopTerminalsExcluded.config.xdg.configFile);
+assert niri.config.programs.alacritty.settings.font.normal.family == "Maple Mono NF CN";
+assert directSelections.config.home.sessionVariables.FZF_DEFAULT_OPTS == "--height=60%";
+assert !(builtins.hasAttr "bat/config" terminalToolsExcluded.config.xdg.configFile);
+assert !(builtins.hasAttr "btop/btop.conf" terminalToolsExcluded.config.xdg.configFile);
+assert !(builtins.hasAttr ".tmux.conf.local" terminalToolsExcluded.config.home.file);
+assert !hasActivation "batCache" terminalToolsExcluded;
 assert !hasPackage "waydroid" waydroidExcluded;
 assert !hasPackage "waydroid-helper" waydroidExcluded;
 assert !hasActivation "installWayDroid" waydroidExcluded;

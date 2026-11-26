@@ -1,0 +1,20 @@
+--- a/btw.ts
++++ b/btw.ts
+@@ -39,7 +39,7 @@
+ export const CROSS_SESSION_HINT_LIMIT = 10;
+ 
+ // Messages (static)
+-const MSG_REQUIRES_INTERACTIVE = "/btw requires interactive mode";
++const MSG_REQUIRES_INTERACTIVE = "/btw requires the interactive Pi terminal UI";
+ const MSG_USAGE = "Usage: /btw <question>";
+ const MSG_NO_MODEL = "/btw requires an active model";
+ 
+@@ -431,7 +431,7 @@
+ }
+ 
+ async function handleBtwCommand(_pi: ExtensionAPI, args: string, ctx: ExtensionCommandContext): Promise<void> {
+-	if (!ctx.hasUI) {
++	if (ctx.mode !== "tui" || !ctx.hasUI) {
+ 		ctx.ui.notify(MSG_REQUIRES_INTERACTIVE, "error");
+ 		return;
+ 	}

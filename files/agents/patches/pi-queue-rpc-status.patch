@@ -1,0 +1,186 @@
+--- a/index.ts
++++ b/index.ts
+@@ -1,3 +1,4 @@
++import { randomUUID } from "node:crypto";
+ import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai";
+ import { isContextOverflow } from "@earendil-works/pi-ai/compat";
+ import {
+@@ -20,6 +21,7 @@
+ 	type KeyId,
+ } from "@earendil-works/pi-tui";
+ import { registerConversationQueueBridge } from "./conversation-queue-bridge.ts";
++import { QUEUE_CONTROL_COMMAND, QUEUE_CONTROL_RESULT_WIDGET_KEY, QUEUE_MESSAGE_WIDGET_KEY, parseQueueRpcControl, queueRpcMessages, queueRpcStatus } from "./queue-rpc.ts";
+ import {
+ 	buildTimelineItems,
+ 	INDENT_ROW_KEY,
+@@ -389,10 +391,60 @@
+ 		theme,
+ 	});
+ 
++	let lastRpcStatus: string | undefined | null = null;
++	let lastRpcMessages: string | undefined | null = null;
++	let rpcRevisionSeed = "";
++	let rpcRevision = randomUUID();
++	let rpcEditor: { id: string; owner: string } | undefined;
++	let rpcEditExpiry: ReturnType<typeof setTimeout> | undefined;
++	const clearRpcEditor = (): void => {
++		if (rpcEditExpiry) clearTimeout(rpcEditExpiry);
++		rpcEditExpiry = undefined;
++		if (rpcEditor) editSession = undefined;
++		rpcEditor = undefined;
++	};
++	const renewRpcEditor = (ctx: ExtensionContext): void => {
++		if (rpcEditExpiry) clearTimeout(rpcEditExpiry);
++		const generation = queueCommandGeneration;
++		rpcEditExpiry = setTimeout(() => {
++			if (generation !== queueCommandGeneration) return;
++			clearRpcEditor();
++			renderQueue(ctx);
++			if (ctx.isIdle() && !paused && !blockingActivity) dispatchFromIdle(ctx);
++		}, 120000);
++		rpcEditExpiry.unref?.();
++	};
+ 	const renderQueue = (ctx: ExtensionContext): void => {
+ 		activeContext = ctx;
+ 		if (queue.length === 0) resumeQueue();
+ 		broadcastQueueState();
++		if (ctx.mode === "rpc") {
++			const rows = queue.snapshot();
++			if (rpcEditor && !queue.get(rpcEditor.id)) clearRpcEditor();
++			const seed = JSON.stringify([rows.map(row => [row.id, row.lane, row.text, row.paused, row.images.length]), paused, blockingActivity, ctx.isIdle(), rpcEditor, queueModes(), errorHold]);
++			if (seed !== rpcRevisionSeed) { rpcRevisionSeed = seed; rpcRevision = randomUUID(); }
++			const items = timelineItems();
++			const head = items.find(item => item.dispatchHead);
++			const messages = queueRpcMessages(items, paused, blockingActivity, {
++				revision: rpcRevision,
++				state: paused ? "paused" : head?.rowPaused ? "row-paused" : head?.held ? "editing" : blockingActivity ? "control" : head?.lane === "steer" ? "steer-first" : ctx.isIdle() ? "ready" : "after-run",
++				headId: head?.lane === "followUp" ? head.id : null,
++				mode: queueModes().followUp,
++				errorHold,
++				editor: rpcEditor && editSession ? { ...rpcEditor, text: editSession.selectedText } : null,
++			});
++			const snapshot = messages ? JSON.stringify(messages) : undefined;
++			if (snapshot !== lastRpcMessages) {
++				lastRpcMessages = snapshot;
++				ctx.ui.setWidget(QUEUE_MESSAGE_WIDGET_KEY, snapshot ? [snapshot] : undefined);
++			}
++			const text = queueRpcStatus(rows, paused, blockingActivity);
++			if (text !== lastRpcStatus) {
++				lastRpcStatus = text;
++				ctx.ui.setStatus("queue", text);
++			}
++			return;
++		}
+ 		if (ctx.mode !== "tui" || queue.length === 0 || editSession) {
+ 			ctx.ui.setWidget(WIDGET_ID, undefined);
+ 			return;
+@@ -1420,6 +1472,53 @@
+ 		"Tab completes subcommands and row IDs; Enter saves row edits; Escape cancels.",
+ 	].join("\n");
+ 
++	const applyRpcControl = (args: string, ctx: ExtensionCommandContext): void => {
++			if (ctx.mode !== "rpc") throw new Error("Queue controls require RPC mode");
++			activeContext = ctx;
++			const control = parseQueueRpcControl(args);
++			renderQueue(ctx);
++			const editorAction = ["save-edit", "cancel-edit", "renew-edit"].includes(control.action);
++			if (editorAction && (!rpcEditor || rpcEditor.id !== control.id || rpcEditor.owner !== control.owner)) {
++				throw new Error("This queue edit has ended; reopen the message to edit it");
++			}
++			if (!editorAction && control.revision !== rpcRevision) throw new Error("The delivery plan changed; try again");
++			if (rpcEditor && !editorAction) throw new Error("Finish the current queue edit first");
++			const row = control.id ? queue.get(control.id) : undefined;
++			if (control.action !== "pause" && row?.lane !== "followUp") throw new Error("The follow-up message is no longer queued");
++			switch (control.action) {
++				case "pause": control.paused ? pauseQueue() : resumeQueue(); break;
++				case "row-pause": queue.setPaused(row!.id, control.paused!); break;
++				case "remove": queue.remove(row!.id); break;
++				case "move": queue.moveInLane(row!.id, control.direction!); break;
++				case "begin-edit":
++					if (row!.text.length > 65536) throw new Error("This message is too large for the connected editor; edit it in Pi");
++					editSession = new QueueEditSession(row!, "");
++					rpcEditor = { id: row!.id, owner: control.owner! };
++					renewRpcEditor(ctx);
++					break;
++				case "save-edit": editSession!.commit(queue, control.text!); clearRpcEditor(); break;
++				case "cancel-edit": clearRpcEditor(); break;
++				case "renew-edit": renewRpcEditor(ctx); return;
++			}
++			persistCommittedQueue(ctx);
++			renderQueue(ctx);
++			if (!editSession && ctx.isIdle() && !paused && !blockingActivity) dispatchFromIdle(ctx);
++	};
++	pi.registerCommand(QUEUE_CONTROL_COMMAND, {
++		description: "Control the delivery plan from a connected client",
++		handler: async (args, ctx) => {
++			if (ctx.mode !== "rpc") throw new Error("Queue controls require RPC mode");
++			if (args.length > 400000) throw new Error("Queue control request is too large");
++			const envelope = JSON.parse(Buffer.from(args, "base64url").toString("utf8"));
++			const requestId = envelope?.requestId;
++			if (typeof requestId !== "string" || requestId.length === 0 || requestId.length > 128) throw new Error("Queue control request has no valid request ID");
++			let error: string | null = null;
++			try { applyRpcControl(args, ctx); }
++			catch (cause) { error = (cause instanceof Error ? cause.message : "Queue control failed").slice(0, 1024); }
++			ctx.ui.setWidget(QUEUE_CONTROL_RESULT_WIDGET_KEY, [JSON.stringify({ requestId, error })]);
++		},
++	});
++
+ 	pi.registerCommand("queue", {
+ 		description: "Control the visible queue: list, add, steer, edit, remove, clear, resume",
+ 		getArgumentCompletions: prefix => {
+@@ -1443,8 +1542,8 @@
+ 			})) : null;
+ 		},
+ 		handler: async (args, ctx) => {
+-			if (ctx.mode !== "tui") {
+-				ctx.ui.notify("/queue requires Pi's interactive TUI; native headless queues are unchanged", "warning");
++			if (ctx.mode !== "tui" && ctx.mode !== "rpc") {
++				ctx.ui.notify("/queue requires Pi's interactive TUI or RPC; native headless queues are unchanged", "warning");
+ 				return;
+ 			}
+ 			activeContext = ctx;
+@@ -1464,6 +1563,10 @@
+ 			if ((needsText && !text) || (action.name === "remove" && !text)
+ 				|| (takesId && /\s/.test(text)) || (!needsText && !takesId && text)) {
+ 				ctx.ui.notify(`Usage: /queue ${action.usage} — ${action.description}`, "warning");
++				return;
++			}
++			if (action.name === "edit" && ctx.mode === "rpc") {
++				ctx.ui.notify("Queue row editing requires Pi's interactive TUI; use /queue list, remove, or add from RPC", "warning");
+ 				return;
+ 			}
+ 			if (action.name === "list") {
+@@ -1608,6 +1711,10 @@
+ 
+ 	pi.on("session_start", async (event, ctx) => {
+ 		queueCommandGeneration += 1;
++		clearRpcEditor();
++		rpcRevisionSeed = "";
++		lastRpcStatus = null;
++		lastRpcMessages = null;
+ 		activeContext = ctx;
+ 		settingsManager = SettingsManager.create(ctx.cwd, undefined, { projectTrusted: ctx.isProjectTrusted() });
+ 		ctx.ui.setWidget(WIDGET_ID, undefined);
+@@ -1803,6 +1910,13 @@
+ 
+ 	pi.on("session_shutdown", (event, ctx) => {
+ 		queueCommandGeneration += 1;
++		clearRpcEditor();
++		if (ctx.mode === "rpc") {
++			ctx.ui.setWidget(QUEUE_MESSAGE_WIDGET_KEY, undefined);
++			ctx.ui.setStatus("queue", undefined);
++		}
++		lastRpcStatus = null;
++		lastRpcMessages = null;
+ 		cancelNativeFlushGrace();
+ 		const queuedNewHandoff =
+ 			event.reason === "new"
+@@ -1847,7 +1961,7 @@
+ 		unsubscribeConversationQueueBridge();
+ 		if (commandSubmitTimer) clearTimeout(commandSubmitTimer);
+ 		if (compactionFinishTimer) clearTimeout(compactionFinishTimer);
+-		if (activeContext?.hasUI) {
++		if (activeContext?.mode === "tui") {
+ 			const currentFactory = activeContext.ui.getEditorComponent();
+ 			if (
+ 				baseEditorFactoryCaptured

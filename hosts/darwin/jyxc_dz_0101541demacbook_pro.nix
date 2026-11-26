@@ -32,7 +32,16 @@
   # --- MIRRORS CONFIG ---
   envy.mirrors.mode = "china";
 
+  # --- STORAGE CONFIG ---
+  envy.storage.mode = "manual";
+  envy.storage.maintenance.go-modcache = false;
+  envy.storage.archive.repository = "";
+  envy.storage.archive.mountSource = "";
+
   # --- VSCODE CONFIG ---
+  envy.t3code.service.host = "127.0.0.1";
+  envy.t3code.service.port = 3773;
+  envy.t3code.service.lan = false;
   envy.vscode.mode = "remote";
   # END ENVY MANAGED CONFIG
 
@@ -128,7 +137,7 @@
   envy.agentProfiles.mpo.maxTokens = 128000;
   envy.agentProfiles.mpo.model = "<redacted>";
   envy.agentProfiles.mpa.api = "anthropic-messages";
-  envy.agentProfiles.mpa.endpoint = "stepfun-openai";
+  envy.agentProfiles.mpa.endpoint = "stepfun-anthropic";
   envy.agentProfiles.mpa.model = "<redacted>";
   envy.agentProfiles.mpa.contextWindow = 272000;
   envy.agentProfiles.mpa.maxTokens = 128000;
@@ -158,29 +167,40 @@
     {
       profile = "mpo";
       credential = "mp-go";
-      model = "gpt-6-astra";
+      model = "stepcode-gpt-6.1-sol-eastus2";
     }
     {
       profile = "mpo";
       credential = "mp-go";
-      model = "stepcode-gpt-6.1-sol-eastus2";
+      model = "gpt-6.1-sol-coding";
+    }
+    {
+      profile = "mpo";
+      credential = "mp-go";
+      model = "gpt-6-astra";
     }
     {
       profile = "mpa";
       credential = "mp-go";
-      model = "claude-opus-5-5";
+      model = "claude-opus-5.5";
     }
     {
       profile = "stepfun-openai-new";
+      model = "gpt-6.1-sol-working";
     }
     {
       profile = "stepfun-anthropic";
+      model = "claude-opus-5-5-working";
     }
     {
       profile = "stepfun-openai-ds";
     }
     {
       profile = "xikai-magpie";
+    }
+    {
+      profile = "xikai-magpie";
+      model = "gpt-6-astra";
     }
   ];
   envy.agents.pi.additionalSettings = builtins.fromJSON "{\"compaction\": {\"keepRecentTokens\": 27200, \"reserveTokens\": 40960}, \"defaultTools\": [\"+codemode\"]}";
@@ -189,7 +209,7 @@
   envy.agents.pi.credential = "mp-new";
   envy.agents.pi.endpoint = "stepfun-openai";
   envy.agents.pi.maxTokens = 128000;
-  envy.agents.pi.model = "gpt-6.1-sol-qiye";
+  envy.agents.pi.model = "gpt-6.1-sol-working";
   envy.agents.pi.moreThinking = true;
   envy.agents.pi.profile = "stepfun-openai-new";
   # END ENVY MANAGED AGENTS

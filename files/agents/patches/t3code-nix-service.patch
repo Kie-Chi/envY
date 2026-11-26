@@ -1,0 +1,637 @@
+diff --git a/apps/server/src/cli/service.test.ts b/apps/server/src/cli/service.test.ts
+--- a/apps/server/src/cli/service.test.ts
++++ b/apps/server/src/cli/service.test.ts
+@@ -60,6 +60,55 @@
+ }
+ 
+ it.layer(Layer.mergeAll(NodeServices.layer, NetService.layer))("service commands", (it) => {
++  it.effect.each([false, true])("Nix install refuses repair before editing service.env (installed=%s)", (installed) =>
++    Effect.gen(function* () {
++      const fs = yield* FileSystem.FileSystem;
++      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-cli-test-" });
++      const original = "CUSTOM=keep\n";
++      yield* fs.writeFileString(`${baseDir}/service.env`, original);
++      const mock = makeTestService({ ...newerServiceStatus, installed, managedBy: "nix" });
++      vi.spyOn(BootService, "layer").mockReturnValue(Layer.succeed(BootService.BootService, {
++        ...mock.service,
++        install: () => Effect.fail(new BootService.BootServiceNixManagedError({})),
++      }));
++      const error = yield* Command.runWith(serviceCommand, { version: packageJson.version })([
++        "install", "--base-dir", baseDir,
++      ]).pipe(
++        Effect.provideService(HostProcess.Environment, {}),
++        Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
++        Effect.flip,
++      );
++      expect(error._tag).toBe("BootServiceNixManagedError");
++      expect(yield* fs.readFileString(`${baseDir}/service.env`)).toBe(original);
++    }),
++  );
++
++  it.effect.each([false, true])("Nix status gives activation guidance (installed=%s)", (installed) =>
++    Effect.gen(function* () {
++      const fs = yield* FileSystem.FileSystem;
++      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-cli-test-" });
++      const mock = makeTestService({ ...newerServiceStatus, installed, managedBy: "nix" });
++      vi.spyOn(BootService, "layer").mockReturnValue(Layer.succeed(BootService.BootService, mock.service));
++      const output = yield* Command.runWith(serviceCommand, { version: packageJson.version })([
++        "status", "--base-dir", baseDir,
++      ]).pipe(
++        Effect.andThen(TestConsole.logLines),
++        Effect.map((lines) => lines.join("\n")),
++        Effect.provideService(HostProcess.Environment, {}),
++        Effect.provideService(HostProcess.Platform, "darwin"),
++        Effect.provide(Layer.mergeAll(
++          ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })),
++          Layer.fresh(TestConsole.layer),
++        )),
++      );
++      expect(output).toContain("Managed by: Nix");
++      expect(output).toContain("envy apply");
++      expect(output).not.toContain("--allow-downgrade");
++      expect(output).not.toContain("t3 update");
++      expect(output).not.toContain("service install");
++    }),
++  );
++
+   it.effect.each(
+     (["install", "update"] as const).flatMap((command) => [
+       {
+diff --git a/apps/server/src/cli/service.ts b/apps/server/src/cli/service.ts
+--- a/apps/server/src/cli/service.ts
++++ b/apps/server/src/cli/service.ts
+@@ -1,6 +1,7 @@
+ import * as NodeUtil from "node:util";
+ 
+ import * as HostProcess from "@t3tools/shared/HostProcess";
++import * as Config from "effect/Config";
+ import * as Console from "effect/Console";
+ import * as Effect from "effect/Effect";
+ import * as FileSystem from "effect/FileSystem";
+@@ -125,6 +126,11 @@
+   if (status.installed && status.current) {
+     return { changed: false, status } satisfies ServiceReconcileResult;
+   }
++  if (status.managedBy === "nix" ||
++      (yield* Config.String("T3CODE_NIX_PACKAGE").pipe(Config.withDefault(""))) !== "") {
++    const plan = yield* service.install(options);
++    return { changed: true, previouslyInstalled: status.installed, plan } satisfies ServiceReconcileResult;
++  }
+   if (status.supported && !status.installed) {
+     // A new service listens on this machine only, until `t3 up` opens the local network.
+     const { entries } = yield* readServiceEnv(baseDir);
+@@ -185,15 +191,32 @@
+   if (!status.supported) {
+     return "T3 Code service\n  Status: unavailable on this machine\n  Supported on: Linux with systemd, macOS with launchd, Windows with Task Scheduler";
+   }
++  if (!status.installed && status.managedBy === "nix") {
++    return "T3 Code service\n  Managed by: Nix\n  Status: not installed\n  Next: Run `envy apply` or your Nix activation.";
++  }
+   if (!status.installed) {
+     return `T3 Code service\n  Status: not installed\n  Next: Run \`${commands.install}\`.`;
+   }
+   if (status.otherBaseDir !== undefined) {
+     return [
+       "T3 Code service",
++      ...(status.managedBy === "nix" ? ["  Managed by: Nix"] : []),
+       "  Status: installed for another T3 home",
+       `  Base dir: ${status.otherBaseDir}`,
+       `  Next: Pass \`${BootService.formatBootServiceBaseDirOption(status.otherBaseDir)}\` to manage it.`,
++    ].join("\n");
++  }
++  if (status.managedBy === "nix") {
++    return [
++      "T3 Code service",
++      "  Managed by: Nix",
++      `  Status: ${status.current ? "installed" : "needs an update or repair"}${status.installedVersion === undefined ? "" : ` · t3@${status.installedVersion}`}`,
++      `  Unit: ${status.unitPath}`,
++      `  Logs: ${status.logPath}`,
++      ...formatProtection(protection),
++      ...(status.problems ?? []).map((problem) =>
++        `  [${problem}] ${BootService.formatBootServiceProblem(problem, { install: "envy apply", restart: commands.restart })}`),
++      ...(status.current ? [] : ["  Next: Run `envy apply` or your Nix activation to update or repair it."]),
+     ].join("\n");
+   }
+   const installedVersion = status.installedVersion ?? cliVersion;
+diff --git a/apps/server/src/cli/update.test.ts b/apps/server/src/cli/update.test.ts
+--- a/apps/server/src/cli/update.test.ts
++++ b/apps/server/src/cli/update.test.ts
+@@ -2,6 +2,7 @@
+ import { assert, it } from "@effect/vitest";
+ import type { ManagedUpdatesPolicy } from "@t3tools/contracts";
+ import * as HostProcess from "@t3tools/shared/HostProcess";
++import * as ConfigProvider from "effect/ConfigProvider";
+ import * as Duration from "effect/Duration";
+ import * as Effect from "effect/Effect";
+ import * as Exit from "effect/Exit";
+@@ -154,6 +155,21 @@
+         ),
+       ),
+     );
++
++  it.effect("refuses Nix updates before release lookup or installation regardless of policy", () =>
++    Effect.gen(function* () {
++      for (const input of [{}, { requestedVersion: "1.0.0" }, { channel: "nightly" as const }]) {
++        const error = yield* runWithPolicy({ mode: "auto" }, input).pipe(
++          Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({
++            env: { T3CODE_NIX_PACKAGE: "/nix/store/current-t3code" },
++          }))),
++        );
++        assert.equal(error._tag, "CliUpdateError");
++        assert.include(error.message, "managed by Nix");
++        assert.include(error.message, "envy apply");
++      }
++    }),
++  );
+ 
+   it.effect("refuses to update when updates are off", () =>
+     Effect.gen(function* () {
+diff --git a/apps/server/src/cli/update.ts b/apps/server/src/cli/update.ts
+--- a/apps/server/src/cli/update.ts
++++ b/apps/server/src/cli/update.ts
+@@ -9,6 +9,7 @@
+   updateFeedFileName,
+   type CliReleaseChannel,
+ } from "@t3tools/shared/cliRelease";
++import * as Config from "effect/Config";
+ import * as Console from "effect/Console";
+ import * as Duration from "effect/Duration";
+ import * as Effect from "effect/Effect";
+@@ -360,6 +361,11 @@
+   readonly allowDowngrade: boolean;
+   readonly assumeYes: boolean;
+ }) {
++  if ((yield* Config.String("T3CODE_NIX_PACKAGE").pipe(Config.withDefault(""))) !== "") {
++    return yield* new CliUpdateError({
++      reason: "This T3 Code installation is managed by Nix. Run `envy apply` or your Nix activation to update it.",
++    });
++  }
+   const fs = yield* FileSystem.FileSystem;
+   const path = yield* Path.Path;
+   const runner = yield* ProcessRunner.ProcessRunner;
+diff --git a/apps/server/src/cloud/bootService.test.ts b/apps/server/src/cloud/bootService.test.ts
+--- a/apps/server/src/cloud/bootService.test.ts
++++ b/apps/server/src/cloud/bootService.test.ts
+@@ -362,6 +362,7 @@
+     hostExecPath = "/usr/bin/t3",
+     underSudo = false,
+     serviceInstallBinDir: string | null | undefined = installBinDir,
++    nixEnvironment: Readonly<Record<string, string>> = {},
+   ) =>
+     Effect.gen(function* () {
+       const paths = pinnedRuntimePaths(path, serviceBaseDir, cliVersion, platform);
+@@ -389,6 +390,7 @@
+             ConfigProvider.fromEnv({
+               env: {
+                 HOME: home,
++                ...nixEnvironment,
+                 ...(serviceInstallBinDir === undefined || serviceInstallBinDir === null
+                   ? {}
+                   : { T3CODE_INSTALL_BIN_DIR: serviceInstallBinDir }),
+@@ -403,7 +405,7 @@
+                 ...(insideService
+                   ? {
+                       T3_BOOT_SERVICE_UNIT:
+-                        platform === "win32" ? "t3code-task.xml" : "t3code.service",
++                        platform === "win32" ? "t3code-task.xml" : platform === "darwin" ? BootService.BOOT_SERVICE_PLIST_FILE : "t3code.service",
+                     }
+                   : {}),
+                 ...(underSudo ? { SUDO_USER: "julius" } : {}),
+@@ -432,6 +434,174 @@
+ });
+ 
+ it.layer(NodeServices.layer)("boot service install", (it) => {
++  for (const platform of ["linux", "darwin"] as const) {
++    const nixPackage = "/nix/store/current-t3code";
++    const renderNixUnit = (baseDir: string, packagePath: string | undefined = nixPackage,
++      version: string | undefined = "1.2.3") => {
++      const plan = {
++        program: [`${nixPackage}/bin/t3`, "serve"], baseDir,
++        logPath: `${baseDir}/service.log`, unitPath: "",
++      };
++      const entries = {
++        T3CODE_HOME: baseDir,
++        ...(packagePath === undefined ? {} : { T3CODE_NIX_PACKAGE: packagePath }),
++        ...(version === undefined ? {} : { T3CODE_NIX_VERSION: version }),
++      };
++      if (platform === "linux") {
++        return ["[Service]", ...Object.entries(entries).map(([key, value]) =>
++          `Environment="${key}=${value}"`), `ExecStart=${plan.program.join(" ")}`, ""].join("\n");
++      }
++      return BootService.renderBootServicePlist(plan, { homeDir: "/home/test", environmentPath: "/bin" })
++        .replace("    <key>PATH</key>", Object.entries(entries)
++          .filter(([key]) => key !== "T3CODE_HOME")
++          .map(([key, value]) => `    <key>${key}</key>\n    <string>${value}</string>`)
++          .join("\n") + "\n    <key>PATH</key>");
++    };
++
++    it.effect(`recognizes ${platform} Nix generations without pinned runtime state`, () =>
++      Effect.gen(function* () {
++        const { fs, baseDir, statePath, runtime, makeService, control } = yield* makeHarness(platform);
++        const service = yield* makeService(undefined, undefined, undefined, false, undefined, false,
++          undefined, { T3CODE_NIX_PACKAGE: nixPackage });
++        const unitPath = (yield* service.status).unitPath;
++        const path = yield* Path.Path;
++        yield* fs.makeDirectory(path.dirname(unitPath), { recursive: true });
++        yield* fs.writeFileString(unitPath, renderNixUnit(baseDir));
++        yield* fs.remove(runtime.versionDir, { recursive: true });
++        yield* fs.writeFileString(statePath, "invalid pinned state");
++        yield* fs.writeFileString(path.join(baseDir, "runtime", SERVICE_RESTART_PENDING_FILE), "old");
++        expect(yield* service.status).toMatchObject({
++          installed: true, current: true, managedBy: "nix", installedVersion: "1.2.3",
++          installedBaseDir: baseDir,
++          logPath: platform === "linux" ? "journalctl --user -u t3code.service" : `${baseDir}/service.log`,
++        });
++        for (const [packagePath, version] of [
++          ["/nix/store/old-t3code", "1.2.3"], [nixPackage, "1.2.2"],
++          [undefined, "1.2.3"], [nixPackage, undefined],
++        ] as const) {
++          // Explicit undefined must remove the marker rather than use the fixture default.
++          const unit = renderNixUnit(baseDir, packagePath ?? "MISSING", version ?? "MISSING")
++            .replace(/^Environment="T3CODE_NIX_(?:PACKAGE|VERSION)=MISSING"\n/gm, "")
++            .replace(/    <key>T3CODE_NIX_(?:PACKAGE|VERSION)<\/key>\n    <string>MISSING<\/string>\n/g, "");
++          yield* fs.writeFileString(unitPath, unit);
++          expect(yield* service.status).toMatchObject({ installed: true, current: false, managedBy: "nix" });
++        }
++        const missingMarkers = renderNixUnit(baseDir)
++          .replace(/^Environment="T3CODE_NIX_(?:PACKAGE|VERSION)=[^"]*"\n/gm, "")
++          .replace(/    <key>T3CODE_NIX_(?:PACKAGE|VERSION)<\/key>\n    <string>[^<]*<\/string>\n/g, "");
++        yield* fs.writeFileString(unitPath, missingMarkers);
++        expect((yield* service.status).current).toBe(false);
++        const missingHome = renderNixUnit(baseDir)
++          .replace(/^Environment="T3CODE_HOME=[^"]*"\n/gm, "")
++          .replace(/    <key>T3CODE_HOME<\/key>\n    <string>[^<]*<\/string>\n/g, "");
++        yield* fs.writeFileString(unitPath, missingHome);
++        expect((yield* service.status).current).toBe(false);
++        expect((yield* service.status).installedBaseDir).toBeUndefined();
++        yield* fs.writeFileString(unitPath, renderNixUnit(baseDir));
++        const unmarkedCli = yield* makeService();
++        expect((yield* unmarkedCli.status).current).toBe(false);
++        const other = yield* makeService(undefined, undefined, `${baseDir}-other`, false, undefined,
++          false, undefined, { T3CODE_NIX_PACKAGE: nixPackage });
++        expect(yield* other.status).toMatchObject({ current: false, otherBaseDir: baseDir });
++        expect(yield* other.restart).toBe("skipped");
++        expect((yield* other.install().pipe(Effect.flip))._tag).toBe("BootServiceOtherBaseDirError");
++        if (platform === "linux") {
++          control.enabled = false;
++          control.active = false;
++          expect(yield* service.status).toMatchObject({ current: false,
++            problems: ["service-disabled", "service-stopped"] });
++        }
++      }),
++    );
++
++    it.effect(`never installs or repairs a ${platform} Nix runtime outside activation`, () =>
++      Effect.gen(function* () {
++        const { fs, baseDir, runtime, statePath, makeService, commands } = yield* makeHarness(platform);
++        const service = yield* makeService(undefined, undefined, undefined, false, undefined, false,
++          undefined, { T3CODE_NIX_PACKAGE: nixPackage });
++        const path = yield* Path.Path;
++        const unitPath = (yield* service.status).unitPath;
++        yield* fs.remove(runtime.versionDir, { recursive: true });
++        const before = yield* fs.readDirectory(baseDir);
++        for (const options of [{}, { start: false }, { allowDowngrade: true }]) {
++          const error = yield* service.install(options).pipe(Effect.flip);
++          expect(error._tag).toBe("BootServiceNixManagedError");
++          expect(error.message).toContain("envy apply");
++          expect(CliError.userMessage in error).toBe(true);
++          expect(yield* fs.readDirectory(baseDir)).toEqual(before);
++          expect(yield* fs.exists(unitPath)).toBe(false);
++        }
++        yield* fs.makeDirectory(path.dirname(unitPath), { recursive: true });
++        const unit = renderNixUnit(baseDir);
++        yield* fs.writeFileString(unitPath, unit);
++        commands.length = 0;
++        const plan = yield* service.install();
++        expect(plan.unitPath).toBe(unitPath);
++        expect(commands.every((command) => !/stop |restart |enable |daemon-reload|--version/.test(command))).toBe(true);
++        expect(yield* fs.exists(statePath)).toBe(false);
++        expect(yield* fs.exists(runtime.entryPath)).toBe(false);
++        const oldUnit = renderNixUnit(baseDir, "/nix/store/old-t3code", "9.9.9");
++        yield* fs.writeFileString(unitPath, oldUnit);
++        const ordinary = yield* makeService();
++        yield* fs.remove(runtime.versionDir, { recursive: true });
++        for (const cli of [service, ordinary]) {
++          for (const options of [{}, { start: false }, { allowDowngrade: true }]) {
++            expect((yield* cli.install(options).pipe(Effect.flip))._tag).toBe("BootServiceNixManagedError");
++            expect(yield* fs.readFileString(unitPath)).toBe(oldUnit);
++            expect(yield* fs.exists(statePath)).toBe(false);
++            expect(yield* fs.exists(runtime.entryPath)).toBe(false);
++            expect(yield* fs.exists(path.join(baseDir, "userdata"))).toBe(false);
++          }
++        }
++      }),
++    );
++
++    it.effect(`restarts a ${platform} Nix service through its native manager`, () =>
++      Effect.gen(function* () {
++        const { fs, baseDir, makeService, commands } = yield* makeHarness(platform);
++        const service = yield* makeService(undefined, undefined, undefined, false, undefined, false,
++          undefined, { T3CODE_NIX_PACKAGE: nixPackage });
++        const path = yield* Path.Path;
++        const unitPath = (yield* service.status).unitPath;
++        yield* fs.makeDirectory(path.dirname(unitPath), { recursive: true });
++        const unit = renderNixUnit(baseDir);
++        yield* fs.writeFileString(unitPath, unit);
++        commands.length = 0;
++        expect(yield* service.restart).toBe("restarted");
++        expect(commands).toEqual(platform === "linux" ? [
++          "systemctl --user stop t3code.service", "systemctl --user daemon-reload",
++          "systemctl --user enable t3code.service", "systemctl --user reset-failed t3code.service",
++          "systemctl --user restart t3code.service",
++        ] : [
++          "launchctl bootout --wait gui/501/com.t3tools.t3code.service",
++          "launchctl enable gui/501/com.t3tools.t3code.service",
++          `launchctl bootstrap gui/501 ${unitPath}`,
++        ]);
++        expect(yield* fs.readFileString(unitPath)).toBe(unit);
++        if (platform === "linux") {
++          const inside = yield* makeService(undefined, undefined, undefined, true, undefined, false,
++            undefined, { T3CODE_NIX_PACKAGE: nixPackage });
++          commands.length = 0;
++          expect(yield* inside.restart).toBe("queued");
++          expect(commands).toEqual([
++            "systemctl --user daemon-reload", "systemctl --user enable t3code.service",
++            "systemctl --user reset-failed t3code.service",
++            "systemctl --user restart --no-block t3code.service",
++          ]);
++          expect(yield* fs.readFileString(unitPath)).toBe(unit);
++        } else {
++          const inside = yield* makeService(undefined, undefined, undefined, true, undefined, false,
++            undefined, { T3CODE_NIX_PACKAGE: nixPackage });
++          commands.length = 0;
++          expect(yield* inside.restart).toBe("queued");
++          expect(commands).toEqual(["launchctl kill SIGTERM gui/501/com.t3tools.t3code.service"]);
++          expect(yield* fs.readFileString(unitPath)).toBe(unit);
++          expect(yield* fs.exists(path.join(baseDir, "runtime", DESKTOP_UPDATE_RESTART_MARKER_FILE))).toBe(true);
++        }
++      }),
++    );
++  }
++
+   it.effect(
+     "marks immediate and deferred service restarts without blocking on a marker error",
+     () =>
+diff --git a/apps/server/src/cloud/bootService.ts b/apps/server/src/cloud/bootService.ts
+--- a/apps/server/src/cloud/bootService.ts
++++ b/apps/server/src/cloud/bootService.ts
+@@ -45,6 +45,8 @@
+   serviceTaskIsDisabled,
+   serviceUnitBaseDirOf as bootServiceBaseDirOf,
+   serviceUnitEnvironmentValueOf,
++  serviceUnitLogPathOf,
++  serviceUnitProgramOf,
+   parseServiceState,
+   serviceStateActiveVersion,
+   serviceStateHasPendingUpdate,
+@@ -753,7 +755,21 @@
+   }
+ }
+ 
++export class BootServiceNixManagedError extends Schema.TaggedError<BootServiceNixManagedError>()(
++  "BootServiceNixManagedError",
++  {},
++) {
++  override get message(): string {
++    return "This T3 Code service is managed by Nix. Run `envy apply` or your Nix activation to install, update, or repair it.";
++  }
++
++  override get [CliError.userMessage]() {
++    return this.message;
++  }
++}
++
+ export type BootServiceError =
++  | BootServiceNixManagedError
+   | BootServiceUnsupportedError
+   | BootServiceBaseDirUnsupportedError
+   | BootServiceOtherBaseDirError
+@@ -767,6 +783,7 @@
+   readonly supported: boolean;
+   readonly installed: boolean;
+   readonly current: boolean;
++  readonly managedBy?: "nix";
+   readonly installedVersion?: string;
+   readonly installedBaseDir?: string;
+   /** Set when the installed unit serves a different T3 home than this CLI. */
+@@ -829,11 +846,15 @@
+   const installBinDir = Option.getOrUndefined(
+     yield* Config.String("T3CODE_INSTALL_BIN_DIR").pipe(Config.option),
+   );
++  const nixPackage = yield* Config.String("T3CODE_NIX_PACKAGE").pipe(Config.withDefault(""));
++  const nixManagedUnit = (unit: string) =>
++    serviceUnitEnvironmentValueOf(unit, "T3CODE_NIX_PACKAGE") !== undefined ||
++    serviceUnitEnvironmentValueOf(unit, "T3CODE_NIX_VERSION") !== undefined;
+   const xdgRuntimeDir = yield* Config.String("XDG_RUNTIME_DIR").pipe(Config.withDefault(""));
+   // Root under sudo must not reach or start a separate root service.
+   const rootUnderSudo =
+     uid === 0 && (yield* Config.String("SUDO_USER").pipe(Config.withDefault(""))) !== "";
+-  const runningInsideService = [BOOT_SERVICE_UNIT_FILE, BOOT_SERVICE_TASK_FILE].includes(
++  const runningInsideService = [BOOT_SERVICE_UNIT_FILE, BOOT_SERVICE_PLIST_FILE, BOOT_SERVICE_TASK_FILE].includes(
+     yield* Config.String(SERVICE_UNIT_ENV).pipe(Config.withDefault("")),
+   );
+   const fs = yield* FileSystem.FileSystem;
+@@ -1248,6 +1269,27 @@
+     readonly allowDowngrade?: boolean;
+     readonly start?: boolean;
+   }) {
++    const existingUnit = platform === "linux" || platform === "darwin"
++      ? yield* readUnit().pipe(Effect.option)
++      : Option.none<string>();
++    if (nixPackage !== "" || (Option.isSome(existingUnit) && nixManagedUnit(existingUnit.value))) {
++      const current = yield* status;
++      if (current.otherBaseDir !== undefined) {
++        return yield* new BootServiceOtherBaseDirError({
++          installedBaseDir: current.otherBaseDir,
++          baseDir: input.baseDir,
++        });
++      }
++      if (current.installed && current.current && Option.isSome(existingUnit)) {
++        return {
++          program: [serviceUnitProgramOf(existingUnit.value) ?? host.execPath],
++          baseDir: input.baseDir,
++          unitPath: current.unitPath,
++          logPath: current.logPath,
++        };
++      }
++      return yield* new BootServiceNixManagedError({});
++    }
+     let manager = yield* requireManager;
+     if (manager.kind === "systemd" && systemdUnsafeValue(plan)) {
+       return yield* new BootServiceBaseDirUnsupportedError({ baseDir: input.baseDir });
+@@ -1493,6 +1535,15 @@
+     ) {
+       return "skipped" as const;
+     }
++    if (runningInsideService && manager.kind === "launchd" && nixManagedUnit(unit.value)) {
++      // KeepAlive replaces the job after the runner forwards graceful shutdown.
++      yield* stopForRestart([{
++        step: "restarting the Nix launch agent",
++        command: "launchctl",
++        args: ["kill", "SIGTERM", `gui/${uid}/${BOOT_SERVICE_LAUNCHD_LABEL}`],
++      }], true);
++      return "queued" as const;
++    }
+     // Writes no state, and the launcher lets an update transition in flight
+     // finish before the queued stop tears it down.
+     if (runningInsideService && manager.handoff !== undefined) {
+@@ -1590,10 +1641,34 @@
+       return { supported: false, installed: false, current: false, unitPath, logPath };
+     }
+     if (!(yield* fs.exists(unitPath))) {
+-      return { supported: true, installed: false, current: false, unitPath, logPath };
++      return { supported: true, installed: false, current: false, unitPath, logPath,
++        ...(nixPackage === "" ? {} : { managedBy: "nix" as const }),
++      };
+     }
+-    const [unit, runtimeEntryExists, runtimeSentinel, stateText] = yield* Effect.all([
+-      readUnit(),
++    const unit = yield* readUnit();
++    if (nixPackage !== "" || nixManagedUnit(unit)) {
++      const installedVersion = serviceUnitEnvironmentValueOf(unit, "T3CODE_NIX_VERSION");
++      const installedBaseDir = bootServiceBaseDirOf(unit);
++      const otherBaseDir = otherBaseDirOf(unit);
++      const problems = manager.kind === "systemd" ? [...(yield* readSystemdProblems(true))] : [];
++      return {
++        supported: true,
++        installed: true,
++        managedBy: "nix" as const,
++        ...(installedVersion === undefined ? {} : { installedVersion }),
++        ...(installedBaseDir === undefined ? {} : { installedBaseDir }),
++        ...(otherBaseDir === undefined ? {} : { otherBaseDir }),
++        problems,
++        current: nixPackage !== "" &&
++          serviceUnitEnvironmentValueOf(unit, "T3CODE_NIX_PACKAGE") === nixPackage &&
++          installedVersion === input.cliVersion &&
++          installedBaseDir !== undefined && otherBaseDir === undefined && problems.length === 0,
++        unitPath,
++        logPath: serviceUnitLogPathOf(unit) ??
++          (manager.kind === "systemd" ? `journalctl --user -u ${BOOT_SERVICE_UNIT_FILE}` : logPath),
++      };
++    }
++    const [runtimeEntryExists, runtimeSentinel, stateText] = yield* Effect.all([
+       fs.exists(runtimePaths.entryPath),
+       fs.readFileString(runtimePaths.sentinelPath).pipe(Effect.option),
+       fs.readFileString(statePath).pipe(Effect.option),
+diff --git a/apps/server/src/cloud/selfUpdate.test.ts b/apps/server/src/cloud/selfUpdate.test.ts
+--- a/apps/server/src/cloud/selfUpdate.test.ts
++++ b/apps/server/src/cloud/selfUpdate.test.ts
+@@ -2,6 +2,7 @@
+ import { expect, it } from "@effect/vitest";
+ import type { ManagedPolicyDocument } from "@t3tools/contracts";
+ import * as HostProcess from "@t3tools/shared/HostProcess";
++import * as ConfigProvider from "effect/ConfigProvider";
+ import * as Deferred from "effect/Deferred";
+ import * as Duration from "effect/Duration";
+ import * as Effect from "effect/Effect";
+@@ -13,6 +14,7 @@
+ import * as TestClock from "effect/testing/TestClock";
+ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
+ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
++import { vi } from "vite-plus/test";
+ 
+ import packageJson from "../../package.json" with { type: "json" };
+ import * as ServerConfig from "../config.ts";
+@@ -23,8 +25,15 @@
+ import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
+ import * as ServerSelfUpdate from "./selfUpdate.ts";
+ 
++// These release fixtures stay on the stable track even when Nix stamps a nightly version.
++vi.mock("../../package.json", async (importOriginal) => {
++  const actual = await importOriginal<{ default: typeof packageJson }>();
++  return { default: { ...actual.default, version: "0.1.11" } };
++});
++
+ interface HarnessOptions {
+   readonly mode?: "web" | "desktop";
++  readonly nixPackage?: string;
+   readonly managed?: boolean;
+   readonly launcherProtocol?: 3 | typeof SERVICE_LAUNCHER_PROTOCOL;
+   readonly preflight?: "ready" | "blocked";
+@@ -167,7 +176,8 @@
+     Effect.provideService(HostProcess.Platform, "linux"),
+     Effect.provideService(HostProcess.Architecture, "x64"),
+     Effect.provide(
+-      Layer.merge(
++      Layer.mergeAll(
++        ConfigProvider.layer(ConfigProvider.fromEnv({ env: options.nixPackage === undefined ? {} : { T3CODE_NIX_PACKAGE: options.nixPackage } })),
+         ServerConfig.layer({ ...config, mode: options.mode ?? "web" }),
+         ManagedPolicy.layerTest(options.policy),
+       ),
+@@ -177,6 +187,24 @@
+ });
+ 
+ it.layer(NodeServices.layer)("server self update", (it) => {
++  it.effect("refuses Nix updates with activation guidance before staging or launcher handoff", () =>
++    Effect.gen(function* () {
++      for (const managed of [false, true]) {
++        const { selfUpdate, order, urls } = yield* makeHarness({
++          managed, nixPackage: "/nix/store/current-t3code",
++        });
++        for (const stageOnly of [false, true]) {
++          const error = yield* selfUpdate.update({ targetVersion: "1.1.0", stageOnly }).pipe(Effect.flip);
++          expect(error.reason).toContain("managed by Nix");
++          expect(error.reason).toContain("envy apply");
++          expect(error.reason).not.toContain("service install");
++          expect(order).toEqual([]);
++          expect(urls).toEqual([]);
++        }
++      }
++    }),
++  );
++
+   it.effect.each([
+     { asset: "checksums", status: 504 },
+     { asset: "archive", status: 503 },
+diff --git a/apps/server/src/cloud/selfUpdate.ts b/apps/server/src/cloud/selfUpdate.ts
+--- a/apps/server/src/cloud/selfUpdate.ts
++++ b/apps/server/src/cloud/selfUpdate.ts
+@@ -148,11 +148,14 @@
+   const releaseBaseUrl =
+     mirror?.feedUrl ??
+     Option.getOrUndefined(yield* Config.String(CLI_RELEASE_BASE_URL_ENV).pipe(Config.option));
++  const nixPackage = yield* Config.String("T3CODE_NIX_PACKAGE").pipe(Config.withDefault(""));
+   const inFlight = yield* Ref.make(false);
+ 
+-  yield* pruneRuntimesOnStart({ baseDir: serverConfig.baseDir, managed: launcher.managed }).pipe(
+-    Effect.forkScoped,
+-  );
++  if (nixPackage === "") {
++    yield* pruneRuntimesOnStart({ baseDir: serverConfig.baseDir, managed: launcher.managed }).pipe(
++      Effect.forkScoped,
++    );
++  }
+ 
+   const capability: ServerSelfUpdateCapability | null =
+     serverConfig.mode === "desktop" ? "desktop-managed" : launcher.managed ? "boot-service" : null;
+@@ -172,6 +175,11 @@
+   const update: ServerSelfUpdate["Service"]["update"] = Effect.fn(
+     "cloud.server_self_update.update",
+   )(function* (input, reportProgress = () => Effect.void, onHandoffAccepted = () => Effect.void) {
++    if (nixPackage !== "") {
++      return yield* failWith(
++        "This T3 Code server is managed by Nix. Run `envy apply` or your Nix activation on the server machine to update it.",
++      );
++    }
+     const policyRefusal = managedUpdateRefusal(
+       policy.document,
+       capability === "boot-service" ? cliReleaseChannelOf(input.targetVersion.trim()) : undefined,
+diff --git a/apps/server/src/cloud/serviceProtocol.ts b/apps/server/src/cloud/serviceProtocol.ts
+--- a/apps/server/src/cloud/serviceProtocol.ts
++++ b/apps/server/src/cloud/serviceProtocol.ts
+@@ -61,10 +61,12 @@
+ 
+ export function serviceUnitEnvironmentValueOf(
+   contents: string,
+-  name: "T3CODE_HOME" | "T3CODE_INSTALL_BIN_DIR",
++  name: "T3CODE_HOME" | "T3CODE_INSTALL_BIN_DIR" | "T3CODE_NIX_PACKAGE" | "T3CODE_NIX_VERSION",
+ ): string | undefined {
+-  const systemd = new RegExp(`^Environment=${name}=(.*)$`, "m").exec(contents)?.[1];
+-  if (systemd !== undefined) return unquoteSystemdValue(systemd.trim());
++  const systemd = new RegExp(`^Environment=(?:"${name}=(.*)"|${name}=(.*))$`, "m").exec(contents);
++  if (systemd !== null) {
++    return unquoteSystemdValue(systemd[1] === undefined ? systemd[2]!.trim() : `"${systemd[1]}"`);
++  }
+   const plist = new RegExp(`<key>${name}</key>\\s*<string>([^<]*)</string>`).exec(contents)?.[1];
+   return plist === undefined ? undefined : unescapeXmlText(plist);
+ }

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import os
+import secrets
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 
 def ensure_private_directory(path: Path) -> None:
@@ -35,8 +36,9 @@ def atomic_write_bytes(
     *,
     mode: int | None = None,
     private_parent: bool = False,
+    pre_replace: Callable[[], None] | None = None,
 ) -> None:
-    """Write bytes through a mode-safe temporary file and atomically replace path."""
+    """Write atomically; an optional guard runs after fsync, immediately before replace."""
     if private_parent:
         ensure_private_directory(path.parent)
     else:
@@ -49,24 +51,76 @@ def atomic_write_bytes(
         except OSError:
             target_mode = 0o644
 
-    descriptor, temporary_name = tempfile.mkstemp(
-        dir=str(path.parent), prefix=f".{path.name}.envy-"
+    # Keep the temporary's directory reachable for cleanup if a guard detects a rename.
+    parent_descriptor = (
+        os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY) if pre_replace is not None else None
     )
-    temporary = Path(temporary_name)
+    descriptor = -1
+    temporary: Path | None = None
+    temporary_identity: tuple[int, int] | None = None
     try:
+        if parent_descriptor is None:
+            descriptor, temporary_name = tempfile.mkstemp(
+                dir=str(path.parent), prefix=f".{path.name}.envy-"
+            )
+            temporary = Path(temporary_name)
+        else:
+            bound_parent = os.fstat(parent_descriptor)
+            current_parent = path.parent.stat()
+            if (current_parent.st_dev, current_parent.st_ino) != (bound_parent.st_dev, bound_parent.st_ino):
+                raise OSError("temporary directory changed during write")
+            # Create relative to the bound directory, never a newly substituted parent.
+            for _ in range(100):
+                name = f".{path.name}.envy-{secrets.token_hex(8)}"
+                try:
+                    descriptor = os.open(name, os.O_RDWR | os.O_CREAT | os.O_EXCL,
+                                         0o600, dir_fd=parent_descriptor)
+                except FileExistsError:
+                    continue
+                temporary = path.parent / name
+                break
+            else:
+                raise FileExistsError("cannot create a unique temporary file")
+        info = os.fstat(descriptor)
+        temporary_identity = (info.st_dev, info.st_ino)
+        if parent_descriptor is not None:
+            parent_entry = os.stat(temporary.name, dir_fd=parent_descriptor, follow_symlinks=False)
+            current_parent = path.parent.stat()
+            if ((parent_entry.st_dev, parent_entry.st_ino) != temporary_identity
+                    or (current_parent.st_dev, current_parent.st_ino) != (bound_parent.st_dev, bound_parent.st_ino)):
+                raise OSError("temporary directory changed during write")
         os.fchmod(descriptor, target_mode)
         with os.fdopen(descriptor, "wb") as handle:
             descriptor = -1
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        if pre_replace is not None:
+            pre_replace()
+        if parent_descriptor is None:
+            os.replace(temporary, path)
+        else:
+            os.replace(temporary.name, path, src_dir_fd=parent_descriptor)
         _fsync_directory(path.parent)
     finally:
         if descriptor >= 0:
             os.close(descriptor)
-        if temporary.exists():
-            temporary.unlink()
+        try:
+            if temporary is not None:
+                try:
+                    info = os.stat(
+                        temporary.name if parent_descriptor is not None else temporary,
+                        dir_fd=parent_descriptor, follow_symlinks=False,
+                    )
+                except FileNotFoundError:
+                    pass
+                else:
+                    if (info.st_dev, info.st_ino) == temporary_identity:
+                        os.unlink(temporary.name if parent_descriptor is not None else temporary,
+                                  dir_fd=parent_descriptor)
+        finally:
+            if parent_descriptor is not None:
+                os.close(parent_descriptor)
 
 
 def atomic_write_text(
@@ -75,12 +129,14 @@ def atomic_write_text(
     *,
     mode: int | None = None,
     private_parent: bool = False,
+    pre_replace: Callable[[], None] | None = None,
 ) -> None:
     atomic_write_bytes(
         path,
         text.encode("utf-8"),
         mode=mode,
         private_parent=private_parent,
+        pre_replace=pre_replace,
     )
 
 

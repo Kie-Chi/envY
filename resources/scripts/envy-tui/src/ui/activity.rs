@@ -9,7 +9,7 @@ use crate::{
         doctor_results, journal_entries, parse_timestamp, relative_age, short_timestamp, text,
         HistoryView,
     },
-    theme::{self, ERROR, OK, WARN},
+    theme::{self, OK, WARN},
 };
 
 use super::table::{
@@ -27,20 +27,17 @@ pub(super) fn render_doctor(frame: &mut Frame, app: &App, area: Rect) {
     let results = doctor_results(app.payload(), app.doctor_problems_only);
     let count = results.len();
     if count == 0 && !app.loading() {
-        let (title, message, action) = if app.doctor_problems_only {
-            (
-                "No warnings or errors",
-                "Every check passed or is informational.",
-                "Press f to show all checks.",
-            )
-        } else {
-            (
-                "No doctor results",
-                "envY did not return any checks for this machine.",
-                "Press r to run Doctor again.",
-            )
+        let checks = app.payload().map(crate::model::report_data).and_then(|payload| payload.get("results")).and_then(Value::as_array);
+        let incomplete = app.payload().and_then(|payload| payload.get("ok")).and_then(Value::as_bool) == Some(false);
+        let (title, action) = match checks {
+            None => ("Health unavailable", "r run checks"),
+            Some(checks) if checks.is_empty() => ("No check results", "r run checks"),
+            Some(_) if incomplete => ("! Health incomplete", "r run checks"),
+            Some(_) if app.current_error().is_some() => ("Cached checks · no problems", "r run checks"),
+            Some(_) if app.doctor_problems_only => ("✓ No problems found", "f show all checks"),
+            _ => ("No check results", "r run checks"),
         };
-        render_empty_state(frame, area, title, message, action);
+        render_empty_state(frame, area, title, "", action);
         return;
     }
     let rows = results
@@ -49,7 +46,7 @@ pub(super) fn render_doctor(frame: &mut Frame, app: &App, area: Rect) {
             let status = text(result.get("status"));
             vec![
                 TableCell::styled(
-                    format!("● {status}"),
+                    theme::status_label(&status),
                     Style::new().fg(theme::status_color(&status)),
                 ),
                 TableCell::new(text(result.get("section"))),
@@ -63,9 +60,9 @@ pub(super) fn render_doctor(frame: &mut Frame, app: &App, area: Rect) {
         area,
         DataTable {
             title: if app.doctor_problems_only {
-                "Doctor · warnings and errors".to_string()
+                "Health · problems".into()
             } else {
-                "Doctor · problems first".to_string()
+                "Health".into()
             },
             position: Some(app.selection_position().unwrap_or((0, count))),
             columns: &DOCTOR_COLUMNS,
@@ -113,7 +110,7 @@ fn store_path_cell(path: &str) -> TableCell {
 
 fn render_generations(frame: &mut Frame, app: &App, area: Rect) {
     let generations = app
-        .payload()
+        .payload().map(crate::model::report_data)
         .and_then(|payload| payload.get("generations"))
         .and_then(Value::as_array);
     let count = generations.map(Vec::len).unwrap_or(0);
@@ -121,9 +118,7 @@ fn render_generations(frame: &mut Frame, app: &App, area: Rect) {
         render_empty_state(
             frame,
             area,
-            "No generations found",
-            "The active platform profile has no generations to compare.",
-            "Press r to refresh generation history.",
+            "No generations", "", "r refresh",
         );
         return;
     }
@@ -152,7 +147,7 @@ fn render_generations(frame: &mut Frame, app: &App, area: Rect) {
         frame,
         area,
         DataTable {
-            title: "Generations · Space mark · d diff".to_string(),
+            title: "Generations".into(),
             position: Some(app.selection_position().unwrap_or((0, count))),
             columns: &GENERATION_COLUMNS,
             rows,
@@ -165,7 +160,7 @@ fn render_generations(frame: &mut Frame, app: &App, area: Rect) {
 const JOURNAL_COLUMNS: [Column; 6] = [
     column("TIME", Constraint::Length(24)),
     column("OPERATION", Constraint::Length(14)),
-    column("RESULT", Constraint::Length(8)),
+    column("RESULT", Constraint::Length(10)),
     column("DURATION", Constraint::Length(9)),
     optional("MACHINE", Constraint::Length(24), 150),
     column("DETAIL", Constraint::Min(20)),
@@ -178,20 +173,14 @@ fn render_journal(frame: &mut Frame, app: &App, area: Rect) {
         render_empty_state(
             frame,
             area,
-            "No operations recorded yet",
-            "State-changing commands (apply, sync, push, update, rollback, clean) appear here.",
-            "Run an operation, then press r to refresh.",
+            "No operations yet", "", "r refresh",
         );
         return;
     }
     let rows = entries
         .iter()
         .map(|entry| {
-            let result = if entry.result == "ok" {
-                TableCell::styled("ok", Style::new().fg(OK))
-            } else {
-                TableCell::styled(entry.result.clone(), Style::new().fg(ERROR))
-            };
+            let result = TableCell::styled(theme::status_label(&entry.result), Style::new().fg(theme::status_color(&entry.result)));
             vec![
                 time_cell(&entry.timestamp, app.now()),
                 TableCell::new(entry.operation.clone()),
@@ -206,7 +195,7 @@ fn render_journal(frame: &mut Frame, app: &App, area: Rect) {
         frame,
         area,
         DataTable {
-            title: "Operation journal".to_string(),
+            title: "Operations".into(),
             position: Some(app.selection_position().unwrap_or((0, count))),
             columns: &JOURNAL_COLUMNS,
             rows,

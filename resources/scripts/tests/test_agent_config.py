@@ -568,7 +568,7 @@ class AgentConfigTests(unittest.TestCase):
         )
         self.assertEqual(
             issues[("envy.agents.pi.profile", ErrorCode.UNKNOWN_REFERENCE)].message,
-            "references an unknown agent profile",
+            "profile 'ghost' is not declared",
         )
         self.assertEqual(
             issues[("envy.agents.pi.typo", ErrorCode.UNKNOWN_FIELD)].hint,
@@ -604,17 +604,17 @@ class AgentConfigTests(unittest.TestCase):
                     (
                         "envy.agents.pi.skills",
                         '"animate"',
-                        "envy.agents.pi.skills: expected a JSON array of strings",
+                        "expected a JSON array of strings. Location: envy.agents.pi.skills",
                     ),
                     (
                         "envy.agents.pi.models",
                         "{}",
-                        "envy.agents.pi.models: expected a JSON array of model objects",
+                        "expected a JSON array of model objects. Location: envy.agents.pi.models",
                     ),
                     (
                         "envy.agents.pi.contextWindow",
                         "0",
-                        "envy.agents.pi.contextWindow: expected a positive integer or null",
+                        "expected a positive integer or null. Location: envy.agents.pi.contextWindow",
                     ),
                     (
                         "envy.agents.pi.api",
@@ -624,7 +624,7 @@ class AgentConfigTests(unittest.TestCase):
                     (
                         "envy.agents.pi.moreThinking",
                         "yes",
-                        "envy.agents.pi.moreThinking: expected true or false",
+                        "expected true or false. Location: envy.agents.pi.moreThinking",
                     ),
                 )
                 for target, value, message in cases:
@@ -635,7 +635,7 @@ class AgentConfigTests(unittest.TestCase):
                     agent.cmd_profile_use("pi", "ghost", json_output=False, yes=True)
                 self.assertEqual(
                     str(caught.exception),
-                    "unknown agent profile: ghost (Run: envy agent profile list)",
+                    "unknown agent profile: ghost. Next: Run: envy agent profile list",
                 )
                 from envy.main import cli
 

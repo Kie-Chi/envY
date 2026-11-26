@@ -3,7 +3,6 @@ import io
 import json
 import subprocess
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from rich.console import Console
@@ -12,6 +11,7 @@ from envy import host, log, process
 from envy.config import cli, secret_store
 from envy.doctor import runner
 from envy.doctor.model import CheckResult, SECTION_SYSTEM
+from envy.schemas.config import FieldDef
 
 
 class LiteralRenderingTests(unittest.TestCase):
@@ -79,7 +79,7 @@ class LiteralRenderingTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["exitCode"], 1)
 
     def test_config_values_and_dynamic_fields_are_literal_without_secrets(self):
-        fields = [SimpleNamespace(path="envy.git.user", choices=())]
+        fields = [FieldDef(group="GIT", dest="machine", path="envy.git.user")]
         view = {
             "values": {}, "fields": [{"path": "envy.agents.pi.model", "value": "model[bot]"}],
             "llm": {"credentials": {"cred[bot]": {"credentialSet": True}}}, "agents": {},

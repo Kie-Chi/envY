@@ -8,6 +8,7 @@ assert lib.assertMsg (machinePlatform == "darwin")
   imports = [
     ./modules/envy/darwin.nix
     ./modules/software/sources.nix
+    ./modules/software/darwin/homebrew.nix
     ./modules/mirrors/darwin.nix
     ./modules/agents/darwin/nix-darwin.nix
     ./modules/desktops/darwin/nix-darwin.nix

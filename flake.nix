@@ -888,6 +888,7 @@
         assert import ./checks/habit-readback.nix { inherit inputs; };
         assert platformOptionBoundaries;
         assert import ./checks/homebrew-trust.nix { inherit lib darwinConfigurations; };
+        assert import ./checks/homebrew-uninstall.nix { inherit lib darwinConfigurations homeConfigurations; };
         assert import ./checks/terminal-themes.nix { inherit lib darwinConfigurations homeConfigurations; };
         nixpkgs.legacyPackages.${system}.runCommand "envy-platform-option-boundaries" { } ''
           touch $out

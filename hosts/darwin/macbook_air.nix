@@ -85,6 +85,9 @@
   ];
   # END ENVY MANAGED SOFTWARE
 
+  # Explicit Homebrew migration; retain T3 Code user data.
+  envy.darwin.software.homebrew.uninstall.casks = [ "t3-code" ];
+
   # BEGIN ENVY MANAGED SOURCES
   envy.software.sources = builtins.fromJSON "{\"homebrew:shiquda/cmux-pocket\":{\"ecosystem\":\"homebrew\",\"label\":\"cmux Pocket\",\"owner\":\"machine\",\"parameters\":{\"tap\":\"shiquda/cmux-pocket\",\"trustedFormulae\":[\"cmux-pocket\"]},\"platforms\":[\"darwin\"],\"scope\":\"system\",\"type\":\"tap\"}}";
   # END ENVY MANAGED SOURCES

@@ -36,6 +36,11 @@ in
         formulae = stringSelection "Darwin Homebrew formulae";
         casks = stringSelection "Darwin Homebrew casks";
         repositories = stringSelection "Darwin Homebrew repositories";
+        uninstall = lib.genAttrs [ "formulae" "casks" ] (kind: mkOption {
+          type = types.listOf (types.strMatching "[a-z0-9][a-z0-9+_.@-]*(/[a-z0-9][a-z0-9+_.@-]*/[a-z0-9][a-z0-9+_.@-]*)?");
+          default = [ ];
+          description = "Installed Homebrew ${kind} to explicitly uninstall during activation, without zap or autoremove. Conflicts with final installation selections are rejected.";
+        });
       };
     };
   };

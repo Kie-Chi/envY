@@ -86,6 +86,9 @@
   envy.software.pypi.tools.include = builtins.fromJSON "[{\"id\":\"browser-use\",\"name\":\"browser-use\",\"ref\":\"pypi:browser-use\"}]";
   # END ENVY MANAGED SOFTWARE
 
+  # Explicit Homebrew migration; retain T3 Code user data.
+  envy.darwin.software.homebrew.uninstall.casks = [ "t3-code" ];
+
   # Add hand-maintained machine-specific envy.* policy below this line.
 
   # BEGIN ENVY MANAGED AGENTS

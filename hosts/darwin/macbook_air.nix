@@ -42,6 +42,9 @@
   envy.storage.archive.mountSource = "";
 
   # --- VSCODE CONFIG ---
+  envy.t3code.service.host = "::";
+  envy.t3code.service.port = 3773;
+  envy.t3code.service.lan = true;
   envy.vscode.mode = "remote";
 
   # Shared rules are inherited; native maintenance is explicit and never scheduled.
@@ -62,7 +65,6 @@
 
   envy.darwin.software.homebrew.casks.include = [
     "steam"
-    "t3-code"
   ];
 
   envy.darwin.software.homebrew.casks.exclude = [
@@ -82,6 +84,9 @@
     "headroom"
   ];
   # END ENVY MANAGED SOFTWARE
+
+  # Explicit Homebrew migration; retain T3 Code user data.
+  envy.darwin.software.homebrew.uninstall.casks = [ "t3-code" ];
 
   # BEGIN ENVY MANAGED SOURCES
   envy.software.sources = builtins.fromJSON "{\"homebrew:shiquda/cmux-pocket\":{\"ecosystem\":\"homebrew\",\"label\":\"cmux Pocket\",\"owner\":\"machine\",\"parameters\":{\"tap\":\"shiquda/cmux-pocket\",\"trustedFormulae\":[\"cmux-pocket\"]},\"platforms\":[\"darwin\"],\"scope\":\"system\",\"type\":\"tap\"}}";

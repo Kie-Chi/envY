@@ -11,6 +11,8 @@ fetchPiExtension {
   hash = "sha512-VymX2fEg+aOSxsQwM2KIPtCxnu9zCjfAJR0eU0ZAwbmviypQ159UHAVxt6lTQDp85G/pr5HgNBE7Ox/ydYqxQA==";
   postUnpack = ''
     ${pkgs.patch}/bin/patch --batch --fuzz=0 -p1 < ${../../../../files/agents/patches/pi-queue-commands.patch}
+    cp ${../../../../files/agents/pi/queue-rpc.ts} "$out/queue-rpc.ts"
+    ${pkgs.patch}/bin/patch --batch --fuzz=0 -p1 < ${../../../../files/agents/patches/pi-queue-rpc-status.patch}
     ${lib.getExe pkgs.nodejs_24} ${./tests/pi-queue.mjs} \
       "$out" ${piPackage}/lib/pi/node_modules
   '';

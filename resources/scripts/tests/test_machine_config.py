@@ -102,6 +102,21 @@ class DarwinMachineConfigTests(unittest.TestCase):
     def test_refine_mounted_archive_accepts_mount_source(self):
         self.assert_archive_refinement("/Volumes/archive/restic", "//fixture@nas/share", [])
 
+    def test_service_port_round_trips_as_an_integer(self):
+        values = self.values()
+        values["envy.t3code.service.port"] = "4773"
+        with self.machine_file_patch(), patch.object(
+            machine_nix, "current_machine_id", return_value="test-mac"
+        ), patch.object(machine_nix, "set_device_machine_id"):
+            machine_nix.write_machine_nix(values)
+            read = machine_nix.read_machine_nix()
+        self.assertEqual(read["envy.t3code.service.port"], "4773")
+        self.assertIn("envy.t3code.service.port = 4773;", self.machine.read_text())
+        field = next(f for f in COMMON_MACHINE_FIELDS if f.path == "envy.t3code.service.port")
+        self.assertIsNone(field.validators[0]("4773"))
+        for invalid in ["0", "65536", "-1", "1.5", "not-a-port", "9" * 5000]:
+            self.assertIsNotNone(field.validators[0](invalid))
+
     def test_writer_preserves_hand_maintained_machine_policy(self):
         with self.machine_file_patch(), patch.object(
             machine_nix, "current_machine_id", return_value="test-mac"

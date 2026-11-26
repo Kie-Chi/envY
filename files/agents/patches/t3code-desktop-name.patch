@@ -1,0 +1,36 @@
+--- a/apps/desktop/src/app/DesktopEnvironment.ts
++++ b/apps/desktop/src/app/DesktopEnvironment.ts
+@@ -106,7 +106,7 @@
+   return {
+     baseName: APP_BASE_NAME,
+     stageLabel,
+-    displayName: `${APP_BASE_NAME} (${stageLabel})`,
++    displayName: input.isDevelopment ? `${APP_BASE_NAME} (Dev)` : APP_BASE_NAME,
+   };
+ }
+ 
+--- a/apps/desktop/src/app/DesktopAppIdentity.ts
++++ b/apps/desktop/src/app/DesktopAppIdentity.ts
+@@ -93,7 +93,7 @@
+     const commitHash = yield* resolveAboutCommitHash;
+     // Electron strips spaces but keeps parentheses in its User-Agent token, breaking Turnstile in preview sessions.
+     yield* electronApp.setName(
+-      `${environment.branding.baseName} ${environment.branding.stageLabel}`,
++      environment.isDevelopment ? "T3 Code Dev" : environment.branding.baseName,
+     );
+     yield* electronApp.setAboutPanelOptions({
+       applicationName: environment.displayName,
+--- a/apps/desktop/src/app/DesktopAppIdentity.test.ts
++++ b/apps/desktop/src/app/DesktopAppIdentity.test.ts
+@@ -200,9 +200,9 @@
+ 
+         const runtimeName = calls.setName[0];
+         assert.isDefined(runtimeName);
+-        assert.equal(runtimeName, `T3 Code ${stage}`);
++        assert.equal(runtimeName, stage === "Dev" ? "T3 Code Dev" : "T3 Code");
+         assert.match(runtimeName.replaceAll(" ", ""), /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/);
+-        assert.equal(calls.setAboutPanelOptions[0]?.applicationName, `T3 Code (${stage})`);
++        assert.equal(calls.setAboutPanelOptions[0]?.applicationName, stage === "Dev" ? "T3 Code (Dev)" : "T3 Code");
+       }),
+       { calls, environment },
+     );

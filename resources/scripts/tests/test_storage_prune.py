@@ -4,10 +4,12 @@ import copy
 import io
 import json
 import os
+import pty
 import re
 import shutil
 import subprocess
 import tempfile
+import termios
 import time
 import unittest
 from dataclasses import replace
@@ -109,17 +111,61 @@ class PruneFilesTests(unittest.TestCase):
         self.assertEqual(result["summary"]["deletedItems"], 0)
         self.assertTrue(self.file.exists())
 
-    def test_young_and_undersized_files_are_retained(self):
+    def test_young_cache_is_deleted_but_undersized_files_are_retained(self):
         young = self.root / "young.bin"
-        young.write_bytes(b"new")
+        young.write_bytes(b"new rebuildable cache")
         small = self.old_file("small.bin", b"x")
         self.policy = replace(self.policy, rules=tuple(replace(rule, min_size_bytes=5)
                                                       for rule in self.policy.rules))
         result = self.execute(self.prepare([young, small, self.file]))
-        self.assertTrue(young.exists())
+        self.assertFalse(young.exists())
         self.assertTrue(small.exists())
         self.assertFalse(self.file.exists())
-        self.assertEqual(result["summary"]["deletedItems"], 1)
+        self.assertEqual(result["summary"]["deletedItems"], 2)
+
+    def test_prune_ignores_future_timestamps_without_changing_run_age(self):
+        future = time.time() + 86400
+        os.utime(self.file, (future, future))
+        prepared = self.prepare()
+        self.assertEqual(prepared["summary"]["eligibleItems"], 1)
+        self.assertEqual(self.policy.rules[0].min_age_days, 30)
+        with patch.object(planner, "run_process", return_value=subprocess.CompletedProcess(
+                [], 0, json.dumps({"type": "MSG", "path": str(self.file),
+                                   "msg": "envy-storage-candidate"}) + "\n" +
+                json.dumps({"type": "REPORT", "error_count": 0}), "")):
+            normal = planner.plan(self.policy, self.state)
+        self.assertEqual(normal["candidates"], [])
+        with self.assertRaisesRegex(StorageError, "policy changed"):
+            lifecycle.execute(self.policy, self.state, prepared["planId"])
+        self.assertEqual(self.execute(prepared)["summary"]["deletedItems"], 1)
+
+    @unittest.skipUnless(shutil.which("organize"), "Requires organize")
+    def test_real_organize_selects_recent_files_without_name_or_age_filters(self):
+        os.utime(self.file, None)
+        environment = dict(os.environ, HOME=str(self.home),
+                           XDG_CONFIG_HOME=str(self.home / ".config"))
+        real_run = planner.run_process
+
+        def scan(argv, **kwargs):
+            result = real_run(argv, env=environment, **kwargs)
+            self.assertEqual(result.returncode, 0, f"{result.stdout}\n{result.stderr}")
+            return result
+
+        with patch.object(planner, "run_process", side_effect=scan):
+            prepared = pruning.prepare(self.policy, self.state)
+        self.assertEqual([item["path"] for item in prepared["candidates"]], [str(self.file)])
+        self.assertEqual(self.execute(prepared)["summary"]["deletedItems"], 1)
+        self.assertFalse(self.file.exists())
+
+    def test_archive_keeps_its_age_cutoff_even_with_prune_enabled(self):
+        self.archive_policy()
+        self.manifest["storage"]["rules"][0]["prune"] = True
+        self.policy = self.load_policy()
+        os.utime(self.file, None)
+        prepared = self.prepare()
+        self.assertEqual(prepared["candidates"], [])
+        self.assertEqual(self.execute(prepared)["summary"]["deletedItems"], 0)
+        self.assertTrue(self.file.exists())
 
     def test_symlinks_and_hardlinks_are_refused(self):
         symbolic = self.root / "symbolic.bin"
@@ -598,6 +644,42 @@ class PruneCliTests(unittest.TestCase):
         self.assertFalse(json.loads(result.stdout)["ok"])
         self.assertEqual(result.stderr, "npm:\nnative stdout\nnative failed\n")
 
+    def test_native_terminal_output_returns_to_column_zero_without_rich_wrapping(self):
+        lines = ["deleting '/nix/store/" + "a" * 120 + ".drv'\n",
+                 "deleting '/nix/store/second.drv'\n"]
+
+        def execute(policy, state, prepared, *, on_output):
+            on_output("nix", "start", "Collecting Nix store")
+            for line in lines:
+                on_output("nix", "stderr", line)
+            return self.completed
+
+        self.execute.side_effect = execute
+        for processed in (False, True):
+            with self.subTest(output_processing=processed):
+                master, slave = pty.openpty()
+                try:
+                    attrs = termios.tcgetattr(slave)
+                    attrs[1] |= termios.ONLCR
+                    if processed:
+                        attrs[1] |= termios.OPOST
+                    else:
+                        attrs[1] &= ~termios.OPOST
+                    termios.tcsetattr(slave, termios.TCSANOW, attrs)
+                    with os.fdopen(os.dup(slave), "w") as stream, \
+                            patch.object(log, "diagnostic_console", Console(file=stream, width=20)):
+                        result = self.invoke("--yes", "--json")
+                    self.assertEqual(result.exit_code, 0, str(result.exception))
+                    self.assertTrue(json.loads(result.stdout)["ok"])
+                    os.set_blocking(master, False)
+                    output = os.read(master, 4096).replace(b"\r\r\n", b"\r\n")
+                    expected = ("Collecting Nix store:\n" + "".join(lines)).replace("\n", "\r\n")
+                    self.assertEqual(output, expected.encode())
+                    self.assertEqual(termios.tcgetattr(slave), attrs)
+                finally:
+                    os.close(slave)
+                    os.close(master)
+
     def test_native_summary_reports_counts_sizes_and_unique_log_paths(self):
         logs = {"stdoutPath": "/fixture/stdout.log", "stderrPath": "/fixture/stderr.log",
                 "truncatedStreams": ["stderr"]}
@@ -668,6 +750,13 @@ class PruneCatalogTests(unittest.TestCase):
             control = root / "profile-state.bin"
             control.write_bytes(b"application data: retain")
             self.controls.append(control)
+        for relative in (".cache/nix", ".cache/codex-runtimes", ".cache/uv", ".cache/node",
+                         ".cache/npm", ".cache/envy/devshell", ".cache/envy/toolchains",
+                         ".cache/envy/storage-archive", ".cache/envy/project-artifacts"):
+            retained = self.home / relative / "retain.bin"
+            retained.parent.mkdir(parents=True, exist_ok=True)
+            retained.write_bytes(b"application data: retain")
+            self.controls.append(retained)
         self.assertTrue(self.targets)
         old = time.time() - 40 * 86400
         for path in sorted(self.home.rglob("*"), key=lambda entry: len(entry.parts), reverse=True):
@@ -676,14 +765,14 @@ class PruneCatalogTests(unittest.TestCase):
             "mode": "manual", "rules": [dict(rule, id=identifier) for identifier, rule in rules.items()]}}
         self.policy = policy_from_manifest(manifest, self.state, self.home / "checkout")
 
-    def commands(self):
+    def commands(self, active=()):
         real_run = planner.run_process
 
         def run(argv, **kwargs):
             if Path(argv[0]).name == "pgrep":
                 self.assertIn(argv[1], ("-x", "-f"))
                 re.compile(argv[2])
-                return subprocess.CompletedProcess(argv, 1, "", "")
+                return subprocess.CompletedProcess(argv, 0 if argv[2] in active else 1, "", "")
             self.assertEqual(Path(argv[0]).name, "organize")
             environment = dict(os.environ, HOME=str(self.home), XDG_CONFIG_HOME=str(self.home / ".config"))
             return real_run(argv, env=environment, **kwargs)
@@ -701,16 +790,34 @@ class PruneCatalogTests(unittest.TestCase):
         self.assertTrue(all(not path.exists() for path in self.targets))
         self.assertTrue(all(path.read_bytes() == b"application data: retain" for path in self.controls))
 
-    def test_recent_descendant_prevents_real_catalog_deletion(self):
-        recent = self.targets[0]
-        os.utime(recent / "data", None)
-        with self.commands(), patch.object(lifecycle, "assert_inactive"), patch.object(planner, "assert_inactive"):
+    def test_running_tools_keep_their_catalog_caches(self):
+        blocked_rules = {"envy-build-cache", "envy-swift-module-cache", "nvim-lua-cache"}
+        with self.commands(active=("cargo", "swiftc", "nvim")), \
+                patch.object(lifecycle, "assert_inactive"), patch.object(planner, "assert_inactive"):
             prepared = pruning.prepare(self.policy, self.state)
-            self.assertNotIn(str(recent), [item["path"] for item in prepared["candidates"]])
+            blocked = [item for item in prepared["candidates"] if item.get("blocked")]
+            self.assertEqual({item["rule"] for item in blocked}, blocked_rules)
             result = pruning.execute(self.policy, self.state, prepared)
         self.assertEqual(result["errors"], [])
-        self.assertEqual(result["summary"]["deletedItems"], len(self.targets) - 1)
-        self.assertEqual((recent / "data").read_bytes(), b"rebuildable GPU cache")
+        self.assertTrue(all(Path(item["path"]).exists() for item in blocked))
+        self.assertEqual(result["summary"]["skippedItems"], len(blocked))
+        self.assertEqual(result["summary"]["deletedItems"], len(self.targets) - len(blocked))
+        self.assertTrue(all(path.exists() for path in self.controls))
+
+    def test_prune_deletes_recent_and_future_catalog_caches_but_run_keeps_them(self):
+        for index, target in enumerate(self.targets):
+            stamp = time.time() + (86400 if index % 2 else 0)
+            os.utime(target / "data", (stamp, stamp))
+        with self.commands(), patch.object(lifecycle, "assert_inactive"), patch.object(planner, "assert_inactive"):
+            normal = planner.plan(self.policy, self.state)
+            self.assertEqual(normal["candidates"], [])
+            prepared = pruning.prepare(self.policy, self.state)
+            self.assertCountEqual([item["path"] for item in prepared["candidates"]],
+                                  [str(path) for path in self.targets])
+            result = pruning.execute(self.policy, self.state, prepared)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(result["summary"]["deletedItems"], len(self.targets))
+        self.assertTrue(all(not path.exists() for path in self.targets))
         self.assertTrue(all(path.exists() for path in self.controls))
 
 

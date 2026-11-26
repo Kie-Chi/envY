@@ -62,6 +62,9 @@ in
         "envy.git.email" = config.envy.git.email;
         "envy.habits.terminalScratchpad.gesture" = config.envy.habits.terminalScratchpad.gesture;
         "envy.habits.globalLauncher.gesture" = config.envy.habits.globalLauncher.gesture;
+        "envy.t3code.service.host" = config.envy.t3code.service.host;
+        "envy.t3code.service.port" = config.envy.t3code.service.port;
+        "envy.t3code.service.lan" = config.envy.t3code.service.lan;
         "envy.vscode.mode" = config.envy.vscode.mode;
         "envy.linux.desktop" = policy.desktop;
         "envy.linux.option" = policy.option;

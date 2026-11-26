@@ -54,6 +54,10 @@ async function harness(t, mode = "tui", initialEntries = []) {
   const entries = structuredClone(initialEntries);
   const notifications = [];
   const confirmations = [];
+  const statuses = new Map();
+  const statusUpdates = [];
+  const widgets = new Map();
+  const widgetUpdates = [];
   let confirmation = false;
   let aborts = 0;
   let editor;
@@ -62,20 +66,35 @@ async function harness(t, mode = "tui", initialEntries = []) {
   let draft = "";
   const terminal = { requestRender() {}, terminal: { rows: 40, columns: 100 } };
   const ctx = {
-    cwd, mode, hasUI: mode === "tui", isIdle: () => idle, isProjectTrusted: () => true,
+    cwd, mode, hasUI: mode === "tui" || mode === "rpc", isIdle: () => idle, isProjectTrusted: () => true,
     model: { contextWindow: 200000 },
     sessionManager: { getBranch: () => entries },
     abort() { aborts += 1; idle = true; },
     ui: {
       theme: themes.theme,
-      getEditorComponent: () => factory,
+      getEditorComponent: () => {
+        assert.equal(mode, "tui", "Only TUI may access terminal editors");
+        return factory;
+      },
       setEditorComponent(value) {
         factory = value;
         editor = value?.(terminal, themes.getEditorTheme(), keybindings);
       },
       getEditorText: () => editor?.getText() ?? draft,
       setEditorText(value) { draft = value; editor?.setText(value); },
-      setWidget() {},
+      setWidget(key, content) {
+        if (key === "queue-control-result") { widgets.set(key, content); return; }
+        if (key !== "queue-messages") return;
+        assert.equal(mode, "rpc");
+        widgetUpdates.push(content);
+        if (content === undefined) widgets.delete(key);
+        else widgets.set(key, content);
+      },
+      setStatus(key, text) {
+        statusUpdates.push({ key, text });
+        if (text === undefined) statuses.delete(key);
+        else statuses.set(key, text);
+      },
       notify: (message, level) => notifications.push({ message, level }),
       async confirm(title, message) {
         confirmations.push({ title, message });
@@ -106,7 +125,9 @@ async function harness(t, mode = "tui", initialEntries = []) {
   const press = key => { assert.ok(editor, "TUI editor must be installed"); editor.handleInput(keys[key]); };
   const snapshot = () => entries.findLast(entry => entry.customType === "pi-queue-steer:queue")?.data;
   return {
-    ctx, emit, input, press, sent, entries, notifications, confirmations, snapshot,
+    ctx, emit, input, press, sent, entries, notifications, confirmations, snapshot, statuses, statusUpdates, widgetUpdates,
+    queueMessages: () => widgets.has("queue-messages") ? JSON.parse(widgets.get("queue-messages")[0]) : undefined,
+    controlResult: () => widgets.has("queue-control-result") ? JSON.parse(widgets.get("queue-control-result")[0]) : undefined,
     commands: extension.commands,
     command: (args, name = "queue") => {
       const command = extension.commands.get(name);
@@ -481,7 +502,204 @@ test("completions carry usage hints and live row IDs through Pi's actual provide
   assert.equal((await suggestions("/queue remove steer")).items[0].value, "remove steer-2");
 });
 
-for (const mode of ["rpc", "json", "print"]) {
+test("RPC publishes follow-up contents separately from steer and keeps native input unchanged", async t => {
+  const h = await harness(t, "rpc");
+  assert.equal(h.editor, undefined);
+  assert.deepEqual(await h.input("Native input"), { action: "continue" });
+  h.setIdle(true);
+  await h.command("add First task\nKeep indentation");
+  await h.command("add 中文任务");
+  const text = h.statuses.get("queue");
+  assert.match(text, /^Queue: 2 pending; paused/);
+  assert.match(text, /follow-up-1: First task Keep indentation/);
+  assert.match(text, /follow-up-2: 中文任务/);
+  assert.deepEqual(h.queueMessages().items.map(row => [row.id, row.text]), [
+    ["follow-up-1", "First task\nKeep indentation"], ["follow-up-2", "中文任务"],
+  ]);
+  const updates = h.statusUpdates.length;
+  const widgetUpdates = h.widgetUpdates.length;
+  await h.command("steer Current run");
+  assert.equal(h.statuses.get("queue"), text, "Steers must not enter the follow-up status");
+  assert.equal(h.statusUpdates.length, updates, "Unchanged previews must be deduplicated");
+  assert.deepEqual(h.queueMessages().items.map(row => row.text), ["First task\nKeep indentation", "中文任务"], "Steers must not enter structured follow-ups");
+  assert.ok(h.widgetUpdates.length >= widgetUpdates, "The dispatch revision may change when steers change");
+  await h.command("list");
+  assert.match(h.notifications.at(-1).message, /steer-3 \[steer\]/);
+  const before = structuredClone(h.snapshot());
+  await h.command("edit follow-up-1");
+  assert.match(h.notifications.at(-1).message, /editing requires.*TUI/);
+  assert.deepEqual(h.snapshot(), before);
+  assert.deepEqual(h.sent, []);
+  await h.command("remove follow-up-1");
+  assert.match(h.statuses.get("queue"), /^Queue: 1 pending; paused.*follow-up-2: 中文任务/);
+  h.setConfirmation(true);
+  await h.command("clear");
+  assert.equal(h.statuses.has("queue"), false);
+  assert.equal(h.aborts, 0);
+});
+
+test("RPC delivery preserves lanes and removes consumed or shutdown status", async t => {
+  const h = await harness(t, "rpc");
+  await h.command("add Future A");
+  await h.command("steer Current run");
+  await h.command("add Future B");
+  assert.match(h.statuses.get("queue"), /^Queue: 2 pending; active/);
+  await h.emit("turn_end", { message: assistant });
+  assert.deepEqual(h.sent, [{ content: "Current run", options: { deliverAs: "steer" } }]);
+  await h.emit("agent_end", { messages: [assistant] });
+  assert.match(h.statuses.get("queue"), /^Queue: 1 pending; active.*Future B/);
+  await h.emit("agent_end", { messages: [assistant] });
+  assert.equal(h.statuses.has("queue"), false);
+  assert.deepEqual(h.sent.map(row => row.options.deliverAs), ["steer", "followUp", "followUp"]);
+  h.setIdle(true);
+  await h.command("add Parked task");
+  await h.command("resume");
+  assert.equal(h.sent.at(-1).content, "Parked task");
+  assert.equal(h.statuses.has("queue"), false);
+  await h.command("add Outgoing task");
+  await h.emit("session_shutdown", { reason: "new" });
+  assert.equal(h.queueMessages(), undefined);
+  assert.equal(h.statuses.has("queue"), false);
+  await h.emit("session_start", { reason: "new" });
+  assert.equal(h.statuses.has("queue"), false);
+});
+
+test("RPC previews bound long text and rows while list retains complete content", async t => {
+  const h = await harness(t, "rpc");
+  h.setIdle(true);
+  await h.command("add \u001b[32m检查\u001b[0m\n第二行\u0007");
+  await h.command("add " + "文".repeat(20000));
+  for (let i = 0; i < 12; i++) await h.command("add Task " + (i + 1));
+  const text = h.statuses.get("queue");
+  assert.match(text, /^Queue: 14 pending; paused/);
+  assert.ok(text.includes("检查 第二行"));
+  assert.ok(text.includes("文".repeat(400) + "…"));
+  assert.ok(text.includes("+6 more"));
+  assert.ok(text.length <= 4096);
+  assert.equal(h.queueMessages().items.length, 14);
+  assert.equal(h.queueMessages().items[0].text, "检查\n第二行");
+  assert.equal(h.queueMessages().items[1].text.length, 4000);
+  assert.equal(h.queueMessages().items[1].truncated, true);
+  assert.doesNotMatch(text, /[\u0000-\u001f\u007f]/u);
+  await h.command("list");
+  assert.ok(h.notifications.at(-1).message.includes("文".repeat(20000)));
+});
+
+test("RPC restores held rows and keeps failed sends visible and paused", async t => {
+  const entries = [{ type: "custom", customType: "pi-queue-steer:queue", data: {
+    version: 1, paused: false,
+    rows: [
+      { id: "steer-1", lane: "steer", text: "Current run", images: [], sequence: 1 },
+      { id: "follow-up-2", lane: "followUp", text: "Restored task", images: [], sequence: 2, paused: true },
+    ],
+  } }];
+  const h = await harness(t, "rpc", entries);
+  assert.match(h.statuses.get("queue"), /^Queue: 1 pending; paused.*follow-up-2 \(held\): Restored task/);
+  await h.command("remove steer-1");
+  await h.command("remove follow-up-2");
+  assert.equal(h.statuses.has("queue"), false);
+  h.setIdle(true);
+  await h.command("add Retry task");
+  h.failSend();
+  await h.command("resume");
+  assert.match(h.notifications.at(-1).message, /offline dispatch failure/);
+  assert.match(h.statuses.get("queue"), /^Queue: 1 pending; paused.*Retry task/);
+  assert.deepEqual(h.snapshot().rows.map(row => row.text), ["Retry task"]);
+  assert.deepEqual(h.sent, []);
+});
+
+test("RPC snapshots bound large queues and expose image counts without image data", async t => {
+  const image = { type: "image", mimeType: "image/png", data: "fixture-image-data" };
+  const rows = Array.from({ length: 80 }, (_, i) => ({
+    id: "follow-up-" + (i + 1), lane: "followUp", sequence: i + 1,
+    text: i === 0 ? "" : "文\n".repeat(4000), images: i === 0 ? [image] : [], paused: i === 0,
+  }));
+  const h = await harness(t, "rpc", [{ type: "custom", customType: "pi-queue-steer:queue", data: { version: 1, rows, paused: true } }]);
+  const messages = h.queueMessages();
+  assert.equal(messages.total, 80);
+  assert.equal(messages.items.length, 64);
+  assert.equal(messages.items[0].paused, true);
+  assert.equal(messages.items[0].imageCount, 1);
+  assert.equal(messages.items[0].text, "");
+  assert.ok(messages.items[1].truncated);
+  const serialized = JSON.stringify(messages);
+  assert.ok(serialized.length < 1_048_576);
+  assert.ok(!serialized.includes(image.data));
+});
+
+const queueControl = async (h, action, extra = {}) => {
+  const requestId = "test-control-" + action;
+  await h.command(Buffer.from(JSON.stringify({
+    action, requestId, revision: h.queueMessages()?.plan?.revision ?? "stale", ...extra,
+  })).toString("base64url"), "queue-control");
+  const result = h.controlResult();
+  assert.equal(result.requestId, requestId);
+  if (result.error) throw new Error(result.error);
+};
+
+test("RPC delivery plan follows the real head and preserves row holds", async t => {
+  const h = await harness(t, "rpc");
+  await h.command("steer Separate steering");
+  await h.command("add Follow-up after steer");
+  assert.equal(h.queueMessages().total, 1);
+  assert.equal(h.queueMessages().plan.state, "steer-first");
+  assert.equal(h.queueMessages().plan.headId, null);
+  assert.equal(h.queueMessages().items[0].dispatchHead, false);
+  await h.command("remove steer-1");
+  assert.equal(h.queueMessages().plan.state, "after-run");
+  assert.equal(h.queueMessages().items[0].dispatchHead, true);
+  await queueControl(h, "row-pause", { id: "follow-up-2", paused: true });
+  assert.equal(h.queueMessages().plan.state, "row-paused");
+  await queueControl(h, "pause", { paused: true });
+  assert.equal(h.queueMessages().plan.state, "paused");
+  await queueControl(h, "pause", { paused: false });
+  assert.equal(h.queueMessages().plan.state, "row-paused");
+  assert.deepEqual(h.sent, []);
+});
+
+test("RPC controls edit full text on the same queue and reject stale or foreign edits", async t => {
+  const h = await harness(t, "rpc");
+  h.setIdle(true);
+  const text = "文".repeat(65536);
+  await h.command("add " + text);
+  const revision = h.queueMessages().plan.revision;
+  await queueControl(h, "begin-edit", { id: "follow-up-1", owner: "client-a" });
+  assert.equal(h.queueMessages().plan.editor.text, text);
+  assert.equal(h.queueMessages().items[0].held, true);
+  await assert.rejects(queueControl(h, "save-edit", { id: "follow-up-1", owner: "other", text: "wrong" }), /edit has ended/);
+  await assert.rejects(queueControl(h, "remove", { id: "follow-up-1", revision }), /plan changed/);
+  await queueControl(h, "cancel-edit", { id: "follow-up-1", owner: "client-a" });
+  assert.equal(h.snapshot().rows[0].text, text, "Cancel must preserve the full original");
+  await queueControl(h, "begin-edit", { id: "follow-up-1", owner: "client-a" });
+  await queueControl(h, "renew-edit", { id: "follow-up-1", owner: "client-a" });
+  await queueControl(h, "save-edit", { id: "follow-up-1", owner: "client-a", text: "Edited\n正文" });
+  assert.equal(h.snapshot().rows[0].text, "Edited\n正文");
+  assert.equal(h.queueMessages().plan.editor, null);
+  assert.equal(h.editor, undefined, "RPC must never use Pi's terminal editor");
+  assert.deepEqual(h.sent, []);
+});
+
+test("RPC controls reorder and remove follow-ups without touching steer or attachments", async t => {
+  const image = { type: "image", mimeType: "image/png", data: "preserved-image" };
+  const rows = [
+    { id: "follow-up-1", lane: "followUp", sequence: 1, text: "Image", images: [image], paused: false },
+    { id: "steer-2", lane: "steer", sequence: 2, text: "Steer", images: [], paused: false },
+    { id: "follow-up-3", lane: "followUp", sequence: 3, text: "Last", images: [], paused: false },
+  ];
+  const h = await harness(t, "rpc", [{ type: "custom", customType: "pi-queue-steer:queue", data: { version: 1, rows, paused: true } }]);
+  await queueControl(h, "move", { id: "follow-up-3", direction: -1 });
+  assert.deepEqual(h.queueMessages().items.map(row => row.id), ["follow-up-3", "follow-up-1"]);
+  await assert.rejects(queueControl(h, "remove", { id: "steer-2" }), /follow-up message/);
+  await queueControl(h, "begin-edit", { id: "follow-up-1", owner: "image-editor" });
+  await queueControl(h, "save-edit", { id: "follow-up-1", owner: "image-editor", text: "New caption" });
+  assert.deepEqual(h.snapshot().rows.find(row => row.id === "follow-up-1").images, [image]);
+  await queueControl(h, "remove", { id: "follow-up-3" });
+  await queueControl(h, "remove", { id: "follow-up-1" });
+  assert.equal(h.queueMessages(), undefined);
+  assert.deepEqual(h.snapshot().rows.map(row => row.id), ["steer-2"]);
+});
+
+for (const mode of ["json", "print"]) {
   test(mode + " input passes through without a TUI editor", async t => {
     const h = await harness(t, mode);
     assert.equal(h.editor, undefined);
@@ -490,6 +708,8 @@ for (const mode of ["rpc", "json", "print"]) {
     await h.command("add Must not enqueue");
     await h.command("clear");
     assert.match(h.notifications.at(-1).message, /requires Pi's interactive TUI/);
+    assert.equal(h.statusUpdates.length, 0, "Non-UI modes must not emit queue statuses");
+    assert.equal(h.widgetUpdates.length, 0, "Non-UI modes must not emit queue widgets");
     assert.equal(h.confirmations.length, 0);
     assert.equal(h.entries.length, 0);
     assert.deepEqual(h.sent, []);

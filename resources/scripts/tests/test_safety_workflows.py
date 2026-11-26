@@ -353,6 +353,25 @@ sops:
         self.assertNotIn("token=secret", rendered)
         self.assertIn("<redacted>", rendered)
 
+    def test_esudo_business_failure_is_not_replayed_after_authentication(self):
+        for capture in (False, True):
+            with self.subTest(capture=capture):
+                authenticated = subprocess.CompletedProcess(["sudo", "-S", "-v"], 0, "", "")
+                failed = CommandError(subprocess.CompletedProcess(
+                    ["sudo", "-n", "fake-activation"], 17, "", "activation failed",
+                ))
+                with patch.object(utils, "_get_sudo_passwd", return_value="fictional"), patch.object(
+                    utils, "run_process", side_effect=[authenticated, failed]
+                ) as run, patch.object(utils.sys.stdin, "isatty", return_value=True):
+                    with self.assertRaises(CommandError) as raised:
+                        utils.esudo("fake-activation", capture=capture)
+                self.assertEqual(raised.exception.returncode, 17)
+                self.assertEqual([call.args[0] for call in run.call_args_list], [
+                    ["sudo", "-S", "-v"], ["sudo", "-n", "fake-activation"],
+                ])
+                self.assertNotIn("stdin_data", run.call_args_list[1].kwargs)
+                self.assertTrue(run.call_args_list[1].kwargs["check"])
+
     def test_esudo_interactive_fallback_failure_propagates(self):
         first = subprocess.CompletedProcess(["sudo"], 1, "", "bad password")
         failed = CommandError(subprocess.CompletedProcess(["sudo"], 7, "", "denied"))
@@ -664,6 +683,10 @@ class EsudoAuthenticationTests(unittest.TestCase):
         result = utils.esudo("true", capture=True)
         self.assertEqual(result.stdout, "legacy output")
         self.assertEqual(self.stdout.getvalue(), "legacy output\n")
+        self.assertEqual([call.args[0] for call in self.run.call_args_list], [
+            ["sudo", "-S", "-v"], ["sudo", "-n", "true"],
+        ])
+        self.assertTrue(self.run.call_args_list[0].kwargs["capture"])
         self.assertIn("password is given (******Z) source=sops", self.stderr.getvalue())
         self.assertIn("authentication succeeded", self.stderr.getvalue())
         self.assert_no_secret(self.run.call_args.args)
@@ -708,7 +731,7 @@ class EsudoAuthenticationTests(unittest.TestCase):
         self.assertEqual(self.probe.call_args.args[0], [self.binary, "-n", "-v"])
         self.assertEqual(
             [call.args[0] for call in self.run.call_args_list],
-            [[self.binary, "-S", "true"], [self.binary, "-n", "true"]],
+            [[self.binary, "-S", "-v"], [self.binary, "-n", "true"]],
         )
 
     def test_default_without_credentials_and_tty_keeps_exit_behavior(self):

@@ -137,6 +137,9 @@ in
         "envy.darwin.services.mihomo.mode" = policy.services.mihomo.mode;
         "envy.darwin.services.mihomo.tun" = policy.services.mihomo.tun;
         "envy.darwin.services.openssh.mode" = policy.services.openssh.mode;
+        "envy.t3code.service.host" = config.envy.t3code.service.host;
+        "envy.t3code.service.port" = config.envy.t3code.service.port;
+        "envy.t3code.service.lan" = config.envy.t3code.service.lan;
         "envy.vscode.mode" = config.envy.vscode.mode;
         "envy.mirrors.mode" = config.envy.mirrors.mode;
         "envy.storage.mode" = homeStorage.mode;
@@ -191,6 +194,7 @@ in
         ];
       };
       software.sources = config.envy.software.sources;
+      software.homebrew.uninstall = lib.mapAttrs (_: lib.unique) softwarePolicy.homebrew.uninstall;
       software.groups = {
         "nix.user.package" = manifestLib.group {
           label = "Nix packages";

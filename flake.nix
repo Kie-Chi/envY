@@ -59,6 +59,7 @@
       url = "github:utensils/mcp-nixos";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    nix-t3code.url = "github:limwa/nix-t3code";
     pi = {
       # Use the GitHub fetcher so flake.lock records an immutable commit rev.
       # The API tarball endpoint for a branch can be re-packed in place and
@@ -96,6 +97,13 @@
             inputs.${binding.input}
         ) [ "darwin" "linux" ]
       ) softwareSourceBindings;
+      t3codePackages = lib.genAttrs [ darwinSystem linuxSystem ] (system:
+        import ./modules/agents/providers/t3code/package.nix {
+          inherit lib;
+          pkgs = nixpkgs.legacyPackages.${system};
+          package = inputs.nix-t3code.packages.${system}.t3code-nightly;
+          electron = inputs.nix-t3code.inputs.nixpkgs.legacyPackages.${system}.electron_44;
+        });
       sharedSpecialArgs = machineId: platform: system: {
         inherit machineId;
         softwareSourcePackages = softwareSourcePackagesFor system;
@@ -115,6 +123,7 @@
         mcpNixosPackage = inputs.mcp-nixos.packages.${system}.default;
         piSource = inputs.pi.outPath;
         piPackage = inputs.pi.packages.${system}.default;
+        t3codePackage = t3codePackages.${system};
       };
 
       mkDarwinConfiguration = fileName: _:
@@ -384,13 +393,15 @@
           bash -n resources/scripts/mirror-env.sh
           bash -n ${./resources/scripts/flake-source-mirror.sh}
           bash -n resources/scripts/nix-trust.sh
+          bash -n modules/desktops/darwin/check-app-management.sh
           shellcheck -x envy install.sh setup.sh requires.sh \
             resources/scripts/mirror-env.sh resources/scripts/flake-source-mirror.sh \
             resources/scripts/nix-trust.sh resources/scripts/nix-darwin-etc.sh \
             resources/scripts/spk resources/scripts/ppack resources/scripts/scrctl \
             resources/helpers/fix-pipewire resources/helpers/nscrctl \
             resources/helpers/quake resources/helpers/screenshot \
-            modules/agents/amux/image/entry.sh
+            modules/agents/amux/image/entry.sh \
+            modules/desktops/darwin/check-app-management.sh
           # Sourced fragments carry no shebang; name the shell that reads them.
           shellcheck -s sh modules/agents/amux/image/profile.sh
           shellcheck -s bash files/fcitx/deploy.sh
@@ -877,10 +888,16 @@
         assert import ./checks/habit-readback.nix { inherit inputs; };
         assert platformOptionBoundaries;
         assert import ./checks/homebrew-trust.nix { inherit lib darwinConfigurations; };
+        assert import ./checks/homebrew-uninstall.nix { inherit lib darwinConfigurations homeConfigurations; };
         assert import ./checks/terminal-themes.nix { inherit lib darwinConfigurations homeConfigurations; };
         nixpkgs.legacyPackages.${system}.runCommand "envy-platform-option-boundaries" { } ''
           touch $out
         '';
+      mkT3CodeSettingsCheck = system:
+        import ./checks/t3code-settings.nix {
+          inherit lib darwinConfigurations homeConfigurations;
+          pkgs = nixpkgs.legacyPackages.${system};
+        };
       mkStorageRulesCheck = system:
         assert import ./checks/storage-rules.nix { inherit lib; };
         nixpkgs.legacyPackages.${system}.runCommand "envy-storage-rule-selection" { } ''
@@ -892,6 +909,7 @@
       inherit darwinConfigurations homeConfigurations softwareSourcePackages softwareSourceBindings;
       legacyPackages = softwareSourcePackages;
 
+      packages.aarch64-darwin.t3code-nightly = t3codePackages.aarch64-darwin;
       packages.aarch64-darwin.envy = mkEnvyRuntime "aarch64-darwin";
       packages.aarch64-darwin.setup = mkEnvySetupRuntime "aarch64-darwin";
       packages.aarch64-darwin.default = self.packages.aarch64-darwin.envy;
@@ -904,6 +922,7 @@
         program = lib.getExe self.packages.aarch64-darwin.setup;
       };
 
+      packages.x86_64-linux.t3code-nightly = t3codePackages.x86_64-linux;
       packages.x86_64-linux.envy = mkEnvyRuntime "x86_64-linux";
       packages.x86_64-linux.setup = mkEnvySetupRuntime "x86_64-linux";
       packages.x86_64-linux.default = self.packages.x86_64-linux.envy;
@@ -919,6 +938,7 @@
       devShells.aarch64-darwin.default = mkDevShell "aarch64-darwin";
       devShells.x86_64-linux.default = mkDevShell "x86_64-linux";
       checks.aarch64-darwin.platform-option-boundaries = mkPlatformOptionCheck "aarch64-darwin";
+      checks.aarch64-darwin.t3code-settings = mkT3CodeSettingsCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-python-tests = mkEnvyPythonCheck "aarch64-darwin";
       checks.aarch64-darwin.envy-storage-tests = mkEnvyStorageCheck "aarch64-darwin";
       checks.aarch64-darwin.storage-rule-selection = mkStorageRulesCheck "aarch64-darwin";
@@ -942,6 +962,7 @@
       checks.aarch64-darwin.pi-diff-tests = mkEnvyPiDiffCheck "aarch64-darwin";
       checks.aarch64-darwin.pi-coexist-tests = mkEnvyPiCoexistCheck "aarch64-darwin";
       checks.x86_64-linux.platform-option-boundaries = mkPlatformOptionCheck "x86_64-linux";
+      checks.x86_64-linux.t3code-settings = mkT3CodeSettingsCheck "x86_64-linux";
       checks.x86_64-linux.linux-policy-boundaries = linuxPolicyCheck;
       checks.x86_64-linux.envy-python-tests = mkEnvyPythonCheck "x86_64-linux";
       checks.x86_64-linux.envy-storage-tests = mkEnvyStorageCheck "x86_64-linux";

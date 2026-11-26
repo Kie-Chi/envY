@@ -3,7 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createRequire, syncBuiltinESMExports } from "node:module";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { spawn } from "node:child_process";
 import { test, after } from "node:test";
 
 // Load the real extension with the host Pi modules, without model requests.
@@ -42,6 +43,7 @@ const { createGoal } = await jiti.import(path.join(extensionRoot, "extensions/go
 const { acquireGoalLock } = await jiti.import(path.join(extensionRoot, "extensions/storage/goal-lock.ts"));
 const { goalDraftingPrompt } = await jiti.import(path.join(extensionRoot, "extensions/goal-draft.ts"));
 const settings = await jiti.import(path.join(extensionRoot, "extensions/goal-settings.ts"));
+const { goalRpcStatus } = await jiti.import(path.join(extensionRoot, "extensions/goal-rpc.ts"));
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "envy-pi-goal-"));
 process.env.PI_CODING_AGENT_DIR = path.join(root, "agent");
@@ -62,13 +64,14 @@ after(() => {
 });
 let fixtureId = 0;
 
-async function harness(cwd = path.join(root, "project-" + ++fixtureId), entries = []) {
+async function harness(cwd = path.join(root, "project-" + ++fixtureId), entries = [], renderUI = false) {
   fs.mkdirSync(cwd, { recursive: true });
   files.invalidateGoalPoolCache();
   settings.invalidateGoalSettingsCache();
   const tools = new Map();
   const handlers = new Map();
   const notifications = [];
+  const statuses = [];
   const widgets = [];
   const sessionId = "session-" + ++fixtureId;
   const api = {
@@ -91,15 +94,18 @@ async function harness(cwd = path.join(root, "project-" + ++fixtureId), entries 
       notify: (message, type) => notifications.push({ message, type }),
       confirm: async () => true,
       select: async (_title, options) => options[0],
-      setStatus() {}, setWidget: (key, value) => widgets.push({ key, value }),
+      setStatus: (key, text) => statuses.push({ key, text }),
+      setWidget: (key, value) => {
+        if (ctx.mode !== "rpc" || typeof value !== "function") widgets.push({ key, value });
+      },
       onTerminalInput: () => () => {}, setWorkingVisible() {},
     },
   };
   goalExtension(api);
   const core = api._goalCore;
   await core.loadState(ctx);
-  // UI throttling is irrelevant to state tests; exercise rendering directly.
-  core.updateUI = () => {};
+  // State tests can skip UI; display tests exercise the real coalesced update.
+  if (!renderUI) core.updateUI = () => {};
   const call = (name, args = {}) => tools.get(name).execute("test-call", args, undefined, undefined, ctx);
   const clear = () => core.invokeGoalCommand("goal-clear", "", ctx);
   const seed = () => {
@@ -120,7 +126,7 @@ async function harness(cwd = path.join(root, "project-" + ++fixtureId), entries 
     return changed;
   };
   const success = () => notifications.some(note => note.message === "Goal cleared and archived.");
-  return { core, ctx, call, clear, seed, disk, active, archived, externalEdit, notifications, widgets, handlers, entries, success };
+  return { core, ctx, call, clear, seed, disk, active, archived, externalEdit, notifications, statuses, widgets, handlers, entries, success };
 }
 
 for (const stale of [false, true]) {
@@ -609,4 +615,231 @@ test("task snapshot overflow rebuilds bounded history with the current authorita
     appendToolTurn(base, i);
   }
   assert.ok(retention.contents("task-bound").length <= MAX_RETAINED_LIVE_TAILS);
+});
+
+
+const displayTasks = [
+  { id: "spec", title: "Draft the specification", status: "complete" },
+  { id: "build", title: "Build the environment", status: "pending", subtasks: [
+    { id: "accept", title: "Run acceptance tests", status: "pending" },
+  ] },
+  { id: "analyze", title: "Analyze evidence", status: "pending" },
+];
+const renderGoal = async (h, goal) => {
+  h.core.setGoal(goal, h.ctx, false);
+  await Promise.resolve();
+};
+const currentStatus = h => h.statuses.filter(status => status.key === "goal").at(-1)?.text;
+const currentTasks = h => {
+  const lines = h.widgets.filter(widget => widget.key === "goal-tasks").at(-1)?.value;
+  return lines ? JSON.parse(lines[0]) : undefined;
+};
+
+test("RPC shows the parent phase and current child, without a terminal widget", async () => {
+  const h = await harness(undefined, [], true);
+  const goal = { ...h.seed(), taskList: { tasks: displayTasks }, currentTaskId: "accept" };
+  await renderGoal(h, goal);
+  assert.match(currentStatus(h), /Phase 2\/3: Build the environment/);
+  assert.match(currentStatus(h), /Task: Run acceptance tests/);
+  assert.match(currentStatus(h), /1\/3 done/);
+  assert.equal(h.widgets.some(widget => typeof widget.value === "function"), false);
+  assert.deepEqual(currentTasks(h).tasks.map(task => [task.id, task.depth]), [["spec", 0], ["build", 0], ["accept", 1], ["analyze", 0]]);
+  assert.equal(currentTasks(h).currentTaskId, "accept");
+  assert.equal(currentTasks(h).currentTaskInferred, false);
+  const widgets = h.widgets.length;
+  const checkpoints = h.notifications.length;
+  await renderGoal(h, { ...goal, usage: { ...goal.usage, tokensUsed: 100, activeSeconds: 20 } });
+  assert.equal(h.notifications.length, checkpoints, "Usage ticks must not flood the mobile work log");
+  assert.equal(h.widgets.length, widgets, "Usage ticks must not resend the full task tree");
+  await renderGoal(h, { ...goal, currentTaskId: "analyze" });
+  assert.match(currentStatus(h), /Phase 3\/3: Analyze evidence/);
+  assert.equal(h.notifications.length, checkpoints + 1);
+});
+
+test("RPC refreshes other stages even when the current summary does not change", async () => {
+  const h = await harness(undefined, [], true);
+  const goal = { ...h.seed(), taskList: { tasks: displayTasks }, currentTaskId: "accept" };
+  await renderGoal(h, goal);
+  const summary = currentStatus(h), notices = h.notifications.length, widgets = h.widgets.length;
+  await renderGoal(h, { ...goal, taskList: { tasks: displayTasks.map(task => task.id === "analyze" ? { ...task, title: "Inspect the final evidence" } : task) } });
+  assert.equal(currentStatus(h), summary);
+  assert.equal(h.notifications.length, notices);
+  assert.equal(h.widgets.length, widgets + 1);
+  assert.equal(currentTasks(h).tasks.at(-1).title, "Inspect the final evidence");
+  await renderGoal(h, null);
+  assert.equal(currentTasks(h), undefined);
+});
+
+test("RPC labels inferred focus, lifecycle changes and audits, then clears stale status", async () => {
+  const h = await harness(undefined, [], true);
+  const goal = { ...h.seed(), taskList: { tasks: displayTasks } };
+  await renderGoal(h, goal);
+  assert.match(currentStatus(h), /Next phase 2\/3/);
+  assert.equal(currentTasks(h).currentTaskInferred, true);
+  await renderGoal(h, { ...goal, status: "paused", stopReason: "user", pauseReason: "Awaiting review" });
+  assert.match(currentStatus(h), /Paused \(user\).*Reason: Awaiting review/);
+  await renderGoal(h, { ...goal, status: "blocked", pauseReason: "Fixture unavailable" });
+  assert.match(currentStatus(h), /Blocked.*Reason: Fixture unavailable/);
+  await renderGoal(h, { ...goal, status: "budget_limited" });
+  assert.match(currentStatus(h), /Budget limited/);
+  await renderGoal(h, { ...goal, autoContinue: true });
+  assert.match(currentStatus(h), /In progress/);
+  const stalled = { settings: {}, otherOpenGoals: 0, auditProgress: null, auditResult: null, stalled: true };
+  assert.match(goalRpcStatus(goal, stalled), /Stalled/);
+  assert.match(goalRpcStatus({ ...goal, status: "complete" }, stalled), /Complete/);
+  h.core.auditProgress = { phase: "thinking", recentOutput: [], elapsedMs: 10 };
+  await renderGoal(h, goal);
+  assert.match(currentStatus(h), /Auditing/);
+  const checkpoints = h.notifications.length;
+  h.core.auditProgress = { ...h.core.auditProgress, elapsedMs: 100 };
+  await renderGoal(h, goal);
+  assert.equal(h.notifications.length, checkpoints);
+  h.core.auditProgress = null;
+  h.core.auditResult = { verdict: "approved", report: "Offline audit", at: new Date().toISOString() };
+  await renderGoal(h, { ...goal, status: "complete", taskList: { tasks: displayTasks.map(task => ({ ...task, status: "complete" })) } });
+  assert.match(currentStatus(h), /Complete.*3\/3 done.*Audit: approved/);
+  await renderGoal(h, null);
+  assert.equal(currentStatus(h), undefined);
+});
+
+test("RPC respects hidden unfocused goals and disabled tasks, and bounds plain text", async () => {
+  const h = await harness(undefined, [], true);
+  const goal = { ...h.seed(), objective: "\x1b[31mApproved plan\x1b[0m\nConstraints stay private to the objective.",
+    taskList: { tasks: displayTasks }, currentTaskId: "accept" };
+  await renderGoal(h, goal);
+  assert.doesNotMatch(currentStatus(h), /\x1b|\n/);
+  fs.mkdirSync(path.join(h.ctx.cwd, ".pi"), { recursive: true });
+  fs.writeFileSync(path.join(h.ctx.cwd, ".pi/pi-goal-x-settings.json"), JSON.stringify({ disableTasks: true }));
+  settings.invalidateGoalSettingsCache();
+  await renderGoal(h, { ...goal, pauseReason: "x".repeat(10000), status: "blocked" });
+  assert.doesNotMatch(currentStatus(h), /Phase|Task:|done/);
+  assert.equal(currentTasks(h), undefined);
+  assert.ok(currentStatus(h).length < 750);
+  await renderGoal(h, null);
+  assert.equal(currentStatus(h), undefined);
+  h.core.clearGoalWidget(h.ctx);
+  await renderGoal(h, goal);
+  assert.ok(currentStatus(h), "Reset must allow the same goal to publish again");
+});
+
+test("TUI keeps its component dashboard and headless mode emits no display", async () => {
+  const h = await harness(undefined, [], true);
+  h.ctx.mode = "tui";
+  await renderGoal(h, h.seed());
+  assert.equal(typeof h.widgets.find(widget => widget.value !== undefined)?.value, "function");
+  assert.equal(currentStatus(h), undefined);
+  assert.equal(h.notifications.length, 0);
+  h.ctx.hasUI = false;
+  const count = h.statuses.length;
+  await renderGoal(h, { ...h.core.state.goal, status: "paused" });
+  assert.equal(h.statuses.length, count);
+});
+
+test("real RPC transports goal checkpoints without model calls or terminal components", { timeout: 20000 }, async t => {
+  const cwd = path.join(root, "rpc-project");
+  const home = path.join(root, "rpc-home");
+  fs.mkdirSync(cwd); fs.mkdirSync(home);
+  const fixturePath = path.join(root, "rpc-goal-fixture.ts");
+  fs.writeFileSync(fixturePath, `
+import goalExtension from ${JSON.stringify(pathToFileURL(path.join(extensionRoot, "extensions/goal.ts")).href)};
+import { createGoal } from ${JSON.stringify(pathToFileURL(path.join(extensionRoot, "extensions/goal-record.ts")).href)};
+export default function(pi) {
+  goalExtension(pi);
+  pi.registerCommand("fixture-goal-ui", { description: "Offline RPC fixture", handler: async (_args, ctx) => {
+    const core = pi._goalCore;
+    const goal = { ...createGoal({ objective: "Approved RPC fixture", autoContinue: false }),
+      taskList: { tasks: ${JSON.stringify(displayTasks)} }, currentTaskId: "accept" };
+    const show = async value => { core.setGoal(value, ctx, false); await Promise.resolve(); };
+    await show(goal);
+    await show(goal);
+    await show({ ...goal, currentTaskId: "analyze" });
+    await show({ ...goal, status: "paused", stopReason: "user" });
+    core.auditProgress = { phase: "thinking", recentOutput: [], elapsedMs: 1 };
+    await show(goal);
+    core.auditProgress = null;
+    await show({ ...goal, status: "complete" });
+    await show(null);
+  } });
+}
+`);
+  const guardPath = path.join(root, "rpc-network-guard.mjs");
+  fs.writeFileSync(guardPath, `
+import http from "node:http";
+import https from "node:https";
+import net from "node:net";
+import tls from "node:tls";
+import http2 from "node:http2";
+import { syncBuiltinESMExports } from "node:module";
+const forbidden = () => { throw new Error("Network forbidden in RPC regression"); };
+globalThis.fetch = forbidden;
+http.request = http.get = https.request = https.get = forbidden;
+net.connect = net.createConnection = net.Socket.prototype.connect = tls.connect = http2.connect = forbidden;
+syncBuiltinESMExports();
+`);
+  const child = spawn(process.execPath, [path.join(nodeModules, "@earendil-works/pi-coding-agent/dist/cli.js"),
+    "--mode", "rpc", "--offline", "--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes",
+    "--extension", fixturePath], { cwd, env: {
+      PATH: path.dirname(process.execPath) + ":/usr/bin:/bin", HOME: home, TMPDIR: root,
+      XDG_CONFIG_HOME: path.join(home, ".config"), XDG_CACHE_HOME: path.join(home, ".cache"),
+      XDG_DATA_HOME: path.join(home, ".local/share"), XDG_STATE_HOME: path.join(home, ".local/state"),
+      PI_CODING_AGENT_DIR: path.join(home, ".pi/agent"), PI_OFFLINE: "1", PI_GOAL_AUTO_CONFIRM: "1",
+      PI_GOAL_GLOBAL_SETTINGS_FILE: process.env.PI_GOAL_GLOBAL_SETTINGS_FILE,
+      NODE_OPTIONS: "--import=" + pathToFileURL(guardPath).href,
+    }, stdio: ["pipe", "pipe", "pipe"] });
+  t.after(() => { if (child.exitCode === null) child.kill("SIGKILL"); });
+  const records = [];
+  const pending = new Map();
+  let buffer = "", stderr = "";
+  child.stderr.on("data", chunk => { stderr += chunk; });
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", chunk => {
+    buffer += chunk;
+    let end;
+    while ((end = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
+      try {
+        const record = JSON.parse(line);
+        records.push(record);
+        if (record.type === "response") pending.get(record.id)?.resolve(record);
+      } catch (error) { for (const request of pending.values()) request.reject(error); }
+    }
+  });
+  const exited = new Promise((resolve, reject) => {
+    child.on("error", reject);
+    child.on("exit", code => {
+      for (const request of pending.values()) request.reject(new Error("RPC exited: " + code + " " + stderr));
+      resolve(code);
+    });
+  });
+  const request = (id, command) => new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+    child.stdin.write(JSON.stringify({ id, ...command }) + "\n");
+  }).finally(() => pending.delete(id));
+  assert.equal((await request("ready", { type: "get_state" })).success, true, stderr);
+  const response = await request("display", { type: "prompt", message: "/fixture-goal-ui" });
+  assert.equal(response.success, true, response.error);
+  assert.equal(response.data.disposition, "handled");
+  const statuses = records.filter(record => record.type === "extension_ui_request" && record.method === "setStatus" && record.statusKey === "goal");
+  const text = statuses.map(record => record.statusText ?? "").join("\n");
+  assert.match(text, /Phase 2\/3: Build the environment.*Task: Run acceptance tests/);
+  assert.match(text, /Phase 3\/3: Analyze evidence/);
+  assert.match(text, /Paused \(user\)/);
+  assert.match(text, /Auditing/);
+  assert.match(text, /Complete/);
+  assert.equal(statuses.at(-1).statusText, undefined);
+  const checkpoints = records.filter(record => record.type === "extension_ui_request" && record.method === "notify" && record.message.startsWith("Goal:"));
+  assert.equal(checkpoints.length, 5, "Duplicate state must not emit duplicate mobile checkpoints");
+  assert.equal(records.some(record => record.type === "agent_start" || record.type === "extension_error"), false, stderr);
+  const taskWidgets = records.filter(record => record.method === "setWidget" && record.widgetKey === "goal-tasks");
+  const snapshots = taskWidgets.filter(record => record.widgetLines !== undefined).map(record => JSON.parse(record.widgetLines[0]));
+  assert.equal(snapshots.length, 5, "Only task or lifecycle changes resend the full tree");
+  assert.deepEqual(snapshots[0].tasks.map(task => task.id), ["spec", "build", "accept", "analyze"]);
+  assert.equal(snapshots[0].currentTaskId, "accept");
+  assert.equal(snapshots[1].currentTaskId, "analyze");
+  assert.equal(snapshots.at(-1).status, "complete");
+  assert.equal(taskWidgets.at(-1).widgetLines, undefined);
+  assert.equal(records.some(record => record.method === "setWidget" && record.widgetKey !== "goal-tasks" && record.widgetLines !== undefined), false);
+  child.stdin.end();
+  assert.equal(await exited, 0, stderr);
+  assert.equal(buffer, "");
 });

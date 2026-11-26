@@ -110,7 +110,7 @@
         "includedIn": null,
         "logicalBytes": 0,
         "nativeReclaimableBytes": null,
-        "note": "May include inspection evidence and recovery artifacts; report only.",
+        "note": "Build caches have precise prune rules; inspection evidence and recovery artifacts are retained.",
         "observedAllocatedBytes": 0,
         "observedLogicalBytes": 0,
         "path": "/fixture/home/.cache/envy",

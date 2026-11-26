@@ -31,7 +31,28 @@ class FieldDef:
     nix_type: str = "string"
 
 
+def valid_service_host(value: str) -> Optional[str]:
+    if not value or not all(char.isascii() and (char.isalnum() or char in "_.:%-") for char in value):
+        return "Service bind address must be a host name or bare IP address"
+    return None
+
+
+def valid_service_port(value: str) -> Optional[str]:
+    if not (len(value) <= 5 and value.isascii() and value.isdigit() and 1 <= int(value) <= 65535):
+        return "Service port must be an integer from 1 through 65535"
+    return None
+
+
 COMMON_MACHINE_FIELDS = [
+    FieldDef(group="T3CODE", dest="machine", path="envy.t3code.service.host",
+             prompt="T3 Code service bind address", default_fn=lambda: "127.0.0.1",
+             validators=[valid_service_host]),
+    FieldDef(group="T3CODE", dest="machine", path="envy.t3code.service.port",
+             prompt="T3 Code service port", default_fn=lambda: "3773", nix_type="int",
+             validators=[valid_service_port]),
+    FieldDef(group="T3CODE", dest="machine", path="envy.t3code.service.lan",
+             prompt="Allow T3 Code private network access", default_fn=lambda: "false",
+             choices=["true", "false"], nix_type="bool"),
     FieldDef(group="STORAGE", dest="machine", path="envy.storage.mode",
              prompt="Storage lifecycle mode", default_fn=lambda: "manual",
              choices=["manual", "report", "auto"]),

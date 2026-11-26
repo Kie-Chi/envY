@@ -44,9 +44,9 @@ let
       && (!fzfSelected || (
         lib.hasInfix "zstyle ':fzf-tab:*' fzf-min-height 12" init
         && lib.hasInfix "zstyle ':fzf-tab:*' fzf-pad 4" init
-        && lib.hasInfix "COLUMNS >= 100 && LINES >= 20" init
+        && lib.hasInfix "COLUMNS >= 100" init
         && lib.hasInfix "--preview-window=right:55%:wrap" init
-        && lib.hasInfix "--preview-window=hidden" init
+        && lib.hasInfix "--preview-window=right:45%:wrap" init
         && !(lib.hasInfix "down:45%" init)
         && !(lib.hasInfix "--preview-window" (config.home.sessionVariables.FZF_DEFAULT_OPTS or ""))
         && position "oh-my-zsh.sh" < position "/bin/fzf --zsh"

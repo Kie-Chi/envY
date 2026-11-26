@@ -20,7 +20,7 @@ in
   prune = mkOption {
     type = types.bool;
     default = false;
-    description = "Allow explicit prune to delete matching entries without quarantine retention.";
+    description = "Allow explicit prune to delete matching entries without an age cutoff or quarantine retention; archive rules keep their age cutoff.";
   };
   targets = mkOption {
     type = types.enum [ "files" "dirs" ];
@@ -65,7 +65,7 @@ in
   minAgeDays = mkOption {
     type = types.ints.positive;
     default = 30;
-    description = "Minimum entry age in days.";
+    description = "Minimum entry age in days for ordinary run and archive; explicit disposable-cache prune ignores this cutoff.";
   };
   minSizeBytes = mkOption {
     type = types.ints.unsigned;

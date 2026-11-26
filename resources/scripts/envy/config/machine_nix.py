@@ -44,6 +44,7 @@ def _read_nix_assignments(path: Path) -> dict:
     if not path.exists():
         return values
     string_pattern = re.compile(r'^\s*([A-Za-z0-9_.-]+)\s*=\s*"((?:\\.|[^"])*)"\s*;')
+    int_pattern = re.compile(r'^\s*([A-Za-z0-9_.-]+)\s*=\s*(-?[0-9]+)\s*;')
     bool_pattern = re.compile(r'^\s*([A-Za-z0-9_.-]+)\s*=\s*(true|false)\s*;')
     for line in path.read_text().splitlines():
         string_match = string_pattern.match(line)
@@ -53,6 +54,10 @@ def _read_nix_assignments(path: Path) -> dict:
         bool_match = bool_pattern.match(line)
         if bool_match:
             values[bool_match.group(1)] = bool_match.group(2)
+            continue
+        int_match = int_pattern.match(line)
+        if int_match:
+            values[int_match.group(1)] = int_match.group(2)
     return values
 
 
@@ -97,6 +102,11 @@ def _render_machine_block(values: dict, custom: list[str] | None = None) -> str:
                     raise ValueError(f"{f.path} must be true or false")
                 val = raw.lower()
                 lines.append(f"  {f.path} = {val};\n")
+            elif f.nix_type == "int":
+                raw = str(value)
+                if not re.fullmatch(r"-?[0-9]+", raw):
+                    raise ValueError(f"{f.path} must be an integer")
+                lines.append(f"  {f.path} = {int(raw)};\n")
             else:
                 lines.append(f"  {f.path} = {_render_string(value)};\n")
     if custom:

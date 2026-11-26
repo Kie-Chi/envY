@@ -273,6 +273,24 @@ in
       };
     };
 
+    t3code.service = {
+      host = mkOption {
+        type = types.strMatching "[A-Za-z0-9_.:%-]+";
+        default = "127.0.0.1";
+        description = "T3 Code user service bind address; :: accepts IPv6 and dual-stack IPv4.";
+      };
+      port = mkOption {
+        type = types.ints.between 1 65535;
+        default = 3773;
+        description = "T3 Code user service HTTP and WebSocket port.";
+      };
+      lan = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Advertise private network access for the T3 Code user service.";
+      };
+    };
+
     vscode.mode = mkOption {
       type = types.enum [ "remote" "local" ];
       default = "remote";

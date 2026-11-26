@@ -4,5 +4,6 @@
     ./codex.nix
     ./generic.nix
     ./pi
+    ./t3code
   ];
 }

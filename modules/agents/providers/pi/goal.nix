@@ -12,6 +12,8 @@ fetchPiExtension {
   postUnpack = ''
     ${pkgs.patch}/bin/patch --batch --fuzz=0 -p1 < ${../../../../files/agents/patches/pi-goal-state-and-stages.patch}
     ${pkgs.patch}/bin/patch --batch --fuzz=0 -p1 < ${../../../../files/agents/patches/pi-goal-cache-prefix.patch}
+    cp ${../../../../files/agents/pi/goal-rpc.ts} "$out/extensions/goal-rpc.ts"
+    ${pkgs.patch}/bin/patch --batch --fuzz=0 -p1 < ${../../../../files/agents/patches/pi-goal-rpc-status.patch}
     HOME="$TMPDIR/goal-test-home" ${lib.getExe pkgs.nodejs_24} \
       ${./tests/pi-goal.mjs} "$out" ${piPackage}/lib/pi/node_modules
   '';

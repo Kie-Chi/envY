@@ -6,6 +6,5 @@
   imports = [
     ./cmux.nix
     ./pi-cron.nix
-    ./t3code.nix
   ];
 }

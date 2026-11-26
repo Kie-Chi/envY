@@ -31,6 +31,10 @@
   # --- MIRRORS CONFIG ---
   envy.mirrors.mode = "china";
 
+  # --- STORAGE CONFIG ---
+  envy.storage.mode = "manual";
+  envy.storage.archive.repository = "";
+
   # --- VSCODE CONFIG ---
   envy.vscode.mode = "remote";
   # END ENVY MANAGED CONFIG
@@ -50,6 +54,7 @@
   envy.llm.credentials.hbapi.kind = "api-key";
   envy.llm.credentials.hbapi.secretPath = "llm/hbapi/apikey";
   envy.llm.credentials.stepfun.kind = "api-key";
+  envy.llm.credentials.nisl.secretPath = "llm/nisl/apikey";
   envy.llm.credentials.stepfun.secretPath = "llm/steps/apikey";
   envy.llm.credentials.xikai.kind = "api-key";
   envy.llm.credentials.xikai.secretPath = "llm/xikai/apikey";
@@ -65,6 +70,8 @@
   envy.llm.endpoints.sub2api-anthropic.protocol = "anthropic-compatible";
   envy.llm.endpoints.xikai-openai.baseUrl = "https://api.xikai.site/v1";
   envy.llm.endpoints.xikai-openai.protocol = "openai-compatible";
+  envy.llm.endpoints.nisl-openai.baseUrl = "https://cn.api.xikai.site:34443/v1";
+  envy.llm.endpoints.nisl-openai.protocol = "openai-compatible";
 
   # --- AGENT PROFILES ---
   envy.agentProfiles.xikai-magpie.api = "openai-responses";
@@ -89,10 +96,16 @@
   envy.agentProfiles.stepfun-anthropic.endpoint = "stepfun-anthropic";
   envy.agentProfiles.stepfun-anthropic.model = "step-3.7-flash";
 
-  envy.agentProfiles.deepseek.api = "openai-completions";
+  envy.agentProfiles.deepseek.api = "openai-responses";
   envy.agentProfiles.deepseek.credential = "deepseek";
   envy.agentProfiles.deepseek.endpoint = "deepseek-openai";
-  envy.agentProfiles.deepseek.model = "deepseek-v4-pro";
+  envy.agentProfiles.deepseek.model = "deepseek-flash";
+
+  envy.agentProfiles.nisl.api = "openai-responses";
+  envy.agentProfiles.nisl.credential = "nisl";
+  envy.agentProfiles.nisl.endpoint = "nisl-openai";
+  envy.agentProfiles.nisl.model = "deepseek-v4.1-flash";
+
 
   # --- AGENTS ---
   envy.agents.cc.adapter = "claude-code";
@@ -110,11 +123,10 @@
   envy.agents.pi.contextWindow = 272000;
   envy.agents.pi.maxTokens = 128000;
   envy.agents.pi.models = [
-    { profile = "xikai-magpie"; }
-    { profile = "hb-sub2api"; }
-    { profile = "stepfun-openai"; }
-    { profile = "stepfun-anthropic"; }
-    { profile = "deepseek"; }
+    { profile = "xikai-magpie";}
+    { profile = "xikai-magpie"; model = "gpt-6-astra";}
+    { profile = "nisl";}
+    { profile = "deepseek";}
   ];
   envy.agents.pi.moreThinking = true;
   envy.agents.pi.profile = "xikai-magpie";

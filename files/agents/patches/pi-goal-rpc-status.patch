@@ -1,0 +1,35 @@
+--- a/extensions/goal-state.ts
++++ b/extensions/goal-state.ts
+@@ -1,4 +1,5 @@
+ import { GoalInterruption } from "./goal-interruption.ts";
++import { createGoalRpcDisplay } from "./goal-rpc.ts";
+ import { commandHint, type GoalCommandId, type GoalCommands } from "./goal-controls.ts";
+ import * as path from "node:path";
+ import { goalStorageContext, goalStorageRoot } from "./storage/goal-root.ts";
+@@ -574,9 +575,11 @@
+ 
+ 	const goalWidgetComponentRef: { current: GoalWidgetComponent | null } = { current: null };
+ 	let widgetRegistered = false;
++	const rpcDisplay = createGoalRpcDisplay();
+ 
+ 	function clearGoalWidget(ctx: ExtensionContext): void {
+ 		lastUiCtx = null;
++		rpcDisplay.reset(ctx);
+ 		if (ctx.hasUI) {
+ 			ctx.ui.setStatus("goal", undefined);
+ 			ctx.ui.setWidget(GOAL_WIDGET_KEY, undefined);
+@@ -664,6 +667,14 @@
+ 		const goalCwd = ctx.cwd;
+ 		const storage = goalStorageContext(ctx);
+ 		const totalOpen = otherOpenGoalCount(goalsById, null);
++		if (ctx.mode === "rpc") {
++			rpcDisplay.update(ctx, goalForDisplay() ?? state.goal, {
++				settings: loadGoalSettings(ctx.cwd),
++				otherOpenGoals: otherOpenGoalCount(goalsById, focusedGoalId),
++				auditProgress, auditResult, stalled: stallNotified,
++			});
++			return;
++		}
+ 		if (!state.goal && totalOpen === 0) {
+ 			clearGoalWidget(ctx);
+ 			return;

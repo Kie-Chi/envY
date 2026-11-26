@@ -42,6 +42,9 @@
   envy.storage.archive.mountSource = "";
 
   # --- VSCODE CONFIG ---
+  envy.t3code.service.host = "::";
+  envy.t3code.service.port = 3773;
+  envy.t3code.service.lan = true;
   envy.vscode.mode = "remote";
 
   # Shared rules are inherited; native maintenance is explicit and never scheduled.
@@ -62,7 +65,6 @@
 
   envy.darwin.software.homebrew.casks.include = [
     "steam"
-    "t3-code"
   ];
 
   envy.darwin.software.homebrew.casks.exclude = [

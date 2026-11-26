@@ -1,0 +1,490 @@
+diff --git a/apps/mobile/src/features/threads/ThreadDetailScreen.tsx b/apps/mobile/src/features/threads/ThreadDetailScreen.tsx
+--- a/apps/mobile/src/features/threads/ThreadDetailScreen.tsx
++++ b/apps/mobile/src/features/threads/ThreadDetailScreen.tsx
+@@ -1,4 +1,5 @@
+ import { ChildThreadApprovals } from "./ChildThreadApprovals";
++import { GoalTasksSheet } from "./GoalTasksSheet";
+ import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
+ import { useOpenThreadInspector } from "./thread-inspector-navigation";
+ import { useSidebarWorkspaceTabs } from "../layout/workspace/useSystemWorkspaceTabBar";
+@@ -741,11 +742,20 @@
+     props.selectedThread.pendingBackgroundTasks,
+     messages,
+   );
++  const [openGoalKey, setOpenGoalKey] = useState<string | null>(null);
++  const goalTasks = props.extensionStatuses?.find(
++    (status) => status.goalTasks !== undefined,
++  )?.goalTasks;
+   const extensionStatus = props.extensionStatuses?.length
+     ? {
+         label: `Pi · ${props.extensionStatuses.map((status) => status.text).join(" · ")}`,
+         onPress: () =>
+-          Dialog.alert("Pi", props.extensionStatuses?.map((status) => status.text).join("\n\n")),
++          goalTasks
++            ? setOpenGoalKey(`${selectedThreadKey}:${goalTasks.goalId}`)
++            : Dialog.alert(
++                "Pi",
++                props.extensionStatuses?.map((status) => status.text).join("\n\n"),
++              ),
+       }
+     : null;
+   const backgroundLine = ((): ThreadStatusLineModel | null => {
+@@ -2009,6 +2019,13 @@
+           </ComposerPopoverHost>
+         </KeyboardStickyView>
+       ) : null}
++      {goalTasks && openGoalKey === `${selectedThreadKey}:${goalTasks.goalId}` ? (
++        <GoalTasksSheet
++          key={goalTasks.goalId}
++          goal={goalTasks}
++          onClose={() => setOpenGoalKey(null)}
++        />
++      ) : null}
+     </View>
+   );
+ }
+diff --git a/apps/web/src/components/chat/ThreadActivityBanners.tsx b/apps/web/src/components/chat/ThreadActivityBanners.tsx
+--- a/apps/web/src/components/chat/ThreadActivityBanners.tsx
++++ b/apps/web/src/components/chat/ThreadActivityBanners.tsx
+@@ -30,6 +30,7 @@
+ import { m, type MessageResolver } from "~/i18n/messages";
+ import { tickTextContent } from "~/lib/tickTextContent";
+ import { BackgroundWorkDetails } from "./BackgroundWorkDetails";
++import { GoalTaskList } from "./GoalTaskList";
+ import { Button, InlineButton } from "../ui/button";
+ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+ import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
+@@ -40,10 +41,12 @@
+   statuses: NonNullable<OrchestrationV2ProviderSession["extensionStatuses"]>,
+ ): ComposerBannerStackItem | null {
+   if (statuses.length === 0) return null;
++  const goalTasks = statuses.find((status) => status.goalTasks !== undefined)?.goalTasks;
+   return {
+     id: "pi-extension-status",
++    children: goalTasks ? <GoalTaskList key={goalTasks.goalId} goal={goalTasks} /> : undefined,
+     variant: "default",
+-    icon: <span>▸</span>,
++    icon: goalTasks ? null : <span>▸</span>,
+     title: <output>{`Pi · ${statuses.map((status) => status.text).join(" · ")}`}</output>,
+   };
+ }
+diff --git a/packages/contracts/src/orchestrationV2.ts b/packages/contracts/src/orchestrationV2.ts
+--- a/packages/contracts/src/orchestrationV2.ts
++++ b/packages/contracts/src/orchestrationV2.ts
+@@ -1073,6 +1073,26 @@
+ });
+ export type OrchestrationV2CheckpointScope = typeof OrchestrationV2CheckpointScope.Type;
+ 
++export const OrchestrationV2GoalTasks = Schema.Struct({
++  version: Schema.Literal(1),
++  goalId: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
++  title: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
++  status: Schema.Literals(["running", "idle", "paused", "blocked", "budget_limited", "complete"]),
++  completed: NonNegativeInt,
++  total: NonNegativeInt,
++  currentTaskId: Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(256))),
++  currentTaskInferred: Schema.Boolean,
++  tasks: Schema.Array(
++    Schema.Struct({
++      id: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
++      title: TrimmedNonEmptyString.check(Schema.isMaxLength(1000)),
++      status: Schema.Literals(["pending", "complete", "skipped"]),
++      depth: NonNegativeInt.check(Schema.isLessThanOrEqualTo(64)),
++    }),
++  ).check(Schema.isMaxLength(4096)),
++});
++export type OrchestrationV2GoalTasks = typeof OrchestrationV2GoalTasks.Type;
++
+ export const OrchestrationV2ProviderSession = Schema.Struct({
+   id: ProviderSessionId,
+   driver: ProviderDriverKind,
+@@ -1086,6 +1106,7 @@
+       Schema.Struct({
+         key: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
+         text: TrimmedNonEmptyString.check(Schema.isMaxLength(4096)),
++        goalTasks: Schema.optional(OrchestrationV2GoalTasks),
+       }),
+     ).check(Schema.isMaxLength(32)),
+   ).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+diff --git a/packages/provider-pi/src/server/adapter.test.ts b/packages/provider-pi/src/server/adapter.test.ts
+--- a/packages/provider-pi/src/server/adapter.test.ts
++++ b/packages/provider-pi/src/server/adapter.test.ts
+@@ -656,6 +656,89 @@
+ 
+ describe("PiAdapterV2", () => {
+   it.effect(
++    "streams the complete goal tree while idle, preserving it through summary updates",
++    () =>
++      Effect.gen(function* () {
++        const fake = yield* makeFakePi;
++        const { runtime, takeEvent } = yield* openRuntime(fake);
++        const goal = {
++          version: 1,
++          goalId: "fixture-goal",
++          title: "Five-stage goal",
++          status: "running",
++          completed: 1,
++          total: 5,
++          currentTaskId: "verify",
++          currentTaskInferred: false,
++          tasks: [
++            { id: "one", title: "First stage", status: "complete", depth: 0 },
++            { id: "two", title: "Second stage", status: "pending", depth: 0 },
++            { id: "verify", title: "Verify the result", status: "pending", depth: 1 },
++            { id: "three", title: "Third stage", status: "pending", depth: 0 },
++            { id: "four", title: "Fourth stage", status: "pending", depth: 0 },
++            { id: "five", title: "Fifth stage", status: "pending", depth: 0 },
++          ],
++        } as const;
++        const widget = {
++          type: "extension_ui_request",
++          method: "setWidget",
++          widgetKey: "goal-tasks",
++          widgetLines: [JSON.stringify(goal)],
++        };
++        yield* fake.emit(widget);
++        yield* fake.emit(widget);
++        yield* fake.emit({
++          type: "extension_ui_request",
++          method: "setStatus",
++          statusKey: "goal",
++          statusText: "Goal: Five-stage goal · Phase 2/5",
++        });
++        for (const widgetLines of [
++          ["{"],
++          [JSON.stringify({ ...goal, version: 2 })],
++          [JSON.stringify({ ...goal, tasks: [{ ...goal.tasks[0], depth: 65 }] })],
++          ["x".repeat(1_048_577)],
++        ]) {
++          yield* fake.emit({ ...widget, widgetLines });
++        }
++        yield* fake.emit({
++          type: "extension_ui_request",
++          id: "goal-barrier",
++          method: "input",
++          title: "Continue?",
++        });
++        const observed: ProviderAdapter.ProviderAdapterV2Event[] = [];
++        yield* takeEvent((event) => {
++          observed.push(event);
++          return event.type === "runtime_request.updated";
++        });
++        assert.deepEqual(runtime.providerSession.extensionStatuses, [
++          { key: "goal", text: "Goal: Five-stage goal · Phase 2/5", goalTasks: goal },
++        ]);
++        assert.lengthOf(
++          observed.filter((event) => event.type === "provider_session.updated"),
++          2,
++        );
++        assert.isFalse(observed.some((event) => event.type === "message.updated"));
++        yield* fake.emit({
++          type: "extension_ui_request",
++          method: "setWidget",
++          widgetKey: "goal-tasks",
++        });
++        yield* fake.emit({
++          type: "extension_ui_request",
++          id: "clear-barrier",
++          method: "input",
++          title: "Continue?",
++        });
++        yield* takeEvent((event) => event.type === "runtime_request.updated");
++        assert.deepEqual(runtime.providerSession.extensionStatuses, [
++          { key: "goal", text: "Goal: Five-stage goal · Phase 2/5" },
++        ]);
++      }).pipe(Effect.scoped, Effect.provide(layerTest)),
++  );
++
++  it.effect(
+     "replaces keyed extension statuses while idle without producing conversation items",
+     () =>
+       Effect.gen(function* () {
+diff --git a/packages/provider-pi/src/server/adapter.ts b/packages/provider-pi/src/server/adapter.ts
+--- a/packages/provider-pi/src/server/adapter.ts
++++ b/packages/provider-pi/src/server/adapter.ts
+@@ -7,6 +7,7 @@
+ import * as Predicate from "effect/Predicate";
+ import {
+   ProviderDriverKind,
++  OrchestrationV2GoalTasks,
+   type ChatAttachment,
+   type ModelSelection,
+   type OrchestrationV2ExecutionNode,
+@@ -93,6 +94,8 @@
+ const PI_REQUEST_TIMEOUT_MS = 15_000;
+ const PI_SUBAGENT_ASYNC_PREFIX = "PI_SUBAGENT_ASYNC_JSON:";
+ const decodePiJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
++const decodeGoalTasks = Schema.decodeUnknownOption(Schema.fromJsonString(OrchestrationV2GoalTasks));
++const sameGoalTasks = Schema.toEquivalence(Schema.UndefinedOr(OrchestrationV2GoalTasks));
+ const PI_SESSION_TIMEOUT_MS = 60_000;
+ const MAX_EXTENSION_STATUSES = 32;
+ const MAX_EXTENSION_STATUS_KEY_LENGTH = 256;
+@@ -827,7 +830,53 @@
+               ? statuses.filter((status) => status.key !== key)
+               : index < 0
+                 ? [...statuses, { key, text }]
+-                : statuses.map((status) => (status.key === key ? { key, text } : status)),
++                : statuses.map((status) => (status.key === key ? { ...status, text } : status)),
++        };
++        yield* updateProviderSession(sessionEntity.status);
++      });
++
++      // Goal widgets share the status event pump and update independently of active turns.
++      const updateGoalTasks = Effect.fnUntraced(function* (event: PiRpcRecord) {
++        if (
++          closed ||
++          stopRequested ||
++          runtimeRetired ||
++          unsolicitedActivityDetected ||
++          sessionEntity.status === "stopped"
++        )
++          return;
++        const lines = recordField(event, "widgetLines");
++        if (
++          lines !== undefined &&
++          (!Array.isArray(lines) ||
++            lines.length !== 1 ||
++            typeof lines[0] !== "string" ||
++            lines[0].length > 1_048_576)
++        )
++          return;
++        const goalTasks =
++          lines === undefined ? undefined : Option.getOrUndefined(decodeGoalTasks(lines[0]));
++        if (lines !== undefined && goalTasks === undefined) return;
++        const statuses = sessionEntity.extensionStatuses ?? [];
++        const current = statuses.find((status) => status.key === "goal");
++        if (sameGoalTasks(current?.goalTasks, goalTasks)) return;
++        if (current === undefined && statuses.length >= MAX_EXTENSION_STATUSES) return;
++        if (extensionStatusReset?.previous.some((status) => status.key === "goal")) {
++          extensionStatusReset.touched.add("goal");
++        }
++        const next = {
++          key: "goal",
++          text:
++            current?.text ??
++            (goalTasks ? `${goalTasks.title} · ${goalTasks.completed}/${goalTasks.total}` : "Goal"),
++          ...(goalTasks === undefined ? {} : { goalTasks }),
++        };
++        sessionEntity = {
++          ...sessionEntity,
++          extensionStatuses:
++            current === undefined
++              ? [...statuses, next]
++              : statuses.map((status) => (status.key === "goal" ? next : status)),
+         };
+         yield* updateProviderSession(sessionEntity.status);
+       });
+@@ -1817,6 +1866,10 @@
+             message,
+             notifyType === "warning" || notifyType === "error" ? notifyType : "info",
+           );
++          return;
++        }
++        if (method === "setWidget" && recordString(event, "widgetKey") === "goal-tasks") {
++          yield* updateGoalTasks(event);
+           return;
+         }
+         if (method === "setWidget" && recordString(event, "widgetKey") === "subagent-async") {
+diff --git a/apps/mobile/src/features/threads/GoalTasksSheet.tsx b/apps/mobile/src/features/threads/GoalTasksSheet.tsx
+new file mode 100644
+--- /dev/null
++++ b/apps/mobile/src/features/threads/GoalTasksSheet.tsx
+@@ -0,0 +1,70 @@
++import type { OrchestrationV2GoalTasks } from "@t3tools/contracts";
++import { ScrollView, View } from "react-native";
++import { AppText as Text } from "../../components/ui/AppText";
++import { Sheet } from "../../components/ui/Sheet";
++
++export function GoalTasksSheet(props: {
++  readonly goal: OrchestrationV2GoalTasks;
++  readonly onClose: () => void;
++}) {
++  const currentIndex = props.goal.tasks.findIndex((task) => task.id === props.goal.currentTaskId);
++  const phaseId = props.goal.tasks
++    .slice(0, currentIndex + 1)
++    .findLast((task) => task.depth === 0)?.id;
++  return (
++    <Sheet title={`Tasks ${props.goal.completed}/${props.goal.total}`} onClose={props.onClose}>
++      <ScrollView contentInsetAdjustmentBehavior="automatic" className="flex-1">
++        <View className="gap-3 px-5 py-4">
++          <Text accessibilityRole="header" className="font-t3-bold text-base text-foreground">
++            {props.goal.title}
++          </Text>
++          {props.goal.tasks.map((task) => {
++            const current = task.id === props.goal.currentTaskId || task.id === phaseId;
++            const status =
++              task.status === "complete"
++                ? "Complete"
++                : task.status === "skipped"
++                  ? "Skipped"
++                  : current
++                    ? props.goal.currentTaskInferred
++                      ? "Next"
++                      : "Current"
++                    : "Pending";
++            const active = current && !props.goal.currentTaskInferred;
++            const tone =
++              task.status === "complete"
++                ? "text-emerald-700 dark:text-emerald-400"
++                : task.status === "skipped"
++                  ? "text-foreground-muted"
++                  : active
++                    ? "text-violet-700 dark:text-violet-300"
++                    : "text-amber-700 dark:text-amber-300";
++            return (
++              <View
++                key={task.id}
++                className="flex-row gap-2"
++                style={{ paddingStart: Math.min(task.depth, 6) * 16 }}
++              >
++                <Text accessibilityLabel={status} className={`w-4 text-center ${tone}`}>
++                  {task.status === "complete"
++                    ? "✓"
++                    : task.status === "skipped"
++                      ? "–"
++                      : active
++                        ? "●"
++                        : "○"}
++                </Text>
++                <Text
++                  className={`flex-1 text-sm ${tone}${current ? " font-t3-bold" : ""}`}
++                >
++                  {task.title}
++                  {current ? ` · ${status}` : ""}
++                </Text>
++              </View>
++            );
++          })}
++        </View>
++      </ScrollView>
++    </Sheet>
++  );
++}
+diff --git a/apps/web/src/components/chat/GoalTaskList.test.tsx b/apps/web/src/components/chat/GoalTaskList.test.tsx
+new file mode 100644
+--- /dev/null
++++ b/apps/web/src/components/chat/GoalTaskList.test.tsx
+@@ -0,0 +1,54 @@
++import type { OrchestrationV2GoalTasks } from "@t3tools/contracts";
++import { renderToStaticMarkup } from "react-dom/server";
++import { describe, expect, it } from "vite-plus/test";
++import { GoalTaskList } from "./GoalTaskList";
++
++const goal: OrchestrationV2GoalTasks = {
++  version: 1,
++  goalId: "fixture",
++  title: "五阶段计划",
++  status: "running",
++  completed: 1,
++  total: 5,
++  currentTaskId: "verify",
++  currentTaskInferred: false,
++  tasks: [
++    { id: "one", title: "确认需求", status: "complete", depth: 0 },
++    { id: "two", title: "完成实现", status: "pending", depth: 0 },
++    { id: "verify", title: "验证子任务", status: "pending", depth: 1 },
++    { id: "three", title: "检查结果", status: "pending", depth: 0 },
++    { id: "four", title: "整理变更", status: "pending", depth: 0 },
++    { id: "five", title: "交付成果", status: "pending", depth: 0 },
++  ],
++};
++
++describe("GoalTaskList", () => {
++  it("renders every phase and child, including stages after the current one", () => {
++    const html = renderToStaticMarkup(<GoalTaskList goal={goal} />);
++    for (const task of goal.tasks) expect(html).toContain(task.title);
++    expect(html).toContain("Tasks 1/5");
++    expect(html).toContain('aria-label="Complete"');
++    expect(html.match(/aria-current="step"/g)).toHaveLength(1);
++  });
++
++  it("keeps inferred next work distinct from a persisted current task", () => {
++    const html = renderToStaticMarkup(
++      <GoalTaskList goal={{ ...goal, currentTaskInferred: true }} />,
++    );
++    expect(html).toContain("Next");
++    expect(html).not.toContain("aria-current");
++  });
++
++  it("escapes task text and keeps long or deeply nested names available", () => {
++    const title = "<script>alert(1)</script>" + "x".repeat(1000);
++    const html = renderToStaticMarkup(
++      <GoalTaskList
++        goal={{ ...goal, tasks: [{ id: "edge", title, status: "skipped", depth: 64 }] }}
++      />,
++    );
++    expect(html).toContain("&lt;script&gt;");
++    expect(html).not.toContain("<script>");
++    expect(html).toContain("x".repeat(1000));
++    expect(html).toContain('aria-label="Skipped"');
++  });
++});
+diff --git a/apps/web/src/components/chat/GoalTaskList.tsx b/apps/web/src/components/chat/GoalTaskList.tsx
+new file mode 100644
+--- /dev/null
++++ b/apps/web/src/components/chat/GoalTaskList.tsx
+@@ -0,0 +1,64 @@
++import type { OrchestrationV2GoalTasks } from "@t3tools/contracts";
++import { CheckIcon, CircleDotIcon, CircleIcon, MinusIcon } from "lucide-react";
++
++export function GoalTaskList({ goal }: { readonly goal: OrchestrationV2GoalTasks }) {
++  const currentIndex = goal.tasks.findIndex((task) => task.id === goal.currentTaskId);
++  const phaseId = goal.tasks.slice(0, currentIndex + 1).findLast((task) => task.depth === 0)?.id;
++  return (
++    <details open className="mt-2 min-w-0 text-sm">
++      <summary className="cursor-pointer list-none text-muted-foreground [&::-webkit-details-marker]:hidden">
++        Tasks {goal.completed}/{goal.total} · {goal.title}
++      </summary>
++      <ol aria-label="Goal tasks" className="mt-2 max-h-64 space-y-1 overflow-y-auto pr-2">
++        {goal.tasks.map((task) => {
++          const current = task.id === goal.currentTaskId || task.id === phaseId;
++          const status =
++            task.status === "complete"
++              ? "Complete"
++              : task.status === "skipped"
++                ? "Skipped"
++                : current
++                  ? goal.currentTaskInferred
++                    ? "Next"
++                    : "Current"
++                  : "Pending";
++          const active = current && !goal.currentTaskInferred;
++          const tone =
++            task.status === "complete"
++              ? "text-emerald-700 dark:text-emerald-400"
++              : task.status === "skipped"
++                ? "text-muted-foreground"
++                : active
++                  ? "text-violet-700 dark:text-violet-300"
++                  : "text-amber-700 dark:text-amber-300";
++          return (
++            <li
++              key={task.id}
++              aria-current={
++                task.id === goal.currentTaskId && !goal.currentTaskInferred ? "step" : undefined
++              }
++              className={`flex gap-2 ${tone}${current ? " font-medium" : ""}`}
++              style={{ paddingInlineStart: Math.min(task.depth, 6) * 16 }}
++            >
++              <span aria-label={status} className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center">
++                {task.status === "complete" ? (
++                  <CheckIcon className="size-3.5" />
++                ) : task.status === "skipped" ? (
++                  <MinusIcon className="size-3.5" />
++                ) : active ? (
++                  <CircleDotIcon className="size-3.5" />
++                ) : (
++                  <CircleIcon className="size-3.5" />
++                )}
++              </span>
++              <span className="min-w-0 whitespace-pre-wrap wrap-anywhere">
++                {task.title}
++                {current ? ` · ${status}` : ""}
++              </span>
++            </li>
++          );
++        })}
++      </ol>
++    </details>
++  );
++}

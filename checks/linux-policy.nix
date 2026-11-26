@@ -27,6 +27,11 @@ let
         mcpNixosPackage = inputs.mcp-nixos.packages.${system}.default;
         piSource = inputs.pi.outPath;
         piPackage = inputs.pi.packages.${system}.default;
+        t3codePackage = import ../modules/agents/providers/t3code/package.nix {
+          inherit (pkgs) lib;
+          inherit pkgs;
+          package = inputs.nix-t3code.packages.${system}.t3code-nightly;
+        };
         softwareSourceBindings = import ../modules/software/nix-sources.nix;
         nixGLDefault = null;
       };

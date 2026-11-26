@@ -39,8 +39,22 @@ const aliases = Object.fromEntries(["pi-ai", "pi-coding-agent", "pi-tui", "pi-ag
   "@earendil-works/" + name, path.join(modulesDir, "@earendil-works", name, "dist/index.js"),
 ]));
 const jiti = createJiti(fileURLToPath(import.meta.url), { alias: aliases, moduleCache: true, fsCache: false });
-const { executeBtw } = await jiti.import(path.join(fs.realpathSync(btwPackage), "btw.ts"));
+const { executeBtw, registerBtwCommand } = await jiti.import(path.join(fs.realpathSync(btwPackage), "btw.ts"));
 const fixtures = JSON.parse(fs.readFileSync(fixturesPath, "utf8"));
+
+for (const mode of ["rpc", "json", "print"]) {
+  test("btw returns promptly without a terminal overlay in " + mode, { timeout: 1000 }, async () => {
+    let command;
+    const notifications = [];
+    registerBtwCommand({ registerCommand: (_name, definition) => { command = definition; } });
+    await command.handler("An explicit side question", { mode, hasUI: mode === "rpc", ui: {
+      notify: (message, type) => notifications.push({ message, type }),
+      custom: () => { throw new Error("A non-TUI command must never construct an overlay"); },
+    } });
+    assert.equal(notifications.length, 1);
+    assert.match(notifications[0].message, /interactive Pi terminal UI/i);
+  });
+}
 const capturedMessage = "Payload captured; no request sent";
 const effort = (api, payload) => api === "openai-responses" ? payload.reasoning?.effort
   : api === "openai-completions" ? payload.reasoning_effort : payload.output_config?.effort;

@@ -1,0 +1,1064 @@
+--- a/apps/server/src/observability/RpcInstrumentation.ts
++++ b/apps/server/src/observability/RpcInstrumentation.ts
+@@ -201,6 +201,7 @@
+   [WS_METHODS.assetsPersistChatAttachments]: "orchestration",
+   [WS_METHODS.attachmentsCreateUploadUrl]: "workspace",
+   [WS_METHODS.attachmentsDelete]: "workspace",
++  [WS_METHODS.providerQueueControl]: "provider",
+   [WS_METHODS.providerUploadFeedback]: "provider",
+   [WS_METHODS.mcpAppsCallTool]: "provider",
+   [WS_METHODS.mcpAppsToolInfo]: "provider",
+--- a/apps/server/src/ws.ts
++++ b/apps/server/src/ws.ts
+@@ -58,6 +58,7 @@
+   OrchestrationGetFullThreadDiffError,
+   OrchestrationSearchThreadsError,
+   OrchestrationV2SearchThreadError,
++  ProviderQueueControlError,
+   OrchestrationGetTurnDiffError,
+   ORCHESTRATION_V2_WS_METHODS,
+   ORCHESTRATION_PROTOCOL_QUERY_PARAM,
+@@ -2607,6 +2608,19 @@
+         [WS_METHODS.mcpAppsReadResource]: (input) => mcpAppRequests.readResource(input),
+         [WS_METHODS.providerMcpSignInStart]: (input) => mcpSignIn.start(input),
+         [WS_METHODS.providerMcpSignInComplete]: (input) => mcpSignIn.complete(input),
++        [WS_METHODS.providerQueueControl]: Effect.fnUntraced(function* (input) {
++          const projection = yield* threadManagement.getThreadRecords(input.threadId, ["providerThreads"]);
++          const providerThread = projection.providerThreads.find(candidate => candidate.id === input.providerThreadId);
++          if (!providerThread || projection.thread.activeProviderThreadId !== providerThread.id || providerThread.providerSessionId === null) {
++            return yield* new ProviderQueueControlError({ detail: "The active agent session changed. Reopen the delivery plan." });
++          }
++          const runtime = Option.getOrNull(yield* providerSessionsV2.get(providerThread.providerSessionId));
++          if (!runtime?.controlQueue) return yield* new ProviderQueueControlError({ detail: "This agent session does not support delivery controls." });
++          yield* runtime.controlQueue({ providerThread, control: input.control });
++        }, effect => effect.pipe(Effect.mapError(cause => new ProviderQueueControlError({
++          detail: typeof cause === "object" && cause !== null && "detail" in cause && typeof cause.detail === "string"
++            ? cause.detail.slice(0, 1024) : "Could not change the delivery plan. Try again.",
++        })))),
+         [WS_METHODS.providerUploadFeedback]:
+           /* Request instrumentation already owns the span; keep this helper in that context. */
+           Effect.fnUntraced(
+--- a/apps/web/src/components/ChatView.tsx
++++ b/apps/web/src/components/ChatView.tsx
+@@ -396,7 +396,9 @@
+ import { ChatTerminalDrawers } from "./chat/ChatTerminalDrawers";
+ import { ChatRightPanel } from "./chat/ChatRightPanel";
+ import { useDraftEnvironmentRouting } from "./chat/useDraftEnvironmentRouting";
+-import { branchMismatchBannerItem, extensionStatusBannerItem } from "./chat/ThreadActivityBanners";
++import { branchMismatchBannerItem, extensionStatusBannerItems } from "./chat/ThreadActivityBanners";
++import type { PiQueueControlHandle } from "./chat/QueueMessageList";
++import { QueueMessageControl } from "./chat/QueueMessageControl";
+ import { ThreadNow } from "./chat/ThreadNow";
+ import { threadRuntimeIsActive, type ThreadStructure } from "@t3tools/client-runtime/state/shell";
+ import { useDelayedStatus } from "../hooks/useDelayedStatus";
+@@ -1999,6 +2001,7 @@
+   };
+   const sendAppMessageStable = useStableCallback(sendAppMessage);
+   const queuedRunsControlRef = useRef<QueuedRunsControlHandle>(null);
++  const piQueueControlRef = useRef<PiQueueControlHandle>(null);
+ 
+   const {
+     activatePanelTerminalStable,
+@@ -2722,7 +2725,7 @@
+       : null,
+     messages,
+   );
+-  const composerBannerItems = (() => {
++  const unorderedComposerBannerItems = (() => {
+     const fallbackSelection = draftFallback?.selection;
+     const defaultSelection =
+       draftDefaultModelSelection ??
+@@ -2772,10 +2775,24 @@
+           ]
+         : [];
+     const limitRecoveryItems = limitRecoveryBanner === null ? [] : [limitRecoveryBanner];
+-    const extensionStatusBanner = extensionStatusBannerItem(
+-      deriveProviderExtensionStatuses(serverProjection),
++    const extensionStatuses = deriveProviderExtensionStatuses(serverProjection);
++    const piQueueMessages = extensionStatuses.find(status => status.key === "queue")?.queueMessages;
++    const extensionStatusItems = extensionStatusBannerItems(
++      extensionStatuses,
++      isServerThread && activeThreadId !== null && serverThread?.activeProviderThreadId && piQueueMessages ? (
++        <QueueMessageControl
++          key={activeThreadId + ":" + serverThread.activeProviderThreadId}
++          ref={piQueueControlRef}
++          queue={piQueueMessages}
++          options={{
++            environmentId,
++            threadId: activeThreadId,
++            providerThreadId: serverThread.activeProviderThreadId,
++            enabled: canOperateThread,
++          }}
++        />
++      ) : undefined,
+     );
+-    const extensionStatusItems = extensionStatusBanner === null ? [] : [extensionStatusBanner];
+     const usageLimitsItems = usageLimitsBanner === null ? [] : [usageLimitsBanner];
+     const projectCloneItems = projectCloneBannerItem === null ? [] : [projectCloneBannerItem];
+     // An approval's feedback goes to that approval; the armed session waits for the next message.
+@@ -2830,6 +2847,10 @@
+       ),
+     ];
+   })() as ComposerBannerStackItem[];
++  const composerBannerItems = [
++    ...unorderedComposerBannerItems.filter(item => item.id !== "pi-queue"),
++    ...unorderedComposerBannerItems.filter(item => item.id === "pi-queue"),
++  ];
+ 
+   if (
+     terminalUiLaunchContext !== null &&
+@@ -2921,7 +2942,8 @@
+       "thread.editQueuedMessage": ({ event }) =>
+         routeKind !== "draft" &&
+         composerRef.current?.isCaretAtStart() === true &&
+-        queuedRunsControlRef.current?.editLatest(event.repeat) === true,
++        (piQueueControlRef.current?.editLatest(event.repeat) === true ||
++          queuedRunsControlRef.current?.editLatest(event.repeat) === true),
+       "thread.stop": ({ event }) => {
+         if (!canInterruptRunningThread) return false;
+         if (!event.repeat) void onInterruptStable();
+--- a/apps/web/src/components/chat/GoalTaskList.tsx
++++ b/apps/web/src/components/chat/GoalTaskList.tsx
+@@ -6,10 +6,13 @@
+   const phaseId = goal.tasks.slice(0, currentIndex + 1).findLast((task) => task.depth === 0)?.id;
+   return (
+     <details open className="mt-2 min-w-0 text-sm">
+-      <summary className="cursor-pointer list-none text-muted-foreground [&::-webkit-details-marker]:hidden">
++      <summary className="cursor-pointer list-none text-muted-foreground wrap-anywhere [&::-webkit-details-marker]:hidden">
+         Tasks {goal.completed}/{goal.total} · {goal.title}
+       </summary>
+-      <ol aria-label="Goal tasks" className="mt-2 max-h-64 space-y-1 overflow-y-auto pr-2">
++      <ol
++        aria-label="Goal tasks"
++        className="mt-2 max-h-64 space-y-1 overflow-y-auto overscroll-contain pe-2"
++      >
+         {goal.tasks.map((task) => {
+           const current = task.id === goal.currentTaskId || task.id === phaseId;
+           const status =
+@@ -37,10 +40,13 @@
+               aria-current={
+                 task.id === goal.currentTaskId && !goal.currentTaskInferred ? "step" : undefined
+               }
+-              className={`flex gap-2 ${tone}${current ? " font-medium" : ""}`}
++              className={`flex min-w-0 gap-2 ${tone}${current ? " font-medium" : ""}`}
+               style={{ paddingInlineStart: Math.min(task.depth, 6) * 16 }}
+             >
+-              <span aria-label={status} className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center">
++              <span
++                aria-label={status}
++                className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center"
++              >
+                 {task.status === "complete" ? (
+                   <CheckIcon className="size-3.5" />
+                 ) : task.status === "skipped" ? (
+--- /dev/null
++++ b/apps/web/src/components/chat/QueueMessageControl.tsx
+@@ -0,0 +1,25 @@
++import type { EnvironmentId, OrchestrationV2QueueMessages, ProviderThreadId, ThreadId } from "@t3tools/contracts";
++import { isAtomCommandInterrupted, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
++import type { Ref } from "react";
++import { threadEnvironment } from "../../state/threads";
++import { useAtomCommand } from "../../state/use-atom-command";
++import { QueueMessageList, type PiQueueControlHandle } from "./QueueMessageList";
++
++export interface QueueMessageControlOptions {
++  environmentId: EnvironmentId;
++  threadId: ThreadId;
++  providerThreadId: ProviderThreadId;
++  enabled: boolean;
++}
++
++export function QueueMessageControl({ queue, options, ref }: { queue: OrchestrationV2QueueMessages; options: QueueMessageControlOptions; ref?: Ref<PiQueueControlHandle> | undefined }) {
++  const controlQueue = useAtomCommand(threadEnvironment.controlProviderQueue);
++  return <QueueMessageList queue={queue} ref={ref} onControl={options.enabled ? async control => {
++    const result = await controlQueue({ environmentId: options.environmentId, input: { threadId: options.threadId, providerThreadId: options.providerThreadId, control } });
++    if (result._tag === "Failure") {
++      if (isAtomCommandInterrupted(result)) throw new Error("Queue operation interrupted. Check the delivery plan before retrying.");
++      const error = squashAtomCommandFailure(result);
++      throw error instanceof Error ? error : new Error("Could not change the delivery plan.");
++    }
++  } : undefined} />;
++}
+--- /dev/null
++++ b/apps/web/src/components/chat/QueueMessageList.test.tsx
+@@ -0,0 +1,102 @@
++import type { OrchestrationV2QueueMessages, OrchestrationV2GoalTasks } from "@t3tools/contracts";
++import { renderToStaticMarkup } from "react-dom/server";
++import { describe, expect, it } from "vite-plus/test";
++import { QueueMessageList } from "./QueueMessageList";
++import { extensionStatusBannerItems } from "./ThreadActivityBanners";
++
++const queue: OrchestrationV2QueueMessages = {
++  version: 1,
++  total: 2,
++  paused: true,
++  activity: null,
++  items: [
++    {
++      id: "follow-up-1",
++      text: "先验证\n保留第二行",
++      paused: true,
++      imageCount: 0,
++      truncated: false,
++    },
++    { id: "follow-up-3", text: "Then verify", paused: false, imageCount: 2, truncated: false },
++  ],
++};
++const goal: OrchestrationV2GoalTasks = {
++  version: 1,
++  goalId: "fixture",
++  title: "Goal title",
++  status: "running",
++  completed: 0,
++  total: 1,
++  currentTaskId: null,
++  currentTaskInferred: false,
++  tasks: [{ id: "task", title: "Goal task", status: "pending", depth: 0 }],
++};
++
++describe("QueueMessageList", () => {
++  it("preserves follow-up order, multiline content, held rows and attachment counts", () => {
++    const html = renderToStaticMarkup(<QueueMessageList queue={queue} />);
++    expect(html).toContain("Queued follow-up messages");
++    expect(html).toContain("先验证\n保留第二行");
++    expect(html.indexOf("follow-up-1")).toBeLessThan(html.indexOf("follow-up-3"));
++    expect(html).toContain('aria-label="Held"');
++    expect(html).toContain('aria-label="Pending"');
++    expect(html).toContain("2 image attachments");
++  });
++
++  it("escapes message content and exposes long-message and large-queue limits", () => {
++    const html = renderToStaticMarkup(
++      <QueueMessageList
++        queue={{
++          ...queue,
++          total: 3,
++          items: [{ ...queue.items[0]!, text: "<script>" + "x".repeat(4000), truncated: true }],
++        }}
++      />,
++    );
++    expect(html).not.toContain("<script>");
++    expect(html).toContain("&lt;script&gt;");
++    expect(html).toContain("x".repeat(4000));
++    expect(html).toContain("Message preview truncated");
++    expect(html).toContain("2 more queued messages");
++    expect(html).toContain("wrap-anywhere");
++  });
++
++  it("renders image-only messages without exposing attachment data", () => {
++    const html = renderToStaticMarkup(
++      <QueueMessageList queue={{ ...queue, items: [{ ...queue.items[1]!, text: "" }] }} />,
++    );
++    expect(html).toContain("Image only message");
++    expect(html).toContain("2 image attachments");
++  });
++});
++
++describe("Pi extension banners", () => {
++  it("separates Goal, Queue and other statuses with aligned structured bodies", () => {
++    const items = extensionStatusBannerItems([
++      { key: "queue", text: "Queue mobile preview", queueMessages: queue },
++      { key: "goal", text: "Goal status", goalTasks: goal },
++      { key: "custom", text: "Other status" },
++    ]);
++    expect(items.map((item) => item.id)).toEqual(["pi-goal", "pi-queue", "pi-extension-status"]);
++    expect(renderToStaticMarkup(<>{items[0]!.title}</>)).not.toContain("Queue mobile preview");
++    expect(renderToStaticMarkup(<>{items[1]!.title}</>)).toContain("Delivery plan · 2 follow-ups · Paused");
++    expect(renderToStaticMarkup(<>{items[2]!.title}</>)).toContain("Other status");
++    for (const item of items.slice(0, 2)) {
++      const html = renderToStaticMarkup(<>{item.children}</>);
++      expect(html).toContain("ps-8 sm:ps-7");
++      expect(html).toContain("pe-2 pb-2");
++    }
++  });
++
++  it("supports summary-only extensions and removes emptied queues", () => {
++    const legacy = extensionStatusBannerItems([{ key: "queue", text: "Queue: 1 pending" }]);
++    expect(legacy.map((item) => item.id)).toEqual(["pi-extension-status"]);
++    expect(renderToStaticMarkup(<>{legacy[0]!.title}</>)).toContain("Queue: 1 pending");
++    expect(extensionStatusBannerItems([])).toEqual([]);
++    expect(
++      extensionStatusBannerItems([{ key: "goal", text: "Goal", goalTasks: goal }]).map(
++        (item) => item.id,
++      ),
++    ).toEqual(["pi-goal"]);
++  });
++});
+--- /dev/null
++++ b/apps/web/src/components/chat/QueueMessageList.tsx
+@@ -0,0 +1,173 @@
++import type { OrchestrationV2QueueMessages, ProviderQueueControl } from "@t3tools/contracts";
++import { ArrowDownIcon, ArrowRightIcon, ArrowUpIcon, Clock3Icon, EllipsisIcon, PauseIcon, PencilIcon, PlayIcon, Trash2Icon } from "lucide-react";
++import { useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type Ref } from "react";
++import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
++import { randomUUID } from "~/lib/utils";
++
++export interface PiQueueControlHandle { editLatest: (repeat: boolean) => boolean; }
++type Action = Omit<ProviderQueueControl, "revision">;
++type Editor = { id: string; owner: string; text: string };
++
++export function queuePlanLabel(queue: OrchestrationV2QueueMessages): string {
++  if (!queue.plan) return queue.paused ? "Paused" : "Active";
++  const labels = {
++    paused: queue.plan.errorHold ? "Paused after failed run" : "Paused",
++    "row-paused": "Held at paused message",
++    editing: "Held while editing",
++    control: "Waiting for " + (queue.activity ?? "session control"),
++    "steer-first": "Steering message goes first",
++    ready: "Next: start queued run",
++    "after-run": "Next: after this run",
++  };
++  return labels[queue.plan.state];
++}
++
++export function QueueMessageList({ queue, onControl, ref }: {
++  readonly queue: OrchestrationV2QueueMessages;
++  readonly onControl?: ((control: ProviderQueueControl) => Promise<void>) | undefined;
++  readonly ref?: Ref<PiQueueControlHandle> | undefined;
++}) {
++  const [owner, setOwner] = useState(randomUUID);
++  const [showAll, setShowAll] = useState(false);
++  const [expandedId, setExpandedId] = useState<string | null>(null);
++  const [busy, setBusy] = useState(false);
++  const [error, setError] = useState<string | null>(null);
++  const [draft, setDraft] = useState<Editor | null>(null);
++  const [dismissedEditor, setDismissedEditor] = useState<string | null>(null);
++  const remoteEditor = queue.plan?.editor;
++  const ownsEdit = remoteEditor?.owner === owner;
++  if (ownsEdit && !draft && dismissedEditor !== remoteEditor.id) setDraft(remoteEditor);
++  const canControl = onControl !== undefined && queue.plan !== undefined;
++  const locked = busy || !canControl || remoteEditor != null || draft !== null;
++  const perform = async (action: Action): Promise<boolean> => {
++    if (!onControl || !queue.plan) return false;
++    setBusy(true);
++    setError(null);
++    let succeeded = false;
++    try { await onControl({ ...action, revision: queue.plan.revision }); succeeded = true; }
++    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not change the delivery plan."); }
++    setBusy(false);
++    return succeeded;
++  };
++  const beginEdit = (id: string) => {
++    const editOwner = randomUUID();
++    setOwner(editOwner);
++    setDismissedEditor(null);
++    setDraft(current => current?.id === id ? { ...current, owner: editOwner } : current);
++    void perform({ action: "begin-edit", id, owner: editOwner });
++  };
++  useImperativeHandle(ref, () => ({
++    editLatest: (repeat) => {
++      const last = queue.items.at(-1);
++      if (!canControl || !last) return false;
++      if (locked) return true;
++      if (queue.total > queue.items.length) {
++        setError("The newest message is outside this preview. Choose a visible message from its menu.");
++        return true;
++      }
++      if (!repeat) beginEdit(last.id);
++      return true;
++    },
++  }));
++  const closeEdit = async (save: boolean) => {
++    if (!draft) return false;
++    if (!ownsEdit && !save) { setDismissedEditor(draft.id); setDraft(null); return true; }
++    if (await perform({ action: save ? "save-edit" : "cancel-edit", id: draft.id, owner, ...(save ? { text: draft.text } : {}) })) {
++      setDismissedEditor(draft.id); setDraft(null);
++      return true;
++    }
++    return false;
++  };
++  const rows = showAll ? queue.items : queue.items.slice(0, 3);
++  return (
++    <section aria-label="Pi delivery plan" className="min-w-0 text-sm">
++      {canControl ? <div className="mb-1 flex justify-end text-xs text-muted-foreground">
++        <button type="button" disabled={locked} onClick={() => void perform({ action: "pause", paused: !queue.paused })} className="inline-flex min-h-7 items-center gap-1 rounded px-1.5 hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50">
++          {queue.paused ? <PlayIcon className="size-3" /> : <PauseIcon className="size-3" />}{queue.paused ? "Resume queue" : "Pause queue"}
++        </button>
++      </div> : null}
++      <ol aria-label="Queued follow-up messages" className="max-h-48 divide-y divide-border/50 overflow-y-auto overscroll-contain pe-1">
++        {rows.map((item, index) => {
++          const held = item.paused || item.held || (queue.paused && item.dispatchHead);
++          const label = item.paused ? "Held" : item.held ? "Held while editing" : item.dispatchHead ? queue.paused ? "Queue paused" : "Next to send" : "Pending";
++          const detailLabel = item.paused || item.held || (item.dispatchHead && !queue.paused) ? label : null;
++          return <li key={item.id} data-queue-id={item.id} data-queue-head={item.dispatchHead || undefined} className="group/queue-row flex min-w-0 items-start gap-2 py-1.5">
++            <span aria-label={label} className={"mt-1 flex size-4 shrink-0 items-center justify-center " + (held ? "text-amber-600 dark:text-amber-400" : item.dispatchHead ? "text-primary" : "text-muted-foreground/60")}>
++              {held ? <PauseIcon className="size-3.5" /> : item.dispatchHead ? <ArrowRightIcon className="size-3.5" /> : <Clock3Icon className="size-3.5" />}
++            </span>
++            <div className="min-w-0 flex-1">
++              <button type="button" aria-expanded={expandedId === item.id} onClick={() => setExpandedId(expandedId === item.id ? null : item.id)} className="block w-full rounded text-start focus-visible:outline-2 focus-visible:outline-ring">
++                <span className={"whitespace-pre-wrap wrap-anywhere text-[13px] leading-5 " + (expandedId === item.id ? "block" : "line-clamp-2")}>{item.text || (item.imageCount > 0 ? "(Image only message)" : "(No text)")}</span>
++              </button>
++              {detailLabel || item.imageCount > 0 || item.truncated ? <div className="mt-0.5 text-[11px] leading-4 text-muted-foreground wrap-anywhere">
++                {detailLabel ? <span className="me-2">{detailLabel}</span> : null}
++                {item.imageCount > 0 ? <span>{item.imageCount} image {item.imageCount === 1 ? "attachment" : "attachments"}</span> : null}
++                {item.truncated ? <span className="ms-1">Message preview truncated. Open Edit for the full text.</span> : null}
++              </div> : null}
++            </div>
++            {canControl ? <Menu><MenuTrigger disabled={locked} aria-label={"Actions for queued message " + (index + 1)} className="flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-40"><EllipsisIcon className="size-4" /></MenuTrigger>
++              <MenuPopup align="end" side="top">
++                <p className="px-2 py-1 font-mono text-[10px] text-muted-foreground">{item.id}</p>
++                <MenuItem onClick={() => beginEdit(item.id)}><PencilIcon />Edit message</MenuItem>
++                <MenuItem onClick={() => void perform({ action: "row-pause", id: item.id, paused: !item.paused })}>{item.paused ? <PlayIcon /> : <PauseIcon />}{item.paused ? "Resume message" : "Hold message"}</MenuItem>
++                <MenuItem disabled={index === 0} onClick={() => void perform({ action: "move", id: item.id, direction: -1 })}><ArrowUpIcon />Move up</MenuItem>
++                <MenuItem disabled={index === queue.total - 1} onClick={() => void perform({ action: "move", id: item.id, direction: 1 })}><ArrowDownIcon />Move down</MenuItem>
++                <MenuItem variant="destructive" onClick={() => void perform({ action: "remove", id: item.id })}><Trash2Icon />Remove message</MenuItem>
++              </MenuPopup>
++            </Menu> : null}
++          </li>;
++        })}
++      </ol>
++      {queue.items.length > 3 ? <button type="button" onClick={() => setShowAll(!showAll)} className="mt-1 rounded text-xs text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring">{showAll ? "Show fewer messages" : "Show " + (queue.items.length - 3) + " more messages"}</button> : null}
++      {queue.total > queue.items.length ? <p className="mt-1 text-xs text-muted-foreground">{queue.total - queue.items.length} more queued messages. Use /queue list to view all.</p> : null}
++      {draft ? <QueueEditor key={draft.id} draft={draft} enabled={ownsEdit} busy={busy} onChange={text => setDraft({ ...draft, text })} onClose={closeEdit} onReopen={() => beginEdit(draft.id)} onControl={onControl} revision={queue.plan?.revision ?? ""} /> : remoteEditor ? <p className="mt-2 text-xs text-muted-foreground">A message is being edited in another view.</p> : null}
++      {error ? <p role="alert" className="mt-2 text-xs text-destructive-foreground wrap-anywhere">{error}</p> : null}
++    </section>
++  );
++}
++
++function QueueEditor({ draft, enabled, busy, onChange, onClose, onReopen, onControl, revision }: {
++  draft: Editor; enabled: boolean; busy: boolean; onChange: (text: string) => void;
++  onClose: (save: boolean) => Promise<boolean>; onReopen: () => void;
++  onControl: ((control: ProviderQueueControl) => Promise<void>) | undefined; revision: string;
++}) {
++  const live = useRef(false);
++  const closing = useRef(false);
++  const control = useRef(onControl);
++  const latestRevision = useRef(revision);
++  useLayoutEffect(() => {
++    control.current = onControl;
++    latestRevision.current = revision;
++  }, [onControl, revision]);
++  // The extension holds the same Pi edit session; renew it while this editor is mounted.
++  useEffect(() => {
++    live.current = true;
++    const send = (action: "renew-edit" | "cancel-edit") => control.current?.({ action, id: draft.id, owner: draft.owner, revision: latestRevision.current }).catch(() => {});
++    const timer = setInterval(() => { if (enabled) void send("renew-edit"); }, 30000);
++    return () => {
++      live.current = false;
++      clearInterval(timer);
++      queueMicrotask(() => { if (!live.current && !closing.current) void send("cancel-edit"); });
++    };
++  }, [draft.id, draft.owner, enabled]);
++  const close = async (save: boolean) => {
++    closing.current = true;
++    if (!await onClose(save)) {
++      closing.current = false;
++      if (!live.current) void control.current?.({ action: "cancel-edit", id: draft.id, owner: draft.owner, revision: latestRevision.current }).catch(() => {});
++    }
++  };
++  return <div className="mt-2 rounded-md border border-border bg-background/70 p-2">
++    <label className="mb-1 block text-xs text-muted-foreground" htmlFor={"queue-edit-" + draft.owner}>{enabled ? "Edit queued follow-up · delivery held" : "Edit expired · your draft is preserved"}</label>
++    <textarea id={"queue-edit-" + draft.owner} aria-label="Edit queued follow-up" autoFocus rows={3} maxLength={65536} value={draft.text} onChange={event => onChange(event.target.value)} onKeyDown={event => {
++      event.stopPropagation();
++      if (event.key === "Escape") { event.preventDefault(); if (!busy) void close(false); }
++      else if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); if (!busy && enabled) void close(true); }
++    }} className="max-h-48 min-h-20 w-full resize-y rounded border-0 bg-transparent text-[13px] leading-5 outline-none focus-visible:ring-1 focus-visible:ring-ring" />
++    <div className="mt-1 flex items-center justify-between gap-2 text-xs">
++      <span className="text-muted-foreground">Ctrl/⌘ Enter save · Esc cancel</span>
++      <div className="flex gap-2"><button type="button" disabled={busy} onClick={() => void close(false)} className="min-h-7 rounded px-2 hover:bg-muted disabled:opacity-50">Cancel</button>
++        <button type="button" disabled={busy} onClick={() => enabled ? void close(true) : onReopen()} className="min-h-7 rounded bg-primary px-2 text-primary-foreground disabled:opacity-50">{busy ? "Working…" : enabled ? "Save message" : "Reopen edit"}</button></div>
++    </div>
++  </div>;
++}
+--- a/apps/web/src/components/chat/ThreadActivityBanners.tsx
++++ b/apps/web/src/components/chat/ThreadActivityBanners.tsx
+@@ -21,34 +21,79 @@
+   CircleStopIcon,
+   GitBranchIcon,
+   MessageCircleIcon,
++  ListOrderedIcon,
+   ShieldQuestionIcon,
+   TargetIcon,
+   TerminalIcon,
+   TriangleAlertIcon,
+ } from "lucide-react";
+-import { Fragment } from "react";
++import { Fragment, type ReactNode } from "react";
+ import { m, type MessageResolver } from "~/i18n/messages";
+ import { tickTextContent } from "~/lib/tickTextContent";
+ import { BackgroundWorkDetails } from "./BackgroundWorkDetails";
+ import { GoalTaskList } from "./GoalTaskList";
++import { QueueMessageList, queuePlanLabel } from "./QueueMessageList";
++import { ComposerBanner } from "./ComposerBanner";
+ import { Button, InlineButton } from "../ui/button";
+ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+ import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
+ import type { ComposerBannerStackItem } from "./ComposerBannerStack";
+ import type { ThreadNowItem } from "./ThreadNow";
+ 
+-export function extensionStatusBannerItem(
++export function extensionStatusBannerItems(
+   statuses: NonNullable<OrchestrationV2ProviderSession["extensionStatuses"]>,
+-): ComposerBannerStackItem | null {
+-  if (statuses.length === 0) return null;
+-  const goalTasks = statuses.find((status) => status.goalTasks !== undefined)?.goalTasks;
+-  return {
+-    id: "pi-extension-status",
+-    children: goalTasks ? <GoalTaskList key={goalTasks.goalId} goal={goalTasks} /> : undefined,
+-    variant: "default",
+-    icon: goalTasks ? null : <span>▸</span>,
+-    title: <output>{`Pi · ${statuses.map((status) => status.text).join(" · ")}`}</output>,
+-  };
++  queueControl?: ReactNode,
++): ComposerBannerStackItem[] {
++  const items: ComposerBannerStackItem[] = [];
++  const goalStatus = statuses.find(
++    (status) => status.key === "goal" && status.goalTasks !== undefined,
++  );
++  const queueStatus = statuses.find(
++    (status) => status.key === "queue" && status.queueMessages !== undefined,
++  );
++  if (goalStatus?.goalTasks) {
++    items.push({
++      id: "pi-goal",
++      variant: "default",
++      icon: <TargetIcon className="size-3.5" />,
++      title: <output>{goalStatus.text}</output>,
++      children: (
++        <ComposerBanner.Body className="pe-2 pb-2">
++          <GoalTaskList key={goalStatus.goalTasks.goalId} goal={goalStatus.goalTasks} />
++        </ComposerBanner.Body>
++      ),
++    });
++  }
++  if (queueStatus?.queueMessages) {
++    const queue = queueStatus.queueMessages;
++    items.push({
++      id: "pi-queue",
++      variant: "default",
++      icon: <ListOrderedIcon className="size-3.5" />,
++      title: (
++        <output>
++          {"Delivery plan · " + queue.total + (queue.total === 1 ? " follow-up · " : " follow-ups · ") + queuePlanLabel(queue)}
++        </output>
++      ),
++      children: (
++        <ComposerBanner.Body className="pe-2 pb-2">
++          {queueControl ?? <QueueMessageList queue={queue} />}
++        </ComposerBanner.Body>
++      ),
++    });
++  }
++  const otherStatuses = statuses.filter(
++    (status) => status !== goalStatus && status !== queueStatus,
++  );
++  if (otherStatuses.length > 0) {
++    items.push({
++      id: "pi-extension-status",
++      variant: "default",
++      icon: <span>▸</span>,
++      title: <output>{"Pi · " + otherStatuses.map((status) => status.text).join(" · ")}</output>,
++    });
++  }
++  return items;
+ }
+ 
+ /** Subagents and side chats waiting on the user, unless the parent is itself waiting on them. */
+--- a/packages/client-runtime/src/state/commandPermissions.test.ts
++++ b/packages/client-runtime/src/state/commandPermissions.test.ts
+@@ -156,13 +156,17 @@
+     { method: WS_METHODS.serverRunStorageCleanup, scope: AuthSettingsWriteScope },
+     { method: WS_METHODS.serverReclaimDatabaseSpace, scope: AuthEnvironmentMaintainScope },
+     { method: WS_METHODS.workspaceAddTaskFolderRepository, scope: AuthSourceControlWriteScope },
++    { method: WS_METHODS.providerQueueControl, scope: AuthOrchestrationOperateScope },
+     { method: WS_METHODS.providerMcpSignInStart, scope: AuthProvidersManageScope },
+     { method: WS_METHODS.providerMcpSignInComplete, scope: AuthProvidersManageScope },
+   ])("requires the destination $scope grant for $method", ({ method, scope }) =>
+     Effect.gen(function* () {
+       const registry = yield* setup;
+       const command = createCommandPermissions(runtime, method);
+-      registry.set(sessions(env), AsyncResult.success(grant(true)));
++      registry.set(
++        sessions(env),
++        AsyncResult.success(grant(scope !== AuthOrchestrationOperateScope)),
++      );
+       expect(registry.get(command.permissionAtom(env))).toBe(false);
+       expect((yield* command.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
+         "EnvironmentAuthorizationError",
+--- a/packages/client-runtime/src/state/threadCommands.ts
++++ b/packages/client-runtime/src/state/threadCommands.ts
+@@ -460,6 +460,10 @@
+           `history:${JSON.stringify([environmentId, input.threadId])}`,
+       },
+     }),
++    controlProviderQueue: createEnvironmentRpcCommand(runtime, {
++      label: "environment-data:commands:thread:provider-queue-control",
++      tag: WS_METHODS.providerQueueControl,
++    }),
+     uploadFeedback: createEnvironmentRpcCommand(runtime, {
+       label: "environment-data:commands:thread:upload-feedback",
+       tag: WS_METHODS.providerUploadFeedback,
+--- a/packages/contracts/src/clientRpcPermissions.ts
++++ b/packages/contracts/src/clientRpcPermissions.ts
+@@ -17,6 +17,7 @@
+ 
+ /** Incremental client enforcement; the server still authorizes every request. */
+ export const CLIENT_GUARDED_RPC_SCOPES = {
++  [WS_METHODS.providerQueueControl]: AuthOrchestrationOperateScope,
+   [WS_METHODS.providerAuthRemoveMethod]: AuthProvidersManageScope,
+   // An MCP sign-in stores a credential for the agent, as an account sign-in does.
+   [WS_METHODS.providerMcpSignInStart]: AuthProvidersManageScope,
+--- a/packages/contracts/src/orchestrationV2.ts
++++ b/packages/contracts/src/orchestrationV2.ts
+@@ -1093,6 +1093,61 @@
+ });
+ export type OrchestrationV2GoalTasks = typeof OrchestrationV2GoalTasks.Type;
+ 
++export const ProviderQueueControl = Schema.Struct({
++  action: Schema.Literals(["pause", "row-pause", "remove", "move", "begin-edit", "save-edit", "cancel-edit", "renew-edit"]),
++  revision: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
++  id: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(256))),
++  owner: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
++  paused: Schema.optional(Schema.Boolean),
++  direction: Schema.optional(Schema.Literals([-1, 1])),
++  text: Schema.optional(Schema.String.check(Schema.isMaxLength(65536))),
++});
++export type ProviderQueueControl = typeof ProviderQueueControl.Type;
++
++export const ProviderQueueControlInput = Schema.Struct({
++  threadId: ThreadId,
++  providerThreadId: ProviderThreadId,
++  control: ProviderQueueControl,
++});
++
++export class ProviderQueueControlError extends Schema.TaggedError<ProviderQueueControlError>()(
++  "ProviderQueueControlError", { detail: Schema.String },
++) {
++  override get message(): string { return this.detail; }
++}
++
++export const OrchestrationV2QueueMessages = Schema.Struct({
++  version: Schema.Literal(1),
++  total: NonNegativeInt,
++  paused: Schema.Boolean,
++  activity: Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(64))),
++  plan: Schema.optional(Schema.Struct({
++    revision: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
++    state: Schema.Literals(["paused", "row-paused", "editing", "control", "steer-first", "ready", "after-run"]),
++    headId: Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(256))),
++    mode: Schema.Literals(["one-at-a-time", "all"]),
++    errorHold: Schema.Boolean,
++    editor: Schema.NullOr(Schema.Struct({
++      id: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
++      owner: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
++      text: Schema.String.check(Schema.isMaxLength(65536)),
++    })),
++  })),
++  items: Schema.Array(
++    Schema.Struct({
++      id: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
++      text: Schema.String.check(Schema.isMaxLength(4000)),
++      paused: Schema.Boolean,
++      imageCount: NonNegativeInt,
++      truncated: Schema.Boolean,
++      dispatchHead: Schema.optional(Schema.Boolean),
++      dispatchBatch: Schema.optional(Schema.Boolean),
++      held: Schema.optional(Schema.Boolean),
++    }),
++  ).check(Schema.isMaxLength(64)),
++});
++export type OrchestrationV2QueueMessages = typeof OrchestrationV2QueueMessages.Type;
++
+ export const OrchestrationV2ProviderSession = Schema.Struct({
+   id: ProviderSessionId,
+   driver: ProviderDriverKind,
+@@ -1107,6 +1162,7 @@
+         key: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
+         text: TrimmedNonEmptyString.check(Schema.isMaxLength(4096)),
+         goalTasks: Schema.optional(OrchestrationV2GoalTasks),
++        queueMessages: Schema.optional(OrchestrationV2QueueMessages),
+       }),
+     ).check(Schema.isMaxLength(32)),
+   ).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+--- a/packages/contracts/src/rpc.ts
++++ b/packages/contracts/src/rpc.ts
+@@ -1,5 +1,7 @@
+ import {
+   OrchestrationV2SearchThreadError,
++  ProviderQueueControlInput,
++  ProviderQueueControlError,
+   OrchestrationV2SearchThreadInput,
+   OrchestrationV2SearchThreadResult,
+   OrchestrationV2SearchThreadsInput,
+@@ -499,6 +501,7 @@
+   mcpAppsUpdateModelContext: "mcpApps.updateModelContext",
+ 
+   providerUploadFeedback: "provider.uploadFeedback",
++  providerQueueControl: "provider.queue.control",
+   providerMcpSignInStart: "provider.mcpSignIn.start",
+   providerMcpSignInComplete: "provider.mcpSignIn.complete",
+   providerAuthStart: "provider.auth.start",
+@@ -1764,6 +1767,12 @@
+   payload: ProviderUploadFeedbackInput,
+   success: ProviderUploadFeedbackResult,
+   error: Schema.Union([ProviderUploadFeedbackError, EnvironmentAuthorizationError]),
++});
++
++const WsProviderQueueControlRpc = Rpc.make(WS_METHODS.providerQueueControl, {
++  payload: ProviderQueueControlInput,
++  success: Schema.Void,
++  error: Schema.Union([ProviderQueueControlError, EnvironmentAuthorizationError]),
+ });
+ 
+ const WsProviderMcpSignInStartRpc = Rpc.make(WS_METHODS.providerMcpSignInStart, {
+@@ -2540,6 +2549,7 @@
+   WsMcpAppsReadResourceRpc,
+   WsMcpAppsUpdateModelContextRpc,
+   WsProviderUploadFeedbackRpc,
++  WsProviderQueueControlRpc,
+   WsProviderMcpSignInStartRpc,
+   WsProviderMcpSignInCompleteRpc,
+   WsSubscribeVcsStatusRpc,
+--- a/packages/provider-core/src/server/ProviderAdapter.ts
++++ b/packages/provider-core/src/server/ProviderAdapter.ts
+@@ -29,6 +29,7 @@
+   ProviderSessionId,
+   ProviderThreadId,
+   ProviderTurnId,
++  type ProviderQueueControl,
+   RuntimeMode,
+   RuntimeRequestId,
+   RunAttemptId,
+@@ -803,6 +804,10 @@
+       readonly providerThread: OrchestrationV2ProviderThread;
+     },
+   ) => Effect.Effect<boolean, ProviderAdapterV2Error>;
++  readonly controlQueue?: (input: {
++    readonly providerThread: OrchestrationV2ProviderThread;
++    readonly control: ProviderQueueControl;
++  }) => Effect.Effect<void, ProviderAdapterV2Error>;
+   readonly startTurn: (
+     input: ProviderAdapterV2TurnInput,
+   ) => Effect.Effect<void, ProviderAdapterV2Error>;
+--- a/packages/provider-pi/src/server/adapter.test.ts
++++ b/packages/provider-pi/src/server/adapter.test.ts
+@@ -15,6 +15,7 @@
+   type ChatAttachment,
+   type ModelSelection,
+   type OrchestrationV2AppThread,
++  type OrchestrationV2QueueMessages,
+   type OrchestrationV2ProviderThread,
+   OrchestrationV2UserInputQuestion,
+   type OrchestrationV2ProviderTurn,
+@@ -200,6 +201,7 @@
+       | { readonly steering: ReadonlyArray<string>; readonly followUp: ReadonlyArray<string> }
+       | "unknown_command",
+   ) => void;
++  readonly setQueueControlsAvailable: (available: boolean) => void;
+   readonly closeStdout: Effect.Effect<void>;
+   readonly lastSpawn: () => {
+     readonly args: ReadonlyArray<string>;
+@@ -254,6 +256,7 @@
+   const promptModels: Array<string> = [];
+   const promptServiceTiers: Array<string | null> = [];
+   let serviceTier: string | null = null;
++  let queueControlsAvailable = true;
+   let promptDisposition = true;
+   let currentModel = "default";
+   const serviceTierCommand = `/${PI_T3_SERVICE_TIER_COMMAND}`;
+@@ -333,6 +336,8 @@
+         return promptDisposition && isStreaming
+           ? { ...base, data: { disposition: "queued" } }
+           : base;
++      case "get_commands":
++        return { ...base, data: { commands: queueControlsAvailable ? [{ name: "queue-control" }] : [] } };
+       case "get_available_models":
+         return { ...base, data: { models } };
+       case "new_session": {
+@@ -519,6 +524,7 @@
+     setClearQueue: (result) => {
+       clearQueue = result;
+     },
++    setQueueControlsAvailable: available => { queueControlsAvailable = available; },
+     closeStdout: Queue.end(stdout),
+     lastSpawn: () => lastSpawn,
+   } satisfies FakePi;
+@@ -655,6 +661,134 @@
+ });
+ 
+ describe("PiAdapterV2", () => {
++  for (const error of [null, "The delivery plan changed; try again"]) {
++    it.effect("waits for the queue control result: " + (error ?? "success"), () => Effect.gen(function* () {
++      const fake = yield* makeFakePi;
++      const { runtime, takeEvent } = yield* openRuntime(fake);
++      const providerThread = yield* runtime.ensureThread({ threadId: THREAD_ID, modelSelection: modelSelection("default"), runtimePolicy });
++      const queue: OrchestrationV2QueueMessages = {
++        version: 1, total: 1, paused: true, activity: null,
++        plan: { revision: "revision-a", state: "paused", headId: "follow-up-1", mode: "one-at-a-time", errorHold: false, editor: null },
++        items: [{ id: "follow-up-1", text: "Draft", paused: false, imageCount: 0, truncated: false, dispatchHead: true, dispatchBatch: true, held: false }],
++      };
++      yield* fake.emit({ type: "extension_ui_request", method: "setWidget", widgetKey: "queue-messages", widgetLines: [JSON.stringify(queue)] });
++      yield* takeEvent(event => event.type === "provider_session.updated" && event.providerSession.extensionStatuses?.some(status => status.queueMessages !== undefined) === true);
++      assert.deepEqual(runtime.providerSession.extensionStatuses?.[0]?.queueMessages, queue);
++      assert.isDefined(runtime.controlQueue);
++      const operation = yield* runtime.controlQueue!({ providerThread, control: { action: "remove", id: "follow-up-1", revision: "revision-a" } }).pipe(Effect.forkScoped);
++      const prompt = yield* fake.takeRequest("prompt");
++      assert.isTrue(String(prompt["message"]).startsWith("/queue-control "));
++      const control = JSON.parse(Buffer.from(String(prompt["message"]).slice("/queue-control ".length), "base64url").toString("utf8"));
++      assert.equal(control.action, "remove");
++      assert.equal(control.id, "follow-up-1");
++      yield* fake.emit({ type: "extension_ui_request", method: "setWidget", widgetKey: "queue-control-result", widgetLines: [JSON.stringify({ requestId: "unrelated", error: null })] });
++      yield* fake.emit({ type: "extension_ui_request", method: "setWidget", widgetKey: "queue-control-result", widgetLines: [JSON.stringify({ requestId: control.requestId, error })] });
++      const exit = yield* Fiber.await(operation);
++      if (error === null) assert.isTrue(Exit.isSuccess(exit));
++      else { assert.isTrue(Exit.isFailure(exit)); if (Exit.isFailure(exit)) { assert.include(Cause.pretty(exit.cause), error); assert.notInclude(Cause.pretty(exit.cause), "pi provider protocol error: pi provider protocol error:"); } }
++      fake.setQueueControlsAvailable(false);
++      const unavailable = yield* runtime.controlQueue!({ providerThread, control: { action: "remove", id: "follow-up-1", revision: "revision-a" } }).pipe(Effect.exit);
++      assert.isTrue(Exit.isFailure(unavailable));
++      assert.equal(fake.allRequests().filter(request => request["type"] === "prompt").length, 1, "A missing extension command must never become model input");
++      const wrongThread = yield* runtime.controlQueue!({ providerThread: { ...providerThread, id: ProviderThreadId.make("wrong-thread") }, control: { action: "remove", id: "follow-up-1", revision: "revision-a" } }).pipe(Effect.exit);
++      assert.isTrue(Exit.isFailure(wrongThread));
++    }).pipe(Effect.scoped, Effect.provide(layerTest)));
++  }
++
++  it.effect("streams structured queue messages independently of goal and turn ownership", () =>
++    Effect.gen(function* () {
++      const fake = yield* makeFakePi;
++      const { runtime, takeEvent } = yield* openRuntime(fake);
++      const queue = {
++        version: 1 as const,
++        total: 2,
++        paused: true,
++        activity: null,
++        items: [
++          {
++            id: "follow-up-1",
++            text: "First task\nSecond line",
++            paused: true,
++            imageCount: 0,
++            truncated: false,
++          },
++          { id: "follow-up-3", text: "先验证", paused: false, imageCount: 2, truncated: false },
++        ],
++      };
++      const widget = {
++        type: "extension_ui_request",
++        method: "setWidget",
++        widgetKey: "queue-messages",
++        widgetLines: [JSON.stringify(queue)],
++      };
++      yield* fake.emit({
++        type: "extension_ui_request",
++        method: "setStatus",
++        statusKey: "goal",
++        statusText: "Goal independent",
++      });
++      yield* fake.emit(widget);
++      yield* fake.emit(widget);
++      yield* fake.emit({
++        type: "extension_ui_request",
++        method: "setStatus",
++        statusKey: "queue",
++        statusText: "Queue mobile preview",
++      });
++      for (const widgetLines of [
++        ["{"],
++        [JSON.stringify({ ...queue, version: 2 })],
++        [JSON.stringify({ ...queue, total: 1 })],
++        [JSON.stringify({ ...queue, items: [queue.items[0], queue.items[0]] })],
++        [JSON.stringify({ ...queue, items: [{ ...queue.items[0], text: "x".repeat(4001) }] })],
++        ["x".repeat(1_048_577)],
++      ])
++        yield* fake.emit({ ...widget, widgetLines });
++      yield* fake.emit({
++        type: "extension_ui_request",
++        id: "queue-barrier",
++        method: "input",
++        title: "Continue?",
++      });
++      const observed: ProviderAdapter.ProviderAdapterV2Event[] = [];
++      yield* takeEvent((event) => {
++        observed.push(event);
++        return event.type === "runtime_request.updated";
++      });
++      assert.deepEqual(runtime.providerSession.extensionStatuses, [
++        { key: "goal", text: "Goal independent" },
++        { key: "queue", text: "Queue mobile preview", queueMessages: queue },
++      ]);
++      assert.lengthOf(
++        observed.filter((event) => event.type === "provider_session.updated"),
++        3,
++      );
++      assert.isFalse(observed.some((event) => event.type === "message.updated"));
++      yield* fake.emit({ ...widget, widgetLines: undefined });
++      yield* fake.emit({
++        type: "extension_ui_request",
++        id: "queue-clear-widget",
++        method: "input",
++        title: "Continue?",
++      });
++      yield* takeEvent((event) => event.type === "runtime_request.updated");
++      assert.deepEqual(runtime.providerSession.extensionStatuses, [
++        { key: "goal", text: "Goal independent" },
++        { key: "queue", text: "Queue mobile preview" },
++      ]);
++      yield* fake.emit({ type: "extension_ui_request", method: "setStatus", statusKey: "queue" });
++      yield* fake.emit({
++        type: "extension_ui_request",
++        id: "queue-clear-status",
++        method: "input",
++        title: "Continue?",
++      });
++      yield* takeEvent((event) => event.type === "runtime_request.updated");
++      assert.deepEqual(runtime.providerSession.extensionStatuses, [
++        { key: "goal", text: "Goal independent" },
++      ]);
++    }).pipe(Effect.scoped, Effect.provide(layerTest)),
++  );
+   it.effect(
+     "streams the complete goal tree while idle, preserving it through summary updates",
+     () =>
+--- a/packages/provider-pi/src/server/adapter.ts
++++ b/packages/provider-pi/src/server/adapter.ts
+@@ -8,6 +8,7 @@
+ import {
+   ProviderDriverKind,
+   OrchestrationV2GoalTasks,
++  OrchestrationV2QueueMessages,
+   type ChatAttachment,
+   type ModelSelection,
+   type OrchestrationV2ExecutionNode,
+@@ -94,8 +95,13 @@
+ const PI_REQUEST_TIMEOUT_MS = 15_000;
+ const PI_SUBAGENT_ASYNC_PREFIX = "PI_SUBAGENT_ASYNC_JSON:";
+ const decodePiJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
++const encodePiJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+ const decodeGoalTasks = Schema.decodeUnknownOption(Schema.fromJsonString(OrchestrationV2GoalTasks));
+ const sameGoalTasks = Schema.toEquivalence(Schema.UndefinedOr(OrchestrationV2GoalTasks));
++const decodeQueueMessages = Schema.decodeUnknownOption(
++  Schema.fromJsonString(OrchestrationV2QueueMessages),
++);
++const sameQueueMessages = Schema.toEquivalence(Schema.UndefinedOr(OrchestrationV2QueueMessages));
+ const PI_SESSION_TIMEOUT_MS = 60_000;
+ const MAX_EXTENSION_STATUSES = 32;
+ const MAX_EXTENSION_STATUS_KEY_LENGTH = 256;
+@@ -630,6 +636,8 @@
+         ProviderAdapter.ProviderAdapterV2Error | Cause.Done
+       >();
+       const pendingPrompts = new Map<string, PendingPiPrompt>();
++      const queueControlResults = new Map<string, Deferred.Deferred<void, ProviderAdapter.ProviderAdapterV2Error>>();
++      let queueControlSequence = 0;
+       // Custom answers waiting for their ask_user_question follow-up input, keyed by title prefix.
+       // FIFO per prefix: the extension asks each follow-up right after its own select is answered.
+       const customAnswerFollowUps = new Map<string, string[]>();
+@@ -831,6 +839,56 @@
+               : index < 0
+                 ? [...statuses, { key, text }]
+                 : statuses.map((status) => (status.key === key ? { ...status, text } : status)),
++        };
++        yield* updateProviderSession(sessionEntity.status);
++      });
++
++      const updateQueueMessages = Effect.fnUntraced(function* (event: PiRpcRecord) {
++        if (
++          closed ||
++          stopRequested ||
++          runtimeRetired ||
++          unsolicitedActivityDetected ||
++          sessionEntity.status === "stopped"
++        )
++          return;
++        const lines = recordField(event, "widgetLines");
++        if (
++          lines !== undefined &&
++          (!Array.isArray(lines) ||
++            lines.length !== 1 ||
++            typeof lines[0] !== "string" ||
++            lines[0].length > 1_048_576)
++        )
++          return;
++        const queueMessages =
++          lines === undefined ? undefined : Option.getOrUndefined(decodeQueueMessages(lines[0]));
++        if (lines !== undefined && queueMessages === undefined) return;
++        if (
++          queueMessages &&
++          (queueMessages.total < queueMessages.items.length ||
++            new Set(queueMessages.items.map((item) => item.id)).size !== queueMessages.items.length)
++        )
++          return;
++        const statuses = sessionEntity.extensionStatuses ?? [];
++        const current = statuses.find((status) => status.key === "queue");
++        if (sameQueueMessages(current?.queueMessages, queueMessages)) return;
++        if (current === undefined && statuses.length >= MAX_EXTENSION_STATUSES) return;
++        if (extensionStatusReset?.previous.some((status) => status.key === "queue"))
++          extensionStatusReset.touched.add("queue");
++        const next = {
++          key: "queue",
++          text:
++            current?.text ??
++            (queueMessages ? "Queue: " + queueMessages.total + " pending" : "Queue"),
++          ...(queueMessages === undefined ? {} : { queueMessages }),
++        };
++        sessionEntity = {
++          ...sessionEntity,
++          extensionStatuses:
++            current === undefined
++              ? [...statuses, next]
++              : statuses.map((status) => (status.key === "queue" ? next : status)),
+         };
+         yield* updateProviderSession(sessionEntity.status);
+       });
+@@ -1866,6 +1924,22 @@
+             message,
+             notifyType === "warning" || notifyType === "error" ? notifyType : "info",
+           );
++          return;
++        }
++        if (method === "setWidget" && recordString(event, "widgetKey") === "queue-control-result") {
++          const lines = recordField(event, "widgetLines");
++          if (!Array.isArray(lines) || lines.length !== 1 || typeof lines[0] !== "string" || lines[0].length > 8192) return;
++          const result = Option.getOrUndefined(decodePiJson(lines[0]));
++          const id = recordString(result, "requestId");
++          const pending = id === undefined ? undefined : queueControlResults.get(id);
++          if (!pending) return;
++          const error = recordField(result, "error");
++          if (error === null) yield* Deferred.succeed(pending, undefined);
++          else if (typeof error === "string" && error.length <= 1024) yield* Deferred.fail(pending, protocolError(error));
++          return;
++        }
++        if (method === "setWidget" && recordString(event, "widgetKey") === "queue-messages") {
++          yield* updateQueueMessages(event);
+           return;
+         }
+         if (method === "setWidget" && recordString(event, "widgetKey") === "goal-tasks") {
+@@ -3422,6 +3496,40 @@
+               : selection.model;
+           return slug === undefined ? undefined : modelContextWindows.get(slug);
+         },
++        controlQueue: Effect.fn("PiAdapter.controlQueue")(function* ({ providerThread, control }) {
++          if (closed || stopRequested || runtimeRetired || threadState?.providerThread.id !== providerThread.id) {
++            return yield* protocolError("This Pi session is no longer attached to the thread");
++          }
++          const queue = sessionEntity.extensionStatuses?.find(status => status.key === "queue")?.queueMessages;
++          if (!queue?.plan) return yield* protocolError("This Pi extension does not support delivery controls");
++          // Never send an unknown slash command to the model, even with a stale client snapshot.
++          const commands = yield* request({ type: "get_commands" }).pipe(
++            Effect.mapError(cause => protocolError("Could not read Pi queue commands", cause)),
++          );
++          const registered = recordField(commands, "commands");
++          if (!Array.isArray(registered) || !registered.some(command => recordString(command, "name") === "queue-control")) {
++            return yield* protocolError("Pi delivery controls are unavailable; reload the extension");
++          }
++          if (closed || stopRequested || registrationInProgress || threadState?.providerThread.id !== providerThread.id) {
++            return yield* protocolError("The active Pi session changed; reopen the delivery plan");
++          }
++          const requestId = "queue-control-" + ++queueControlSequence;
++          const encoded = yield* encodePiJson({ ...control, requestId }).pipe(
++            Effect.mapError(cause => protocolError("Could not encode the queue control request", cause)),
++          );
++          const result = yield* Deferred.make<void, ProviderAdapter.ProviderAdapterV2Error>();
++          queueControlResults.set(requestId, result);
++          yield* request({
++            type: "prompt",
++            message: "/queue-control " + Buffer.from(encoded).toString("base64url"),
++          }).pipe(
++            Effect.andThen(Deferred.await(result)),
++            Effect.timeout("15 seconds"),
++            Effect.mapError(cause => Schema.is(ProviderAdapter.ProviderAdapterProtocolError)(cause)
++              ? cause : protocolError(cause instanceof Error ? cause.message : "Pi rejected the queue change")),
++            Effect.ensuring(Effect.sync(() => queueControlResults.delete(requestId))),
++          );
++        }),
+         ensureThread: (threadInput) =>
+           registerThread(threadInput).pipe(
+             Effect.mapError(

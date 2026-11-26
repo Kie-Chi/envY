@@ -39,6 +39,9 @@
   envy.storage.archive.mountSource = "";
 
   # --- VSCODE CONFIG ---
+  envy.t3code.service.host = "127.0.0.1";
+  envy.t3code.service.port = 3773;
+  envy.t3code.service.lan = false;
   envy.vscode.mode = "remote";
   # END ENVY MANAGED CONFIG
 
@@ -60,7 +63,6 @@
   envy.darwin.software.homebrew.casks.include = [
     "steam"
     "sunlogincontrol"
-    "t3-code"
   ];
 
   envy.darwin.software.homebrew.casks.exclude = [

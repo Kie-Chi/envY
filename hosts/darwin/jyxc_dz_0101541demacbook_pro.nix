@@ -170,11 +170,6 @@
     {
       profile = "mpo";
       credential = "mp-go";
-      model = "gpt-6.1-sol-coding";
-    }
-    {
-      profile = "mpo";
-      credential = "mp-go";
       model = "gpt-6-astra";
     }
     {

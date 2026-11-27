@@ -39,9 +39,9 @@
   envy.storage.archive.mountSource = "";
 
   # --- VSCODE CONFIG ---
-  envy.t3code.service.host = "127.0.0.1";
+  envy.t3code.service.host = "::";
   envy.t3code.service.port = 3773;
-  envy.t3code.service.lan = false;
+  envy.t3code.service.lan = true;
   envy.vscode.mode = "remote";
   # END ENVY MANAGED CONFIG
 

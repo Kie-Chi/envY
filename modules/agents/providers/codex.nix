@@ -12,7 +12,11 @@ let
   catalogTarget = "/.codex/envy-models.json";
   catalogSelections = map (entry: entry.selection) (selectionsFor config.envy.agents.codex).bindings;
   catalogSource = pkgs.writeText "codex-model-selections.json" (builtins.toJSON catalogSelections);
-  codexExecutable = if pkgs.stdenv.hostPlatform.isDarwin then "/opt/homebrew/bin/codex" else lib.getExe pkgs.codex;
+  versions = import ./versions.nix { inherit lib pkgs; };
+  codexPackage = if pkgs.stdenv.hostPlatform.isLinux
+    then import ./agent-package.nix { inherit lib pkgs; kind = "codex"; spec = versions.codex; }
+    else pkgs.codex;
+  codexExecutable = if pkgs.stdenv.hostPlatform.isDarwin then "/opt/homebrew/bin/codex" else lib.getExe codexPackage;
 
   codexAgent = config.envy.agents.codex;
   resolvedAgent = resolveAgent codexAgent;

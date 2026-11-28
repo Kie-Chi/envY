@@ -303,6 +303,8 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(amux.parse(["kill-session", "-t", "x"]).func, amux.cmd_kill)
         self.assertEqual(amux.parse(["ls", "-F", "#{session_name}"]).F, "#{session_name}")
         self.assertEqual(amux.parse(["update"]).func, amux.cmd_update)
+        self.assertEqual(amux.parse(["update", "claude"]).agent, "claude")
+        self.assertEqual(amux.parse(["update", "codex"]).agent, "codex")
         self.assertEqual(amux.parse(["gc"]).func, amux.cmd_gc)
 
     def test_format_session(self):
@@ -373,6 +375,13 @@ class AgentVersionTests(unittest.TestCase):
         packages = {k.replace("arm64", "x64"): v for k, v in self.PACKAGES.items()}
         amux.latest_agents(self.REGISTRY, "amd64", lambda r, p: self.calls.append(p) or packages[p])
         self.assertIn("@openai/codex/0.9.0-linux-x64", self.calls)
+
+    def test_latest_agents_can_update_one_package(self):
+        packages = {"@anthropic-ai/claude-code-linux-arm64/latest": self.PACKAGES["@anthropic-ai/claude-code-linux-arm64/latest"]}
+        result = amux.latest_agents(self.REGISTRY, "arm64",
+                                    lambda r, p: packages[p], selected="claude", base=self.AGENTS)
+        self.assertEqual(result["claude"], self.AGENTS["claude"])
+        self.assertEqual(result["codex"], self.AGENTS["codex"])
 
     def test_cache_is_fresh_for_a_day(self):
         self.assertEqual(self.resolve(self.get), self.AGENTS)

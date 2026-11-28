@@ -7,6 +7,7 @@ from envy.evaluation import machine_manifest
 
 
 ADAPTERS = ("claude-code", "codex", "openai-compatible-cli", "pi", "stepgo")
+AGENT_UPDATE_TARGETS = ("claude", "codex", "pi", "amux", "all")
 _AGENT_FIELDS = ("adapter", "endpoint", "credential", "model", "contextWindow", "maxTokens", "command", "additionalSettings")
 _PROTOCOLS = ("openai-compatible", "anthropic-compatible", "native")
 _KINDS = ("api-key", "token", "basic")
@@ -65,6 +66,10 @@ def complete_managed_agent_names(ctx, incomplete):
 
 def complete_adapters(ctx, incomplete):
     return _matches(ADAPTERS, incomplete, "agent adapter")
+
+
+def complete_agent_update_targets(ctx, incomplete):
+    return _matches(AGENT_UPDATE_TARGETS, incomplete, "agent update target")
 
 
 def complete_apis(ctx, incomplete):

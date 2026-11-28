@@ -26,7 +26,20 @@ let
       { CFBundleURLName = "Web site URL"; CFBundleURLSchemes = [ "http" "https" ]; CFBundleTypeRole = "Viewer"; }
     ];
   };
+  linuxTsgoPatch = lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+    for tsrs in node_modules/.pnpm/@effect+tsgo-linux-x64@*/node_modules/@effect/tsgo-linux-x64/artifacts/tsrs/*/tsrs; do
+      if [ -x "$tsrs" ]; then
+        ${pkgs.patchelf}/bin/patchelf \
+          --set-interpreter ${pkgs.glibc}/lib/ld-linux-x86-64.so.2 \
+          --set-rpath ${lib.makeLibraryPath [ pkgs.glibc pkgs.stdenv.cc.cc.lib ]} \
+          "$tsrs"
+        "$tsrs" --version
+      fi
+    done
+  '';
   unwrapped = package.unwrapped.overrideAttrs (old: {
+    nativeBuildInputs = (old.nativeBuildInputs or [])
+      ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.patchelf ];
     patches = (old.patches or []) ++ [
       ../../../../files/agents/patches/t3code-pi-goal-tasks.patch
       ../../../../files/agents/patches/t3code-pi-queue-messages.patch
@@ -35,6 +48,8 @@ let
     ];
     patchFlags = [ "-p1" "--fuzz=0" ];
     preBuild = (old.preBuild or "") + ''
+      # npm ships tsrs with an FHS loader path; make it runnable in the Nix sandbox.
+      ${linuxTsgoPatch}
       # ChatView relies on compiler memoization for its render-time state guards.
       (
         cd apps/web

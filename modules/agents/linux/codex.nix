@@ -3,11 +3,17 @@
 let
   prompts = import ../prompts.nix { inherit lib pkgs; };
   wrapper = import ../wrapper.nix { inherit lib pkgs; };
-  # Darwin installs Codex as a Homebrew cask; Linux gets the envY wrapper
-  # around nixpkgs' Codex, reading the template declared by providers/codex.nix.
+  versions = import ../providers/versions.nix { inherit lib pkgs; };
+  codexPackage = import ../providers/agent-package.nix {
+    inherit lib pkgs;
+    kind = "codex";
+    spec = versions.codex;
+  };
+  # Linux gets the envY wrapper around its independently locked npm release,
+  # reading the template declared by providers/codex.nix.
   codex = wrapper.mkWrapper {
     name = "codex";
-    executable = lib.getExe pkgs.codex;
+    executable = lib.getExe codexPackage;
     envFiles = [
       config.sops.templates.envy-agent-codex.path
       (wrapper.runtimeEnvPath config.envy.user.home "codex")

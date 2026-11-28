@@ -110,6 +110,23 @@ class SourceFreezeTests(FixtureCase):
             self.assertEqual(call.args, (["nix", "flake", "metadata", "--json",
                                           "--no-update-lock-file", f"path:{self.root}"], self.root))
 
+    def test_metadata_without_frozen_path_uses_flake_archive(self):
+        with patch.object(provenance, "_git_evidence", side_effect=[{"gitRevision": "abc"}] * 2), \
+             patch.object(provenance, "_lock_digest", side_effect=["lock"] * 3), \
+             patch.object(provenance, "nar_hash", return_value="sha256-fixture"), \
+             patch.object(provenance, "_json_command", side_effect=[
+                 {"locked": {"path": str(self.root), "type": "path"}},
+                 {"path": "/nix/store/frozen"},
+                 {"locked": {"path": str(self.root), "type": "path"}},
+                 {"path": "/nix/store/frozen"},
+             ]) as run:
+            result = provenance.freeze_source(self.root)
+
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["frozenPath"], "/nix/store/frozen")
+        self.assertEqual(run.call_args_list[1].args[0][2], "archive")
+        self.assertEqual(run.call_args_list[3].args[0][2], "archive")
+
     def test_ignored_content_race_rejects_even_when_git_is_unchanged(self):
         with self.assertRaisesRegex(provenance.SnapshotError, "Source changed") as error:
             self.freeze(paths=["/nix/store/one", "/nix/store/two"])

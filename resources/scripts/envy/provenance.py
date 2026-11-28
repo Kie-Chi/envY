@@ -104,16 +104,28 @@ def reverify_source(source: dict, target: str) -> bool:
 def freeze_source(root: Path = ENVY_ROOT) -> dict[str, Any]:
     before = _git_evidence(root)
     lock = _lock_digest(root)
-    # Freeze the root source without recursively fetching unused locked inputs.
-    metadata = _json_command(["nix", "flake", "metadata", "--json", "--no-update-lock-file", f"path:{root}"], root)
-    path = metadata.get("path") if isinstance(metadata, dict) else None
-    if not isinstance(path, str) or not path.startswith("/nix/store/") or "#" in path:
+    metadata_command = ["nix", "flake", "metadata", "--json", "--no-update-lock-file", f"path:{root}"]
+    archive_command = ["nix", "flake", "archive", "--json", "--no-update-lock-file", f"path:{root}"]
+
+    def frozen_path() -> str | None:
+        # Older Nix versions expose the archived source as metadata.path.
+        metadata = _json_command(metadata_command, root)
+        path = metadata.get("path") if isinstance(metadata, dict) else None
+        if not isinstance(path, str) or not path.startswith("/nix/store/") or "#" in path:
+            # Determinate Nix 2.33 keeps the local path in locked.path and omits
+            # metadata.path. Archive the flake explicitly to obtain the immutable
+            # store source required by the provenance checks.
+            archived = _json_command(archive_command, root)
+            path = archived.get("path") if isinstance(archived, dict) else None
+        return path if isinstance(path, str) and path.startswith("/nix/store/") and "#" not in path else None
+
+    path = frozen_path()
+    if path is None:
         raise SnapshotError("Nix metadata did not return a frozen store source")
     source = {**before, "frozenPath": path, "narHash": nar_hash(path, root=root),
               "lockFingerprint": _lock_digest(Path(path)), "coverage": "path flake archive, including ignored files"}
     # Snapshot again, rather than using Git alone: path flakes include ignored files.
-    again = _json_command(["nix", "flake", "metadata", "--json", "--no-update-lock-file", f"path:{root}"], root)
-    if (not isinstance(again, dict) or again.get("path") != path or _git_evidence(root) != before
+    if (frozen_path() != path or _git_evidence(root) != before
             or _lock_digest(root) != lock or source["lockFingerprint"] != lock):
         raise SnapshotError("Source changed while freezing; retry the preview", partial={"source": source})
     source["verified"] = source["narHash"] is not None and source["lockFingerprint"] is not None

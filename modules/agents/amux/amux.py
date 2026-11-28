@@ -196,8 +196,12 @@ def agents_cache(cfg: dict) -> str:
     return os.path.join(cfg["home"], ".cache", "amux", "agents.json")
 
 
-def ensure_image(cfg: dict, arch: str, *, force_check: bool = False) -> tuple[str, dict]:
-    agents = resolve_agents(agents_cache(cfg), cfg["npmRegistry"], arch, force=force_check, fallback=image_agents)
+def ensure_image(cfg: dict, arch: str, *, force_check: bool = False,
+                 selected: str | None = None) -> tuple[str, dict]:
+    agents = resolve_agents(
+        agents_cache(cfg), cfg["npmRegistry"], arch, force=force_check, selected=selected,
+        fallback=lambda: locked_agents(cfg, arch) or image_agents(),
+    )
     context = cfg["image"]["context"]
     args = build_args(cfg, agents)
     tag = image_tag(context, args)
@@ -225,17 +229,28 @@ def npm_get(registry: str, path: str) -> dict:
         return json.load(response)
 
 
-def latest_agents(registry: str, arch: str, get: Callable[[str, str], dict] = npm_get) -> dict:
-    """Newest Claude Code and Codex Linux packages for the Docker architecture."""
+def latest_agents(registry: str, arch: str, get: Callable[[str, str], dict] = npm_get,
+                  selected: str | None = None, base: dict | None = None) -> dict:
+    """Resolve selected newest Linux agent packages, preserving other versions."""
     platform = NPM_PLATFORMS[arch]
-    claude = get(registry, f"@anthropic-ai/claude-code-{platform}/latest")
-    version = get(registry, "@openai/codex/latest")["version"]
-    codex = get(registry, f"@openai/codex/{version}-{platform}")
-    return {
-        "claude": {"version": claude["version"], "url": claude["dist"]["tarball"],
-                   "integrity": claude["dist"]["integrity"]},
-        "codex": {"version": version, "url": codex["dist"]["tarball"], "integrity": codex["dist"]["integrity"]},
-    }
+    agents = dict(base or {})
+    targets = AGENTS if selected in (None, "all") else (selected,)
+    if "claude" in targets:
+        claude = get(registry, f"@anthropic-ai/claude-code-{platform}/latest")
+        agents["claude"] = {
+            "version": claude["version"], "url": claude["dist"]["tarball"],
+            "integrity": claude["dist"]["integrity"],
+        }
+    if "codex" in targets:
+        version = get(registry, "@openai/codex/latest")["version"]
+        codex = get(registry, f"@openai/codex/{version}-{platform}")
+        agents["codex"] = {
+            "version": version, "url": codex["dist"]["tarball"],
+            "integrity": codex["dist"]["integrity"],
+        }
+    if set(agents) != set(AGENTS):
+        raise KeyError("agent version set is incomplete")
+    return agents
 
 
 def versions_summary(agents: dict) -> str:
@@ -259,8 +274,25 @@ def write_json(path: str, value: dict) -> None:
     os.replace(tmp, path)
 
 
+def locked_agents(cfg: dict, arch: str) -> dict | None:
+    """Read the declarative agent lock as an offline fallback for amux."""
+    lock = cfg.get("agentVersions")
+    platform = NPM_PLATFORMS.get(arch)
+    if not isinstance(lock, dict) or platform is None:
+        return None
+    try:
+        agents = {
+            name: lock["agents"][name]["platforms"][platform]
+            for name in AGENTS
+        }
+    except (KeyError, TypeError):
+        return None
+    return agents if all(isinstance(value, dict) for value in agents.values()) else None
+
+
 def resolve_agents(cache: str, registry: str, arch: str, *, force: bool = False,
-                   now: Callable[[], float] = time.time, get: Callable[[str, str], dict] = npm_get,
+                   selected: str | None = None, now: Callable[[], float] = time.time,
+                   get: Callable[[str, str], dict] = npm_get,
                    fallback: Callable[[], dict | None] = lambda: None) -> dict:
     """Agent packages to install, checking npm at most once per VERSION_TTL."""
     cached = read_json(cache)
@@ -269,10 +301,11 @@ def resolve_agents(cache: str, registry: str, arch: str, *, force: bool = False,
         cached = None
     if cached and not force and now() - cached.get("checked", 0) < VERSION_TTL:
         return cached["agents"]
+    base = (cached["agents"] if cached else None) or fallback()
     try:
-        agents = latest_agents(registry, arch, get)
+        agents = latest_agents(registry, arch, get, selected=selected, base=base)
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        known = None if force else (cached["agents"] if cached else fallback())
+        known = None if force else base
         if not known:
             raise AmuxError(f"cannot read agent versions from {registry}: {exc}") from None
         print(f"amux: cannot reach {registry}; using {versions_summary(known)}", file=sys.stderr)
@@ -1026,9 +1059,11 @@ def cmd_kill(args: argparse.Namespace, cfg: dict) -> int:
 
 def cmd_update(args: argparse.Namespace, cfg: dict) -> int:
     before = (read_json(agents_cache(cfg)) or {}).get("agents") or {}
-    image, agents = ensure_image(cfg, docker_arch(cfg), force_check=True)
+    selected = None if args.agent == "all" else args.agent
+    image, agents = ensure_image(cfg, docker_arch(cfg), force_check=True, selected=selected)
     ensure_tools(cfg, image)
-    for name in AGENTS:
+    names = AGENTS if selected is None else (selected,)
+    for name in names:
         old, new = (before.get(name) or {}).get("version"), agents[name]["version"]
         print(f"{name} {old} -> {new}" if old and old != new else f"{name} {new}")
     return 0
@@ -1080,6 +1115,7 @@ def parser() -> argparse.ArgumentParser:
     kill.set_defaults(func=cmd_kill)
 
     update = commands.add_parser("update", help="check npm for newer agents and rebuild the image")
+    update.add_argument("agent", nargs="?", choices=[*AGENTS, "all"], default="all")
     update.set_defaults(func=cmd_update)
 
     gc = commands.add_parser("gc", help="delete container Nix store paths that no session uses")

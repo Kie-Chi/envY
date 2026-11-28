@@ -27,6 +27,7 @@ from envy.agent_completion import (
     complete_adapters,
     complete_agent_names,
     complete_agent_paths,
+    complete_agent_update_targets,
     complete_agent_values,
     complete_apis,
     complete_credential_paths,
@@ -48,6 +49,7 @@ from envy.secure_io import atomic_write_text, ensure_private_directory
 from envy.transaction import FileTransaction
 from envy.structured_config import ConflictError, merge, update_file
 from envy.utils import SECRETS_FILE, current_machine_id
+from envy.workflows.agent_update import agent_status, update_agent
 
 
 MANAGED_START = "  # BEGIN ENVY MANAGED AGENTS"
@@ -1022,6 +1024,65 @@ def _payload(values: dict[str, Any], agents: dict[str, Any]) -> dict[str, Any]:
 app = typer.Typer(name="agent", help="Manage machine-owned agent instances and connections")
 profile_app = typer.Typer(name="profile", help="Manage reusable agent model profiles")
 app.add_typer(profile_app, name="profile")
+
+
+def _version_rows(payload: dict[str, Any], section: str | None) -> list[tuple[str, str, str]]:
+    rows = []
+    agents = (payload.get(section, {}) if section else payload) if isinstance(payload, dict) else {}
+    for name in ("claude", "codex"):
+        platforms = agents.get(name, {}).get("platforms", {}) if isinstance(agents, dict) else {}
+        rows.append((name, str(platforms.get("linux-x64", {}).get("version", "unknown")),
+                     str(platforms.get("linux-arm64", {}).get("version", "unknown"))))
+    return rows
+
+
+@app.command(name="status")
+def cmd_agent_status(
+    refresh: bool = typer.Option(False, "--refresh", help="Query the registries for newer releases"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+):
+    """Show independently locked agent releases and optional registry updates."""
+    try:
+        payload = agent_status(refresh=refresh)
+    except (OSError, RuntimeError, ValueError) as exc:
+        if json_output:
+            emit_error("agent.status", str(exc), code=ErrorCode.INVALID_VALUE.value)
+            raise typer.Exit(code=1) from exc
+        raise typer.BadParameter(str(exc)) from exc
+    if json_output:
+        emit("agent.status", data=payload)
+        return
+    for name, x64, arm64 in _version_rows(payload["lock"], "agents"):
+        latest = {row[0]: row[1:] for row in _version_rows(payload.get("latest", {}), None)} if payload.get("latest") else {}
+        current = latest.get(name)
+        suffix = f"; latest x64={current[0]}, arm64={current[1]}" if current else ""
+        log.console.print(f"{name}: x64={x64}, arm64={arm64}{suffix}")
+    if payload.get("errors"):
+        for name, message in payload["errors"].items():
+            log.warn("agents", "registry status unavailable", agent=name, detail=message)
+    log.console.print("pi: independent flake input")
+    log.console.print("amux: runtime image updater available")
+
+
+@app.command(name="update")
+def cmd_agent_update(
+    target: str = typer.Argument("all", autocompletion=complete_agent_update_targets),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+):
+    """Update one agent release source or the amux runtime image."""
+    try:
+        result = update_agent(target)
+    except (OSError, RuntimeError, ValueError) as exc:
+        if json_output:
+            emit_error("agent.update", str(exc), code=ErrorCode.INVALID_VALUE.value)
+            raise typer.Exit(code=1) from exc
+        raise typer.BadParameter(str(exc)) from exc
+    if json_output:
+        emit("agent.update", data={"target": target, "result": result})
+        return
+    log.ok("agents", "agent update completed", target=target)
+    if target in {"claude", "codex", "pi", "all"}:
+        log.hint("Run: envy apply")
 
 
 @profile_app.command(name="list")

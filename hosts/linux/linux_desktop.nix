@@ -33,12 +33,16 @@
 
   # --- STORAGE CONFIG ---
   envy.storage.mode = "manual";
+  envy.storage.maintenance.go-modcache = false;
   envy.storage.archive.repository = "";
+  envy.storage.archive.mountSource = "";
+
+  # --- T3CODE CONFIG ---
+  envy.t3code.service.host = "::";
+  envy.t3code.service.port = 3773;
+  envy.t3code.service.lan = true;
 
   # --- VSCODE CONFIG ---
-  envy.t3code.service.host = "127.0.0.1";
-  envy.t3code.service.port = 3773;
-  envy.t3code.service.lan = false;
   envy.vscode.mode = "remote";
   # END ENVY MANAGED CONFIG
 

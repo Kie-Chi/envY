@@ -10,12 +10,17 @@ let
   inherit (wrapper.resolve config agentConfig) endpoint credentialName credential;
   templateName = "envy-agent-cc";
   aliases = lib.unique agentConfig.aliases;
+  versions = import ./versions.nix { inherit lib pkgs; };
+  claudePackage = if pkgs.stdenv.hostPlatform.isLinux
+    then import ./agent-package.nix { inherit lib pkgs; kind = "claude"; spec = versions.claude; }
+    else pkgs.claude-code;
 
   claudeWithDefaults = wrapper.mkWrapper {
     name = "claude";
-    # Call nixpkgs' wrapper by absolute path. It prepares Claude Code's
-    # runtime before handing off to its internal .claude-wrapped binary.
-    executable = lib.getExe pkgs.claude-code;
+    # Linux uses envY's fast, independently locked npm release channel.
+    # Darwin keeps the existing nixpkgs package until its native distribution
+    # policy is migrated separately.
+    executable = lib.getExe claudePackage;
     envFiles = [
       config.sops.templates.${templateName}.path
       (wrapper.runtimeEnvPath config.envy.user.home "cc")

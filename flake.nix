@@ -731,15 +731,19 @@
       mkEnvyAgentCheck = system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          python = pkgs.python3.withPackages (ps: [ ps.readability-lxml ps.html2text ]);
+          python = pkgs.python3.withPackages (ps: [
+            ps.readability-lxml ps.html2text ps.typer ps.rich ps.prompt-toolkit ps.pyyaml ps.tomli-w
+          ]);
         in pkgs.runCommand "envy-agent-tests" {
           nativeBuildInputs = [ python pkgs.git pkgs.coreutils pkgs.bash pkgs.zsh pkgs.nodejs_24 ];
         } ''
           export HOME="$TMPDIR/home"
           mkdir -p "$HOME"
           export PYTHONPYCACHEPREFIX="$TMPDIR/pycache"
+          export PYTHONPATH="${./resources/scripts}:$PYTHONPATH"
           AMUX_PATH=${./modules/agents/amux/amux.py} AMUX_COMPLETION=${./modules/agents/amux/_amux} \
             FETCH_AGENTS_PATH=${./modules/agents/amux/image/fetch-agents.py} python ${./modules/agents/amux/test_amux.py}
+          python ${./resources/scripts/tests/test_agent_updates.py}
           zsh -n ${./modules/agents/amux/_amux}
           ENVY_READER_PATH=${./modules/agents/skills/read/scripts/read.py} python ${./modules/agents/tests/test_reader.py}
           ENVY_DEEPSEEK_SEARCH_PATH=${./modules/agents/tools/deepseek_search.py} python ${./modules/agents/tests/test_deepseek_search.py}

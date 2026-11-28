@@ -5,6 +5,7 @@ let
     (import ../../mirrors/catalog.nix).${config.envy.mirrors.mode}
     config.envy.mirrors.overrides;
   prompts = import ../prompts.nix { inherit lib pkgs; };
+  agentVersions = (import ../providers/versions.nix { inherit lib pkgs; }).lock;
   home = config.envy.user.home;
   python = "${pkgs.python3}/bin/python3";
   runtimeTools = [ pkgs.bash pkgs.coreutils ];
@@ -95,6 +96,7 @@ let
     etc = "${etc}";
     env = import ../../mirrors/env.nix mirrors;
     npmRegistry = mirrors.npm.registry;
+    inherit agentVersions;
     skipPermissions = config.envy.amux.skipPermissions;
     nix = {
       system = linuxSystem;

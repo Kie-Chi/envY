@@ -66,6 +66,7 @@ def complete_journal_operations(ctx, incomplete):
         ("sync", "Synchronize, merge if needed, and apply"),
         ("push", "Commit and push changes"),
         ("update-inputs", "Update flake inputs"),
+        ("update-agents", "Update independent agent releases"),
         ("update-brew", "Update Homebrew metadata"),
         ("rollback", "Activate a previous generation"),
         ("clean", "Garbage-collect generations"),

@@ -47,7 +47,7 @@
 -import { branchMismatchBannerItem, extensionStatusBannerItem } from "./chat/ThreadActivityBanners";
 +import { branchMismatchBannerItem, extensionStatusBannerItems } from "./chat/ThreadActivityBanners";
 +import type { PiQueueControlHandle } from "./chat/QueueMessageList";
-+import { QueueMessageControl } from "./chat/QueueMessageControl";
++import { QueueMessageControl, QueueMessagePauseAction } from "./chat/QueueMessageControl";
  import { ThreadNow } from "./chat/ThreadNow";
  import { threadRuntimeIsActive, type ThreadStructure } from "@t3tools/client-runtime/state/shell";
  import { useDelayedStatus } from "../hooks/useDelayedStatus";
@@ -68,7 +68,7 @@
      const fallbackSelection = draftFallback?.selection;
      const defaultSelection =
        draftDefaultModelSelection ??
-@@ -2772,10 +2775,24 @@
+@@ -2772,10 +2775,36 @@
            ]
          : [];
      const limitRecoveryItems = limitRecoveryBanner === null ? [] : [limitRecoveryBanner];
@@ -91,12 +91,24 @@
 +          }}
 +        />
 +      ) : undefined,
++      isServerThread && activeThreadId !== null && serverThread?.activeProviderThreadId && piQueueMessages ? (
++        <QueueMessagePauseAction
++          key={activeThreadId + ":" + serverThread.activeProviderThreadId + ":pause"}
++          queue={piQueueMessages}
++          options={{
++            environmentId,
++            threadId: activeThreadId,
++            providerThreadId: serverThread.activeProviderThreadId,
++            enabled: canOperateThread,
++          }}
++        />
++      ) : undefined,
      );
 -    const extensionStatusItems = extensionStatusBanner === null ? [] : [extensionStatusBanner];
      const usageLimitsItems = usageLimitsBanner === null ? [] : [usageLimitsBanner];
      const projectCloneItems = projectCloneBannerItem === null ? [] : [projectCloneBannerItem];
      // An approval's feedback goes to that approval; the armed session waits for the next message.
-@@ -2830,6 +2847,10 @@
+@@ -2830,6 +2859,10 @@
        ),
      ];
    })() as ComposerBannerStackItem[];
@@ -107,7 +119,7 @@
  
    if (
      terminalUiLaunchContext !== null &&
-@@ -2921,7 +2942,8 @@
+@@ -2921,7 +2954,8 @@
        "thread.editQueuedMessage": ({ event }) =>
          routeKind !== "draft" &&
          composerRef.current?.isCaretAtStart() === true &&
@@ -153,10 +165,11 @@
                  ) : task.status === "skipped" ? (
 --- /dev/null
 +++ b/apps/web/src/components/chat/QueueMessageControl.tsx
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,65 @@
 +import type { EnvironmentId, OrchestrationV2QueueMessages, ProviderThreadId, ThreadId } from "@t3tools/contracts";
 +import { isAtomCommandInterrupted, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-+import type { Ref } from "react";
++import { PauseIcon, PlayIcon } from "lucide-react";
++import { useState, type Ref } from "react";
 +import { threadEnvironment } from "../../state/threads";
 +import { useAtomCommand } from "../../state/use-atom-command";
 +import { QueueMessageList, type PiQueueControlHandle } from "./QueueMessageList";
@@ -178,6 +191,45 @@
 +      throw error instanceof Error ? error : new Error("Could not change the delivery plan.");
 +    }
 +  } : undefined} />;
++}
++
++export function QueueMessagePauseAction({ queue, options }: { queue: OrchestrationV2QueueMessages; options: QueueMessageControlOptions }) {
++  const controlQueue = useAtomCommand(threadEnvironment.controlProviderQueue);
++  const [busy, setBusy] = useState(false);
++  const [error, setError] = useState<string | null>(null);
++  const paused = queue.paused;
++  const disabled = !options.enabled || queue.plan === undefined || queue.plan.editor !== null || busy;
++  const onClick = async () => {
++    if (disabled || !queue.plan) return;
++    setBusy(true);
++    setError(null);
++    let failure: Error | null = null;
++    try {
++      const result = await controlQueue({
++        environmentId: options.environmentId,
++        input: {
++          threadId: options.threadId,
++          providerThreadId: options.providerThreadId,
++          control: { action: "pause", paused: !paused, revision: queue.plan.revision },
++        },
++      });
++      if (result._tag === "Failure") {
++        if (isAtomCommandInterrupted(result)) {
++          failure = new Error("Queue operation interrupted.");
++        } else {
++          const cause = squashAtomCommandFailure(result);
++          failure = cause instanceof Error ? cause : new Error("Could not change the delivery plan.");
++        }
++      }
++    } catch (cause) {
++      failure = cause instanceof Error ? cause : new Error("Could not change the delivery plan.");
++    }
++    setBusy(false);
++    if (failure) setError(failure.message);
++  };
++  return <button type="button" disabled={disabled} title={error ?? undefined} aria-label={paused ? "Resume queue" : "Pause queue"} onClick={() => void onClick()} className="inline-flex min-h-6 items-center gap-1 rounded px-1.5 text-xs text-muted-foreground hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50">
++    {paused ? <PlayIcon className="size-3" /> : <PauseIcon className="size-3" />}{paused ? "Resume queue" : "Pause queue"}
++  </button>;
 +}
 --- /dev/null
 +++ b/apps/web/src/components/chat/QueueMessageList.test.tsx
@@ -286,7 +338,7 @@
 +});
 --- /dev/null
 +++ b/apps/web/src/components/chat/QueueMessageList.tsx
-@@ -0,0 +1,173 @@
+@@ -0,0 +1,168 @@
 +import type { OrchestrationV2QueueMessages, ProviderQueueControl } from "@t3tools/contracts";
 +import { ArrowDownIcon, ArrowRightIcon, ArrowUpIcon, Clock3Icon, EllipsisIcon, PauseIcon, PencilIcon, PlayIcon, Trash2Icon } from "lucide-react";
 +import { useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type Ref } from "react";
@@ -370,18 +422,13 @@
 +  const rows = showAll ? queue.items : queue.items.slice(0, 3);
 +  return (
 +    <section aria-label="Pi delivery plan" className="min-w-0 text-sm">
-+      {canControl ? <div className="mb-1 flex justify-end text-xs text-muted-foreground">
-+        <button type="button" disabled={locked} onClick={() => void perform({ action: "pause", paused: !queue.paused })} className="inline-flex min-h-7 items-center gap-1 rounded px-1.5 hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50">
-+          {queue.paused ? <PlayIcon className="size-3" /> : <PauseIcon className="size-3" />}{queue.paused ? "Resume queue" : "Pause queue"}
-+        </button>
-+      </div> : null}
 +      <ol aria-label="Queued follow-up messages" className="max-h-48 divide-y divide-border/50 overflow-y-auto overscroll-contain pe-1">
 +        {rows.map((item, index) => {
 +          const held = item.paused || item.held || (queue.paused && item.dispatchHead);
 +          const label = item.paused ? "Held" : item.held ? "Held while editing" : item.dispatchHead ? queue.paused ? "Queue paused" : "Next to send" : "Pending";
 +          const detailLabel = item.paused || item.held || (item.dispatchHead && !queue.paused) ? label : null;
-+          return <li key={item.id} data-queue-id={item.id} data-queue-head={item.dispatchHead || undefined} className="group/queue-row flex min-w-0 items-start gap-2 py-1.5">
-+            <span aria-label={label} className={"mt-1 flex size-4 shrink-0 items-center justify-center " + (held ? "text-amber-600 dark:text-amber-400" : item.dispatchHead ? "text-primary" : "text-muted-foreground/60")}>
++          return <li key={item.id} data-queue-id={item.id} data-queue-head={item.dispatchHead || undefined} className="group/queue-row flex min-w-0 items-start gap-2 py-1">
++            <span aria-label={label} className={"mt-0.5 flex size-4 shrink-0 items-center justify-center " + (held ? "text-amber-600 dark:text-amber-400" : item.dispatchHead ? "text-primary" : "text-muted-foreground/60")}>
 +              {held ? <PauseIcon className="size-3.5" /> : item.dispatchHead ? <ArrowRightIcon className="size-3.5" /> : <Clock3Icon className="size-3.5" />}
 +            </span>
 +            <div className="min-w-0 flex-1">
@@ -394,7 +441,7 @@
 +                {item.truncated ? <span className="ms-1">Message preview truncated. Open Edit for the full text.</span> : null}
 +              </div> : null}
 +            </div>
-+            {canControl ? <Menu><MenuTrigger disabled={locked} aria-label={"Actions for queued message " + (index + 1)} className="flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-40"><EllipsisIcon className="size-4" /></MenuTrigger>
++            {canControl ? <Menu><MenuTrigger disabled={locked} aria-label={"Actions for queued message " + (index + 1)} className="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-40"><EllipsisIcon className="size-4" /></MenuTrigger>
 +              <MenuPopup align="end" side="top">
 +                <p className="px-2 py-1 font-mono text-[10px] text-muted-foreground">{item.id}</p>
 +                <MenuItem onClick={() => beginEdit(item.id)}><PencilIcon />Edit message</MenuItem>
@@ -462,7 +509,7 @@
 +}
 --- a/apps/web/src/components/chat/ThreadActivityBanners.tsx
 +++ b/apps/web/src/components/chat/ThreadActivityBanners.tsx
-@@ -21,34 +21,79 @@
+@@ -21,34 +21,81 @@
    CircleStopIcon,
    GitBranchIcon,
    MessageCircleIcon,
@@ -500,6 +547,7 @@
 -    title: <output>{`Pi · ${statuses.map((status) => status.text).join(" · ")}`}</output>,
 -  };
 +  queueControl?: ReactNode,
++  queueActions?: ReactNode,
 +): ComposerBannerStackItem[] {
 +  const items: ComposerBannerStackItem[] = [];
 +  const goalStatus = statuses.find(
@@ -527,6 +575,7 @@
 +      id: "pi-queue",
 +      variant: "default",
 +      icon: <ListOrderedIcon className="size-3.5" />,
++      actions: queueActions,
 +      title: (
 +        <output>
 +          {"Delivery plan · " + queue.total + (queue.total === 1 ? " follow-up · " : " follow-ups · ") + queuePlanLabel(queue)}

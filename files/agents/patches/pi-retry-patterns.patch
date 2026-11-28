@@ -1,6 +1,6 @@
 --- a/packages/ai/src/utils/retry.ts
 +++ b/packages/ai/src/utils/retry.ts
-@@ -104,6 +104,25 @@
+@@ -104,6 +104,29 @@
  	// failures can arrive mid-stream without an HTTP 503 in the message.
  	"subscription_sharing_usage_unavailable",
  	"subscription_sharing_user_unavailable",
@@ -19,6 +19,10 @@
 +	// event whose JSON payload was truncated.
 +	"no error details in response",
 +	"Could not parse .*SSE event.*Unexpected end of JSON input",
++
++	// Gateways may report a premature EOF as an api_error without an HTTP
++	// status. Match the specific code, not every generic api_error.
++	"upstream_eof_before_terminal",
 +
 +	// Anthropic's usage-policy classifier can block a response mid-stream; a
 +	// regenerated response may pass, and every retry is classified again.

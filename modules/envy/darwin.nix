@@ -194,6 +194,7 @@ in
         ];
       };
       software.sources = config.envy.software.sources;
+      software.homebrew.uninstall = lib.mapAttrs (_: lib.unique) softwarePolicy.homebrew.uninstall;
       software.groups = {
         "nix.user.package" = manifestLib.group {
           label = "Nix packages";

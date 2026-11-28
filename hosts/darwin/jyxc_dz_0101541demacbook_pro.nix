@@ -39,9 +39,9 @@
   envy.storage.archive.mountSource = "";
 
   # --- VSCODE CONFIG ---
-  envy.t3code.service.host = "127.0.0.1";
+  envy.t3code.service.host = "::";
   envy.t3code.service.port = 3773;
-  envy.t3code.service.lan = false;
+  envy.t3code.service.lan = true;
   envy.vscode.mode = "remote";
   # END ENVY MANAGED CONFIG
 
@@ -85,6 +85,9 @@
 
   envy.software.pypi.tools.include = builtins.fromJSON "[{\"id\":\"browser-use\",\"name\":\"browser-use\",\"ref\":\"pypi:browser-use\"}]";
   # END ENVY MANAGED SOFTWARE
+
+  # Explicit Homebrew migration; retain T3 Code user data.
+  envy.darwin.software.homebrew.uninstall.casks = [ "t3-code" ];
 
   # Add hand-maintained machine-specific envy.* policy below this line.
 
@@ -168,11 +171,6 @@
       profile = "mpo";
       credential = "mp-go";
       model = "stepcode-gpt-6.1-sol-eastus2";
-    }
-    {
-      profile = "mpo";
-      credential = "mp-go";
-      model = "gpt-6.1-sol-coding";
     }
     {
       profile = "mpo";
